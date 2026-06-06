@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "one-mock",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "ONE_ENABLE_DEV_AUTH=true NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH=true ONE_ENABLE_MOCK_RIA=true ONE_MOCK_RIA_DELAY_MS=8000 NEXT_PUBLIC_FIREBASE_API_KEY= DATABASE_URL= npm run dev -- --port 3000"
+      ],
+      "port": 3000
+    }
+  ]
+}

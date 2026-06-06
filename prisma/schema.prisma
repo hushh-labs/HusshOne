@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model OneUser {
+  id          String         @id @default(uuid()) @db.Uuid
+  firebaseUid String         @unique
+  email       String
+  name        String?
+  photoUrl    String?
+  provider    String         @default("google")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  consents    ConsentEvent[]
+  scanRuns    ScanRun[]
+  dataRequests DataRequest[]
+  notifications OneNotification[]
+
+  @@index([email])
+}
+
+model ConsentEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  purpose        String
+  consentVersion String
+  locationMode   String
+  latitude       Decimal? @db.Decimal(9, 6)
+  longitude      Decimal? @db.Decimal(9, 6)
+  zipCode        String?
+  ipHash         String?
+  userAgentHash  String?
+  createdAt      DateTime @default(now())
+  user           OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model ScanRun {
+  id              String     @id @default(uuid()) @db.Uuid
+  userId          String     @db.Uuid
+  status          String     @default("running")
+  mode            String
+  purpose         String
+  input           Json
+  normalizedResult Json?
+  summary         String?
+  error           String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  completedAt     DateTime?
+  user            OneUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditJobs       AuditJob[]
+  notifications   OneNotification[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model AuditJob {
+  id              String    @id @default(uuid()) @db.Uuid
+  scanRunId       String    @db.Uuid
+  upstreamJobId   String    @unique
+  status          String
+  totalShards     Int       @default(0)
+  completedShards Int       @default(0)
+  failedShards    Int       @default(0)
+  reportAvailable Boolean   @default(false)
+  report          Json?
+  errors          Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  scanRun         ScanRun   @relation(fields: [scanRunId], references: [id], onDelete: Cascade)
+
+  @@index([scanRunId])
+  @@index([status])
+}
+
+model DataRequest {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  type        String
+  status      String    @default("requested")
+  requestedAt DateTime  @default(now())
+  completedAt DateTime?
+  user        OneUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, requestedAt])
+  @@index([type, status])
+}
+
+model OneNotification {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String?   @db.Uuid
+  scanRunId         String    @db.Uuid
+  notificationType  String
+  recipientEmail    String
+  subject           String
+  status            String    @default("pending")
+  provider          String    @default("gmail")
+  providerMessageId String?
+  errorMessage      String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  sentAt            DateTime?
+  user              OneUser?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  scanRun           ScanRun   @relation(fields: [scanRunId], references: [id], onDelete: Cascade)
+
+  @@unique([scanRunId, notificationType, recipientEmail])
+  @@index([userId, createdAt])
+  @@index([status])
+}

@@ -1,0 +1,8 @@
+.git
+.next
+node_modules
+.env
+.env.*
+.codex-screens
+tsconfig.tsbuildinfo
+npm-debug.log*

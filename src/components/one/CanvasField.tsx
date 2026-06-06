@@ -1,0 +1,646 @@
+"use client";
+
+/* ============================================================
+   CanvasField — Hussh canvas centerpiece (ported from fx.jsx)
+   A persistent full-viewport canvas that renders the glass
+   identity sphere, weightless data particles, the source-node
+   constellation, and flying data fragments. Driven by props
+   read live from a ref so the RAF loop never goes stale.
+   ============================================================ */
+
+import { useEffect, useRef } from "react";
+
+interface CanvasFieldProps {
+  mode: "idle" | "collect" | "dashboard";
+  progress: number;
+  motion?: number;
+  preMoment?: boolean;
+}
+
+/* cool palette tuned for a WHITE canvas — particles are dark/blue,
+   glow accents are luminous blue. Nothing washes out on paper. */
+const FX = {
+  slate: [120, 134, 158], // ambient particle base (cool slate)
+  blue: [76, 157, 255],
+  cyan: [120, 210, 235],
+  violet: [170, 150, 235],
+  ink: [20, 22, 28],
+};
+const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const mix = (a: number[], b: number[], t: number): number[] => [
+  a[0] + (b[0] - a[0]) * t,
+  a[1] + (b[1] - a[1]) * t,
+  a[2] + (b[2] - a[2]) * t,
+];
+const easeOutBack = (x: number) => {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+};
+const easeInOut = (x: number) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+const SOURCES = [
+  { label: "LinkedIn", color: [10, 102, 194], a: -0.35 },
+  { label: "GitHub", color: [28, 30, 38], a: 0.45 },
+  { label: "Google", color: [66, 133, 244], a: 1.25 },
+  { label: "Website", color: [120, 150, 210], a: 2.05 },
+  { label: "Publications", color: [150, 120, 225], a: 2.85 },
+  { label: "X / Social", color: [60, 170, 210], a: 3.55 },
+  { label: "Mentions", color: [76, 157, 255], a: 4.35 },
+  { label: "Company", color: [90, 110, 150], a: 5.15 },
+];
+
+const GHOSTS = [
+  { label: "Work", a: 0.2 },
+  { label: "Code", a: 1.25 },
+  { label: "Web", a: 2.3 },
+  { label: "Mentions", a: 3.3 },
+  { label: "Social", a: 4.35 },
+  { label: "Writing", a: 5.25 },
+];
+
+export function CanvasField(props: CanvasFieldProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const live = useRef<CanvasFieldProps>(props);
+
+  // keep the RAF loop reading the latest props without re-subscribing
+  useEffect(() => {
+    live.current = props;
+  });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+
+    let raf = 0;
+    let running = true;
+    let W = 0;
+    let H = 0;
+    let DPR = 1;
+
+    const fontFamily =
+      (typeof window !== "undefined" && getComputedStyle(document.body).fontFamily) ||
+      "system-ui, sans-serif";
+
+    // ambient particle cloud (spherical shell)
+    const N = 110;
+    const parts: {
+      theta: number;
+      phi: number;
+      rad: number;
+      size: number;
+      tw: number;
+      tws: number;
+      hue: number;
+      drift: number;
+    }[] = [];
+    for (let i = 0; i < N; i++) {
+      const u = Math.random();
+      const v = Math.random();
+      parts.push({
+        theta: u * Math.PI * 2,
+        phi: Math.acos(2 * v - 1),
+        rad: 0.62 + Math.random() * 0.66, // shell thickness
+        size: 0.6 + Math.random() * 1.9,
+        tw: Math.random() * Math.PI * 2, // twinkle phase
+        tws: 0.4 + Math.random() * 1.2,
+        hue: Math.random(), // 0 slate..1 accent
+        drift: 0.2 + Math.random() * 0.8,
+      });
+    }
+
+    // flying data fragments (spawned during collection phase 3)
+    const frags: {
+      x: number;
+      y: number;
+      tx: number;
+      ty: number;
+      life: number;
+      col: number[];
+      kind: number;
+    }[] = [];
+    let fragSeed = 0;
+
+    function resize() {
+      DPR = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas!.clientWidth;
+      H = canvas!.clientHeight;
+      canvas!.width = Math.floor(W * DPR);
+      canvas!.height = Math.floor(H * DPR);
+      ctx!.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    // smoothed center + radius so mode changes glide
+    let curR = 1;
+    let curGlobal = 1;
+    let curCy = 1;
+    let inited = false;
+    const t0 = performance.now();
+
+    function draw(now: number) {
+      const c = ctx!;
+      const T = (now - t0) / 1000;
+      const p = live.current;
+      const mode = p.mode || "idle";
+      const motion = p.motion == null ? 0.7 : p.motion;
+      const progress = clamp01(p.progress || 0);
+      const preMoment = !!p.preMoment && mode === "idle";
+
+      c.clearRect(0, 0, W, H);
+
+      // ── target layout per mode ──────────────────────────
+      const base = Math.min(W, H);
+      let targR: number;
+      let targCy: number;
+      let targGlobal: number;
+      if (mode === "idle") {
+        targR = base * (W < 600 ? 0.185 : 0.15);
+        targCy = H * (W < 600 ? 0.25 : 0.27);
+        targGlobal = 1;
+      } else if (mode === "collect") {
+        targR = base * (W < 600 ? 0.15 : 0.125);
+        targCy = H * 0.42;
+        targGlobal = 1;
+      } else {
+        // dashboard — faint ambient backdrop, sphere gone
+        targR = base * 0.13;
+        targCy = H * 0.3;
+        targGlobal = 0.0;
+      }
+      curR += (targR - curR) * 0.06;
+      curCy += (targCy - curCy) * 0.06;
+      curGlobal += (targGlobal - curGlobal) * 0.05;
+      if (!inited) {
+        curR = targR;
+        curCy = targCy;
+        curGlobal = targGlobal;
+        inited = true;
+      }
+
+      const cx = W / 2;
+      const cy = curCy;
+      const R = curR;
+      const focal = base * 1.4;
+      const rotSpeed = 0.05 + motion * 0.12;
+      const rot = T * rotSpeed;
+      const flat = 0.86;
+
+      // collection-driven energy
+      const collecting = mode === "collect";
+      const energy = collecting ? progress : 0;
+
+      // ── 0. soft ground glow under the sphere ────────────
+      if (curGlobal > 0.01) {
+        const gg = c.createRadialGradient(cx, cy, 0, cx, cy, R * 3.4);
+        gg.addColorStop(0, rgba(FX.blue, 0.05 * curGlobal));
+        gg.addColorStop(0.5, rgba(FX.blue, 0.018 * curGlobal));
+        gg.addColorStop(1, "rgba(0,0,0,0)");
+        c.fillStyle = gg;
+        c.fillRect(0, 0, W, H);
+      }
+
+      // helper: project a 3D point on the cloud
+      function project(theta: number, phi: number, rad: number) {
+        const r = R * rad;
+        const st = Math.sin(phi);
+        const ct = Math.cos(phi);
+        const x = r * st * Math.cos(theta + rot);
+        const y = r * ct * flat;
+        const z = r * st * Math.sin(theta + rot);
+        const scale = focal / (focal - z);
+        return { sx: cx + x * scale, sy: cy + y * scale, z, scale };
+      }
+
+      // split ambient particles by depth (behind / front of glass)
+      const back: [(typeof parts)[number], ReturnType<typeof project>][] = [];
+      const front: [(typeof parts)[number], ReturnType<typeof project>][] = [];
+      for (const pt of parts) {
+        const pr = project(pt.theta, pt.phi, pt.rad);
+        (pr.z < 0 ? back : front).push([pt, pr]);
+      }
+
+      function drawParticles(list: [(typeof parts)[number], ReturnType<typeof project>][]) {
+        for (const [pt, pr] of list) {
+          const tw = 0.55 + 0.45 * Math.sin(T * pt.tws + pt.tw);
+          const depth = (pr.z + R) / (2 * R); // 0 back .. 1 front
+          const baseA = (0.16 + depth * 0.6) * tw * curGlobal;
+          // during collection, accent ramps up
+          const accentMix = clamp01(pt.hue * 0.5 + energy * 0.7);
+          const col = mix(FX.slate, FX.blue, accentMix);
+          const sz = pt.size * pr.scale * (1 + energy * 0.25) * 1.15;
+          c.beginPath();
+          c.arc(pr.sx, pr.sy, Math.max(0.3, sz), 0, Math.PI * 2);
+          c.fillStyle = rgba(col, baseA);
+          c.fill();
+          // gentle glow on the brighter/front ones
+          if (depth > 0.55 || accentMix > 0.4) {
+            c.beginPath();
+            c.arc(pr.sx, pr.sy, sz * 2.6, 0, Math.PI * 2);
+            c.fillStyle = rgba(mix(col, FX.blue, 0.4), baseA * 0.12);
+            c.fill();
+          }
+        }
+      }
+
+      drawParticles(back);
+
+      // ── glass sphere body (between back & front particles) ─
+      if (curGlobal > 0.02) {
+        drawGlassSphere(c, cx, cy, R, curGlobal, energy);
+      }
+
+      // ── pulse ring (collection phase 0: 0–0.09) ─────────
+      if (collecting && progress < 0.14) {
+        const pp = progress / 0.14;
+        const rr = R * (1 + easeInOut(pp) * 7);
+        c.beginPath();
+        c.arc(cx, cy, rr, 0, Math.PI * 2);
+        c.strokeStyle = rgba(FX.blue, (1 - pp) * 0.4);
+        c.lineWidth = 2;
+        c.stroke();
+        // second softer ring
+        const rr2 = R * (1 + easeInOut(clamp01(pp - 0.2)) * 5);
+        c.beginPath();
+        c.arc(cx, cy, rr2, 0, Math.PI * 2);
+        c.strokeStyle = rgba(FX.cyan, (1 - pp) * 0.22);
+        c.lineWidth = 1.2;
+        c.stroke();
+      }
+
+      drawParticles(front);
+
+      // ── pre-moment: faint source ghosts + inner data fragments ──
+      if (preMoment && curGlobal > 0.05) {
+        drawPreMoment(c, cx, cy, R, focal, flat, rot, T, curGlobal, fontFamily);
+      }
+
+      // ── source-node constellation (collection) ──────────
+      if (collecting && progress > 0.22) {
+        const nodeR = R * 2.55;
+        const visible: {
+          s: (typeof SOURCES)[number];
+          nx: number;
+          ny: number;
+          sc: number;
+          scale: number;
+          z: number;
+          snap: number;
+        }[] = [];
+        SOURCES.forEach((s, i) => {
+          const appearAt = 0.27 + i * 0.026;
+          if (progress < appearAt) return;
+          const snap = clamp01((progress - appearAt) / 0.06);
+          const sc = easeOutBack(snap);
+          // 3D orbit position
+          const theta = s.a + rot * 1.4;
+          const phi = Math.PI * (0.32 + (i % 3) * 0.18);
+          const r = nodeR;
+          const x = r * Math.sin(phi) * Math.cos(theta);
+          const z = r * Math.sin(phi) * Math.sin(theta);
+          const y = r * 0.5 * Math.cos(phi) * flat - R * 0.2;
+          const scale = focal / (focal - z);
+          const nx = cx + x * scale;
+          const ny = cy + y * scale;
+          visible.push({ s, nx, ny, sc, scale, z, snap });
+        });
+        // sort by depth so near chips draw last
+        visible.sort((a, b) => a.z - b.z);
+        // connection lines first
+        for (const n of visible) {
+          const a = 0.16 * n.snap * Math.min(1, n.scale);
+          const grd = c.createLinearGradient(cx, cy, n.nx, n.ny);
+          grd.addColorStop(0, rgba(FX.blue, a * 1.1));
+          grd.addColorStop(1, rgba(n.s.color, a * 0.5));
+          c.strokeStyle = grd;
+          c.lineWidth = 1;
+          c.beginPath();
+          c.moveTo(cx, cy);
+          c.lineTo(n.nx, n.ny);
+          c.stroke();
+          // travelling light dot along the line
+          const lt = (T * 0.4 + n.s.a) % 1;
+          const ldx = cx + (n.nx - cx) * lt;
+          const ldy = cy + (n.ny - cy) * lt;
+          c.beginPath();
+          c.arc(ldx, ldy, 1.6, 0, Math.PI * 2);
+          c.fillStyle = rgba(FX.blue, a * 3);
+          c.fill();
+        }
+        // chips
+        for (const n of visible) {
+          drawChip(c, n.nx, n.ny, n.s.label, n.s.color, n.sc, n.scale, T, fontFamily);
+        }
+
+        // spawn flying fragments in phase 3 (0.5–0.78)
+        if (progress > 0.5 && progress < 0.8 && visible.length) {
+          if (now - fragSeed > 90 - motion * 50) {
+            fragSeed = now;
+            const tgt = visible[Math.floor(Math.random() * visible.length)];
+            const edge = Math.floor(Math.random() * 4);
+            let fx: number;
+            let fy: number;
+            if (edge === 0) {
+              fx = Math.random() * W;
+              fy = -20;
+            } else if (edge === 1) {
+              fx = W + 20;
+              fy = Math.random() * H;
+            } else if (edge === 2) {
+              fx = Math.random() * W;
+              fy = H + 20;
+            } else {
+              fx = -20;
+              fy = Math.random() * H;
+            }
+            frags.push({ x: fx, y: fy, tx: tgt.nx, ty: tgt.ny, life: 0, col: tgt.s.color, kind: Math.random() });
+          }
+        }
+      }
+
+      // ── update + draw flying fragments ──────────────────
+      for (let i = frags.length - 1; i >= 0; i--) {
+        const f = frags[i];
+        f.life += 0.016 * (0.8 + motion);
+        const e = easeInOut(clamp01(f.life));
+        const x = f.x + (f.tx - f.x) * e;
+        const y = f.y + (f.ty - f.y) * e;
+        const a = (f.life < 0.85 ? 1 : 1 - (f.life - 0.85) / 0.15) * 0.8;
+        c.save();
+        c.translate(x, y);
+        // small glass shard / strip
+        const w = 14 + f.kind * 16;
+        const h = 5 + f.kind * 4;
+        c.fillStyle = rgba(f.col, a * 0.5);
+        c.strokeStyle = rgba(f.col, a * 0.7);
+        roundRect(c, -w / 2, -h / 2, w, h, 2.5);
+        c.fill();
+        c.restore();
+        if (f.life >= 1) frags.splice(i, 1);
+      }
+      if (mode !== "collect") frags.length = 0;
+    }
+
+    function frame(now: number) {
+      if (!running) return;
+      draw(now);
+      raf = requestAnimationFrame(frame);
+    }
+
+    draw(performance.now()); // immediate first paint (RAF may be throttled while hidden)
+    raf = requestAnimationFrame(frame);
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="field" aria-hidden="true" />;
+}
+
+/* ── glass sphere: reads as a crystal orb on white paper ── */
+function drawGlassSphere(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  R: number,
+  g: number,
+  energy: number,
+) {
+  ctx.save();
+  // 0. soft contact shadow beneath — grounds the floating orb
+  const sh = ctx.createRadialGradient(cx + R * 0.12, cy + R * 0.55, 0, cx + R * 0.12, cy + R * 0.55, R * 1.25);
+  sh.addColorStop(0, `rgba(54,72,120,${0.16 * g})`);
+  sh.addColorStop(0.55, `rgba(54,72,120,${0.07 * g})`);
+  sh.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sh;
+  ctx.beginPath();
+  ctx.ellipse(cx + R * 0.1, cy + R * 0.5, R * 1.2, R * 0.95, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 1. faint outer aura (blue while collecting)
+  const aura = ctx.createRadialGradient(cx, cy, R * 0.7, cx, cy, R * 1.55);
+  aura.addColorStop(0, rgba(FX.blue, 0.0));
+  aura.addColorStop(0.7, rgba(FX.blue, (0.04 + energy * 0.13) * g));
+  aura.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = aura;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 1.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 2. glass body — transparent center (paper + particles show through),
+  //    refractive rim that darkens toward the bottom-right
+  const body = ctx.createRadialGradient(cx - R * 0.34, cy - R * 0.42, R * 0.05, cx, cy, R * 1.04);
+  body.addColorStop(0, `rgba(255,255,255,${0.16 * g})`);
+  body.addColorStop(0.42, `rgba(222,232,247,${0.07 * g})`);
+  body.addColorStop(0.74, `rgba(196,210,235,${0.16 * g})`);
+  body.addColorStop(0.9, `rgba(150,176,222,${0.34 * g})`);
+  body.addColorStop(0.99, `rgba(108,140,205,${0.52 * g})`);
+  body.addColorStop(1, `rgba(108,140,205,0)`);
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 2b. heavier refractive shadow on the lower-right crescent
+  const cres = ctx.createRadialGradient(cx + R * 0.42, cy + R * 0.46, R * 0.1, cx + R * 0.42, cy + R * 0.46, R * 0.95);
+  cres.addColorStop(0, `rgba(70,95,150,${0.2 * g})`);
+  cres.addColorStop(1, "rgba(70,95,150,0)");
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = cres;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // 3. rim: thin bright top-left edge + cool refractive ring
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = `rgba(255,255,255,${0.85 * g})`;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R - 0.7, Math.PI * 0.9, Math.PI * 1.85);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = rgba(FX.blue, 0.28 * g);
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 0.992, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // 4. inner core glow (intensifies while collecting)
+  const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.7);
+  core.addColorStop(0, rgba(FX.blue, (0.1 + energy * 0.35) * g));
+  core.addColorStop(0.6, rgba(FX.cyan, (0.04 + energy * 0.1) * g));
+  core.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 0.7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 5. specular highlight
+  const spec = ctx.createRadialGradient(cx - R * 0.4, cy - R * 0.46, 0, cx - R * 0.4, cy - R * 0.46, R * 0.5);
+  spec.addColorStop(0, `rgba(255,255,255,${0.9 * g})`);
+  spec.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = spec;
+  ctx.beginPath();
+  ctx.ellipse(cx - R * 0.38, cy - R * 0.42, R * 0.34, R * 0.24, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 6. small crisp catch-light
+  ctx.beginPath();
+  ctx.arc(cx - R * 0.46, cy - R * 0.5, R * 0.05, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255,255,255,${0.95 * g})`;
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ── pre-moment: hidden source signals waiting to be gathered ─ */
+function drawPreMoment(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  R: number,
+  focal: number,
+  flat: number,
+  rot: number,
+  T: number,
+  g: number,
+  fontFamily: string,
+) {
+  // faint glass data-fragments living inside the sphere
+  const frR = R * 0.6;
+  for (let i = 0; i < 6; i++) {
+    const th = (i / 6) * Math.PI * 2 + rot * 0.6;
+    const ph = Math.PI * (0.3 + (i % 3) * 0.2);
+    const x = frR * Math.sin(ph) * Math.cos(th);
+    const z = frR * Math.sin(ph) * Math.sin(th);
+    const y = frR * Math.cos(ph) * flat;
+    const scale = focal / (focal - z);
+    const depth = (z + frR) / (2 * frR);
+    const sx = cx + x * scale;
+    const sy = cy + y * scale;
+    const a = (0.05 + depth * 0.1) * g;
+    const w = 17 * scale;
+    const h = 10 * scale;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.fillStyle = `rgba(255,255,255,${a * 2.4})`;
+    ctx.strokeStyle = `rgba(120,150,210,${a * 1.2})`;
+    ctx.lineWidth = 0.8;
+    roundRect(ctx, -w / 2, -h / 2, w, h, 2.4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = `rgba(80,100,140,${a * 1.6})`;
+    ctx.fillRect(-w / 2 + 2.5 * scale, -1.4 * scale, w * 0.5, 1.3 * scale);
+    ctx.restore();
+  }
+
+  // faint source ghosts orbiting outside — hidden signals
+  const ghR = R * 2.0;
+  GHOSTS.forEach((gh, i) => {
+    const theta = gh.a + rot * 0.5;
+    const phi = Math.PI * (0.32 + (i % 3) * 0.16);
+    const x = ghR * Math.sin(phi) * Math.cos(theta);
+    const z = ghR * Math.sin(phi) * Math.sin(theta);
+    const y = ghR * 0.55 * Math.cos(phi) * flat;
+    const scale = focal / (focal - z);
+    const sx = cx + x * scale;
+    const sy = cy + y * scale;
+    const depth = (z + ghR) / (2 * ghR);
+    const breathe = 0.5 + 0.5 * Math.sin(T * 0.55 + i * 1.3);
+    const a = (0.05 + depth * 0.13) * g * (0.55 + 0.45 * breathe);
+    // hairline reaching toward the sphere
+    ctx.strokeStyle = rgba(FX.blue, a * 0.55);
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(sx, sy);
+    ctx.stroke();
+    // node dot
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2.1 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(FX.blue, a * 2.4);
+    ctx.fill();
+    // barely-there label
+    ctx.font = `500 ${11 * scale}px ${fontFamily}`;
+    ctx.fillStyle = `rgba(58,70,98,${a * 1.9})`;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = sx < cx ? "right" : "left";
+    ctx.fillText(gh.label, sx + (sx < cx ? -7 * scale : 7 * scale), sy);
+    ctx.textAlign = "left";
+  });
+}
+
+/* ── frosted source-node chip with label ────────────────── */
+function drawChip(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  label: string,
+  color: number[],
+  sc: number,
+  scale: number,
+  T: number,
+  fontFamily: string,
+) {
+  if (sc <= 0.001) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(sc * scale, sc * scale);
+  const padX = 13;
+  const h = 30;
+  const dot = 9;
+  ctx.font = `500 13px ${fontFamily}`;
+  const tw = ctx.measureText(label).width;
+  const w = padX * 2 + dot + 8 + tw;
+  const x0 = -w / 2;
+  const y0 = -h / 2;
+  // shadow
+  ctx.shadowColor = "rgba(30,45,80,0.18)";
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 6;
+  // frosted body
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  roundRect(ctx, x0, y0, w, h, h / 2);
+  ctx.fill();
+  ctx.shadowColor = "transparent";
+  // hairline
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(0,0,0,0.06)";
+  roundRect(ctx, x0, y0, w, h, h / 2);
+  ctx.stroke();
+  // color dot w/ soft pulse
+  const pulse = 0.85 + 0.15 * Math.sin(T * 2 + x);
+  ctx.beginPath();
+  ctx.arc(x0 + padX + dot / 2, 0, dot / 2, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(color, 1);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x0 + padX + dot / 2, 0, dot / 2 + 3 * pulse, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(color, 0.16);
+  ctx.fill();
+  // label
+  ctx.fillStyle = "rgba(20,22,28,0.92)";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x0 + padX + dot + 8, 1);
+  ctx.restore();
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+export default CanvasField;
