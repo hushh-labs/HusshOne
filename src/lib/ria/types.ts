@@ -148,6 +148,20 @@ export interface OneProfileLink {
   confidence: ConfidenceLevel | null;
 }
 
+/** A cleaned, categorized, personalized source link for display (dashboard + email). */
+export interface OneSourceCard {
+  /** Final (resolved) URL — never a raw vertexaisearch grounding-redirect. */
+  url: string;
+  /** Bare hostname, e.g. "github.com". */
+  domain: string;
+  /** Personalized professional label, e.g. "Ankit's GitHub" or "AIT Pune". */
+  label: string;
+  /** Bucket: Professional | Code | Education | News & media | App | Social | Public web. */
+  category: string;
+  /** Favicon URL for the domain (best-effort). */
+  favicon: string | null;
+}
+
 export interface OneEvidenceItem {
   claim: string;
   category: string | null;
@@ -199,6 +213,10 @@ export interface OneRichReport {
   conflicts: string[];
   missingEvidence: string[];
   sourceUrls: string[];
+  /** Cleaned + personalized source cards (resolved from sourceUrls). */
+  sourceCards: OneSourceCard[];
+  /** Count of public-web sources verified but not individually named (Hushh summary). */
+  verifiedWebCount: number;
 }
 
 export interface OneDashboardResult {

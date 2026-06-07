@@ -139,7 +139,15 @@ function renderRichSections(result: OneDashboardResult) {
 
   if (rich.conflicts.length) sections.push(renderSection("Conflicts", renderList(rich.conflicts)));
   if (rich.missingEvidence.length) sections.push(renderSection("Missing evidence", renderList(rich.missingEvidence)));
-  if (rich.sourceUrls.length) sections.push(renderSection("Sources", renderList(rich.sourceUrls)));
+  if (rich.sourceCards.length || rich.verifiedWebCount || rich.sourceUrls.length) {
+    const items = rich.sourceCards.length
+      ? rich.sourceCards.map((c) => `${c.label}${c.domain && c.domain !== c.label ? ` — ${c.domain}` : ""}`)
+      : [...rich.sourceUrls];
+    if (rich.verifiedWebCount > 0) {
+      items.push(`Verified across ${rich.verifiedWebCount} more public web source${rich.verifiedWebCount === 1 ? "" : "s"}`);
+    }
+    sections.push(renderSection("Sources", renderList(items)));
+  }
 
   return sections.join("");
 }

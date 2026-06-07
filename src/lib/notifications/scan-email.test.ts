@@ -72,6 +72,8 @@ const result: OneDashboardResult = {
     conflicts: ["Two possible employers listed"],
     missingEvidence: ["No confirmed contact details"],
     sourceUrls: ["https://github.com/ankit"],
+    sourceCards: [],
+    verifiedWebCount: 0,
   },
 };
 

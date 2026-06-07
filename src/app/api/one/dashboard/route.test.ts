@@ -59,6 +59,8 @@ function shadowResult(): OneDashboardResult {
       conflicts: [],
       missingEvidence: [],
       sourceUrls: [],
+      sourceCards: [],
+      verifiedWebCount: 0,
     },
   };
 }

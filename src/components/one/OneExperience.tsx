@@ -21,10 +21,11 @@ import type {
   DashboardCategoryMap,
   OneDashboardResult,
   OneSafeFinding,
+  OneSourceCard,
   PersonAuditStatus,
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
-import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, shadowPhaseIndex } from "@/lib/ria/progress";
+import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, scanningSourceAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { track } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
@@ -86,7 +87,7 @@ function isValidPhone(value: string) {
 /* read the NDJSON result stream; forwards progress/start, returns the final done|error line */
 async function readScanStream(
   body: ReadableStream<Uint8Array>,
-  onProgress: (msg: { type: string; stage?: number; elapsedMs?: number; scanRunId?: string | null }) => void,
+  onProgress: (msg: { type: string; stage?: number; elapsedMs?: number; scanRunId?: string | null; scanning?: string }) => void,
 ): Promise<{ type: string; result?: OneDashboardResult; audit?: PersonAuditStatus | null; emailDelivery?: ScanEmailDeliverySummary | null; error?: string } | null> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -312,14 +313,19 @@ function CollectionOverlay({
   progress,
   phaseIndex,
   elapsedMs,
+  liveSource,
 }: {
   progress: number;
   phaseIndex: number;
   elapsedMs: number;
+  liveSource: string | null;
 }) {
   const active = Math.min(phaseIndex, SHADOW_PHASES.length - 1);
   const headline = SHADOW_PHASES[active];
   const overran = elapsedMs > SHADOW_ESTIMATED_MS && active >= SHADOW_PHASES.length - 1;
+  // Live "what's being checked" feed — real per-source when the upstream streams,
+  // otherwise a curated cycle through the source categories Shadow checks.
+  const scanning = liveSource || scanningSourceAt(elapsedMs);
   return (
     <div className="seq">
       <div className="seq-copy" aria-live="polite">
@@ -340,6 +346,9 @@ function CollectionOverlay({
           <span className="fade" key={headline}>
             {overran ? "Composing your report — almost there…" : `One is ${headline.charAt(0).toLowerCase()}${headline.slice(1)}…`}
           </span>
+        </p>
+        <p className="seq-line" style={{ marginTop: -6, opacity: 0.66, fontSize: "0.9em" }}>
+          <span className="fade" key={`scan-${scanning}`}>↳ scanning {scanning}…</span>
         </p>
         <div className="seq-progress">
           <div className="bar" style={{ transform: `scaleX(${Math.max(0.03, progress)})` }} />
@@ -436,6 +445,13 @@ const URL_RE = /((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s,
 function extractUrl(text: string) {
   const m = text.match(URL_RE);
   return m ? m[1].replace(/^https?:\/\//, "") : null;
+}
+
+const GROUNDING_RE = /vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i;
+/** Display-safe source label — never renders a raw Gemini grounding-redirect token. */
+function displaySource(text: string) {
+  if (GROUNDING_RE.test(text)) return "public web source";
+  return extractUrl(text) || text;
 }
 
 const POSITIVE = (s: string) => !!s && !/^\s*(no |none|not )/i.test(s.trim());
@@ -548,7 +564,7 @@ function RichCards({ rich }: { rich: NonNullable<OneDashboardResult["rich"]> }) 
             {rich.discovery.sources.slice(0, 5).map((s, i) => (
               <div className="lrow" key={i}>
                 <span className="lico">{Icons.link(15)}</span>
-                <span className="lurl" title={s.url || s.platform}>{s.url ? extractUrl(s.url) || s.url : s.platform}</span>
+                <span className="lurl" title={s.url || s.platform}>{s.url && !GROUNDING_RE.test(s.url) ? displaySource(s.url) : s.platform}</span>
               </div>
             ))}
           </div>
@@ -569,7 +585,7 @@ function RichCards({ rich }: { rich: NonNullable<OneDashboardResult["rich"]> }) 
               </div>
               <div className="ftitle">{e.claim}</div>
               {e.support ? <div className="fmeta" style={{ fontFamily: "var(--font-body)" }}>{e.support}</div> : null}
-              {e.sources.length ? <div className="fmeta">{e.sources.map((s) => extractUrl(s) || s).join(" · ")}</div> : null}
+              {e.sources.length ? <div className="fmeta">{[...new Set(e.sources.map(displaySource))].join(" · ")}</div> : null}
             </div>
           ))}
         </div>
@@ -593,18 +609,42 @@ function RichCards({ rich }: { rich: NonNullable<OneDashboardResult["rich"]> }) 
     );
   }
 
-  if (rich.sourceUrls.length) {
+  if (rich.sourceCards.length || rich.verifiedWebCount || rich.sourceUrls.length) {
+    const list: OneSourceCard[] = rich.sourceCards.length
+      ? rich.sourceCards
+      : rich.sourceUrls.slice(0, 12).map((u) => ({
+          url: u,
+          domain: extractUrl(u) || u,
+          label: extractUrl(u) || u,
+          category: "Public web",
+          favicon: null,
+        }));
     cards.push(
       <GCard key="src" label="Sources" icon={Icons.link()} span={12} delay={next()}>
         <div className="links">
-          {rich.sourceUrls.slice(0, 12).map((s, i) => (
+          {list.map((s, i) => (
             <div className="lrow" key={i}>
-              <span className="lico">{Icons.link(15)}</span>
-              <span className="lurl" title={s}>{extractUrl(s) || s}</span>
-              <span className="lcheck">{Icons.check(15)}</span>
+              <span className="lico">
+                {s.favicon ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={s.favicon} alt="" width={15} height={15} loading="lazy" style={{ borderRadius: 3 }} />
+                ) : (
+                  Icons.link(15)
+                )}
+              </span>
+              <span className="lurl" title={s.url} style={{ fontFamily: "inherit" }}>
+                <strong style={{ fontWeight: 600 }}>{s.label}</strong>
+                {s.domain && s.domain !== s.label ? <span style={{ opacity: 0.45 }}> · {s.domain}</span> : null}
+              </span>
+              <span className="lcheck" style={{ opacity: 0.55, fontSize: "0.78em", letterSpacing: "0.02em" }}>{s.category}</span>
             </div>
           ))}
         </div>
+        {rich.verifiedWebCount > 0 ? (
+          <p style={{ opacity: 0.6, fontSize: "0.86em", marginTop: 10 }}>
+            ✓ Verified across {rich.verifiedWebCount} more public web source{rich.verifiedWebCount === 1 ? "" : "s"}.
+          </p>
+        ) : null}
       </GCard>,
     );
   }
@@ -735,7 +775,7 @@ function Dashboard({
                   <div className="lrow" key={i}>
                     <span className="lico">{Icons.link(15)}</span>
                     <span className="lurl" title={l}>
-                      {extractUrl(l) || l}
+                      {displaySource(l)}
                     </span>
                     <span className="lcheck">{Icons.check(15)}</span>
                   </div>
@@ -870,6 +910,7 @@ export default function OneExperience() {
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
+  const [liveSource, setLiveSource] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<OneDashboardResult | null>(null);
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
@@ -992,6 +1033,7 @@ export default function OneExperience() {
     setProgress(0);
     setElapsedMs(0);
     setServerStage(0);
+    setLiveSource(null);
     setDashboard(null);
     setAudit(null);
     setEmailDelivery(null);
@@ -1031,6 +1073,7 @@ export default function OneExperience() {
       const final = await readScanStream(response.body, (msg) => {
         if (typeof msg.scanRunId === "string") scanRunIdRef.current = msg.scanRunId;
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
+        if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
       });
 
       if (!final || final.type === "error" || !final.result) {
@@ -1084,6 +1127,7 @@ export default function OneExperience() {
     setProgress(0);
     setElapsedMs(0);
     setServerStage(0);
+    setLiveSource(null);
     setStage("landing");
   };
 
@@ -1101,7 +1145,7 @@ export default function OneExperience() {
   else if (stage === "precollect")
     view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} />;
   else if (stage === "collect")
-    view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} />;
+    view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
     view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} />;
   else if (stage === "empty")
