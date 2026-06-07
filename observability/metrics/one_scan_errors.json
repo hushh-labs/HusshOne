@@ -1,0 +1,13 @@
+{
+  "description": "Count of One app structured ERROR events, labelled by event name (one.dashboard.failed, one.scan_email.failed, one.dashboard.precheck_failed, etc.).",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" severity>=ERROR jsonPayload.event:*",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "labels": [{ "key": "event", "valueType": "STRING" }]
+  },
+  "labelExtractors": {
+    "event": "EXTRACT(jsonPayload.event)"
+  }
+}

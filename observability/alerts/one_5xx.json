@@ -1,0 +1,25 @@
+{
+  "displayName": "[one.hushh.ai] 5xx error spike",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "one service 5xx count > 3 in 5m",
+      "conditionThreshold": {
+        "filter": "resource.type=\"cloud_run_revision\" resource.label.\"service_name\"=\"one\" metric.type=\"run.googleapis.com/request_count\" metric.label.\"response_code_class\"=\"5xx\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 3,
+        "duration": "0s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": ["projects/hushone-app/notificationChannels/4619923041387238844"],
+  "enabled": true
+}

@@ -1,0 +1,31 @@
+name: prod-smoke
+
+# Automation testing against production (one.hushh.ai):
+# - on every push to main (post-merge verification)
+# - on a schedule (continuous synthetic check of the public contract + security)
+# - manually via the Actions tab
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17,47 * * * *" # twice hourly, off the :00/:30 marks
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Override target base URL"
+        required: false
+        default: "https://one.hushh.ai"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run production smoke / contract test
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || 'https://one.hushh.ai' }}
+        run: node scripts/prod-smoke.mjs

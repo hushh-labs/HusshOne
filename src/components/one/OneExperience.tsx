@@ -25,6 +25,7 @@ import type {
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, shadowPhaseIndex } from "@/lib/ria/progress";
+import { track } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
 
@@ -889,6 +890,12 @@ export default function OneExperience() {
     root.style.setProperty("--blue-glow", hexA(ACCENT, 0.55));
   }, []);
 
+  // client behaviour funnel — one event per stage transition so drop-off
+  // (landing → sign-in → precollect → collect → dashboard) is reconstructable.
+  useEffect(() => {
+    track(`stage_${stage}`);
+  }, [stage]);
+
   // cinematic progress while collecting: ease toward 0.92 across the estimated
   // multi-minute run, track elapsed; never regress, never complete until the result lands
   useEffect(() => {
@@ -922,6 +929,7 @@ export default function OneExperience() {
       const id = extractIdentity(user);
       setAuthUser(user);
       setIdentity(id);
+      track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
       setStage(!id.name || !isValidEmail(id.email) ? "manual" : "precollect");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign-in failed.");
@@ -1055,6 +1063,7 @@ export default function OneExperience() {
           longitude: Number(pos.coords.longitude.toFixed(6)),
         }),
       () => {
+        track("geo_denied");
         setError("Location wasn't shared, so One couldn't anchor the search.");
         setStage("error");
       },
@@ -1063,6 +1072,7 @@ export default function OneExperience() {
   };
 
   const reset = async () => {
+    track("started_over");
     await signOutOfGoogle().catch(() => undefined);
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
