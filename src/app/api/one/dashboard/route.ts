@@ -27,6 +27,20 @@ function clientIp(request: Request) {
   );
 }
 
+// Reconstruct the public origin from the incoming request so emailed links point
+// at the host the user actually used (works behind Cloud Run's proxy headers).
+function requestOrigin(request: Request): string | null {
+  const explicit = request.headers.get("origin");
+  if (explicit?.startsWith("http")) return explicit.replace(/\/+$/, "");
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+  const host =
+    request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host")?.trim();
+  if (!host) return null;
+  // never hand a localhost origin to a delivered email
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(host)) return null;
+  return `${proto}://${host}`;
+}
+
 async function parseBody(request: Request) {
   try {
     return (await request.json()) as Record<string, unknown>;
@@ -282,7 +296,13 @@ export async function POST(request: Request) {
 
         let emailDelivery: ScanEmailDeliverySummary | null = null;
         try {
-          emailDelivery = await sendScanResultEmails({ userId, scanRunId, result, audit: null });
+          emailDelivery = await sendScanResultEmails({
+            userId,
+            scanRunId,
+            result,
+            audit: null,
+            siteUrl: requestOrigin(request),
+          });
         } catch (notificationError) {
           console.error(
             JSON.stringify({

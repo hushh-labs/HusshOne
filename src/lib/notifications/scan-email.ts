@@ -123,6 +123,7 @@ export async function sendScanResultEmails(params: {
   result: OneDashboardResult;
   audit: PersonAuditStatus | null;
   completedAt?: Date;
+  siteUrl?: string | null;
 }): Promise<ScanEmailDeliverySummary> {
   const completedAt = params.completedAt ?? new Date();
   const userHtml = buildScanResultEmailHtml({
@@ -130,12 +131,14 @@ export async function sendScanResultEmails(params: {
     audit: params.audit,
     audience: "user",
     completedAt,
+    siteUrl: params.siteUrl,
   });
   const adminHtml = buildScanResultEmailHtml({
     result: params.result,
     audit: params.audit,
     audience: "admin",
     completedAt,
+    siteUrl: params.siteUrl,
   });
 
   const [user, admins] = await Promise.all([
