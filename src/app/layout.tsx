@@ -1,24 +1,28 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Inter } from "next/font/google";
+import { Space_Grotesk, Inter, Fragment_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Display / headings — Space Grotesk (the hellowstd.com display face).
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-grotesk",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
+// Body + numeric — Inter.
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
 });
 
+// Hex / code band — Fragment Mono (matches the hellow hero texture).
+const fragmentMono = Fragment_Mono({
+  weight: "400",
+  variable: "--font-fragment",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
-  title: "One by Hussh",
+  title: "One by hussh",
   description: "Meet One, your personal intelligence agent.",
   icons: {
     icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🤫%3C/text%3E%3C/svg%3E",
@@ -38,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${inter.variable}`}>
+    <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable}`}>
       <body>{children}</body>
     </html>
   );

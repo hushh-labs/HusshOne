@@ -20,15 +20,18 @@ function escapeHtml(value: unknown) {
     .replace(/'/g, "&#39;");
 }
 
-function getSiteUrl() {
+function getSiteUrl(override?: string | null) {
+  // Prefer the real request origin (threaded from the route), then explicit env,
+  // and finally the production host — never leak localhost into a delivered email.
   const configured =
+    override ||
     process.env.ONE_SITE_URL ||
     process.env.NEXT_PUBLIC_ONE_SITE_URL ||
     process.env.PUBLIC_SITE_URL ||
     process.env.SITE_URL;
-  if (configured?.trim()) return configured.replace(/\/+$/, "");
+  if (configured?.trim()) return configured.trim().replace(/\/+$/, "");
   if (process.env.VERCEL_URL?.trim()) return `https://${process.env.VERCEL_URL.trim().replace(/\/+$/, "")}`;
-  return "http://localhost:3000";
+  return "https://one.hushh.ai";
 }
 
 function renderList(items: string[]) {
@@ -157,44 +160,27 @@ export function buildScanResultEmailHtml(params: {
   audit: PersonAuditStatus | null;
   audience: Audience;
   completedAt: Date;
+  siteUrl?: string | null;
 }) {
   const { result, audit, audience, completedAt } = params;
-  const payload = {
-    result,
-    audit,
-    completedAt: completedAt.toISOString(),
-  };
-  const siteUrl = getSiteUrl();
-  const eyebrow = audience === "admin" ? "Internal scan copy" : "Your scan copy";
-  const intro =
-    audience === "admin"
-      ? "A Hussh One scan completed. The full normalized scan data returned to the dashboard is included below."
-      : "Your Hussh One scan completed. The full normalized scan data from your dashboard is included below for your records.";
+  const isAdmin = audience === "admin";
+  const siteUrl = getSiteUrl(params.siteUrl);
+  // Deep-link straight to this saved report; Part 1 restores it after sign-in.
+  const reportUrl = `${siteUrl}/?scan=${encodeURIComponent(result.scanRunId ?? "")}`;
+  const ctaHref = isAdmin ? siteUrl : reportUrl;
+  const ctaLabel = isAdmin ? "Open Hussh One" : "View your report";
 
-  return `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hussh One scan results</title>
-  </head>
-  <body style="margin:0;padding:0;background:#f7f7f5;color:#1d1d1f;font-family:Inter,Arial,sans-serif;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f7f7f5;">
-      <tr>
-        <td align="center" style="padding:0;">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:680px;border-collapse:collapse;background:#ffffff;">
-            <tr>
-              <td style="padding:34px 32px 38px 32px;background:#0a0a0a;color:#ffffff;">
-                <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#8fc9ff;font-weight:700;">${escapeHtml(eyebrow)}</div>
-                <h1 style="margin:16px 0 0 0;font-size:34px;line-height:1.08;font-weight:600;color:#ffffff;">Hussh One scan results</h1>
-                <p style="margin:14px 0 0 0;font-size:14px;line-height:1.7;color:#d7d7d7;">${escapeHtml(intro)}</p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:30px 32px 18px 32px;">
-                <p style="margin:0;color:#1d1d1f;font-size:15px;line-height:1.7;">${escapeHtml(result.summary)}</p>
-              </td>
-            </tr>
+  const eyebrow = isAdmin ? "Internal scan copy" : "Your report is ready";
+  const intro = isAdmin
+    ? "A Hussh One scan completed. The full normalized scan data returned to the dashboard is included below."
+    : "Your Hussh One scan is complete. Here's a quick summary — open your full, interactive report any time with the button below.";
+
+  // The user gets a clean, readable email; the heavy data lives in the report.
+  // The admin copy stays exhaustive (every section + the raw normalized payload).
+  let body: string;
+  if (isAdmin) {
+    const payload = { result, audit, completedAt: completedAt.toISOString() };
+    body = `
             ${renderSection(
               "Scan metadata",
               renderKeyValues([
@@ -221,11 +207,57 @@ export function buildScanResultEmailHtml(params: {
               `<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-family:SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;color:#1d1d1f;background:#fafafa;border:1px solid #eeeeee;border-radius:8px;padding:14px;">${escapeHtml(
                 JSON.stringify(payload, null, 2),
               )}</pre>`,
+            )}`;
+  } else {
+    const glance: [string, string | null | undefined][] = [];
+    if (result.rich?.overallConfidence) glance.push(["Overall confidence", result.rich.overallConfidence]);
+    if (typeof result.rich?.sourceCount === "number") glance.push(["Sources reviewed", String(result.rich.sourceCount)]);
+    const glanceSection = glance.length ? renderSection("At a glance", renderKeyValues(glance)) : "";
+    body = `
+            ${renderSection(
+              "Your scan",
+              renderKeyValues([
+                ["Name", result.subject.name],
+                ["Email", result.subject.email],
+                ["Completed", completedAt.toUTCString()],
+              ]),
             )}
+            ${glanceSection}`;
+  }
+
+  const privacyLine = isAdmin
+    ? "This email contains the full normalized scan result. Keep it private."
+    : "Your full report — including every source and finding — stays private to your account.";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hussh One scan results</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f7f7f5;color:#1d1d1f;font-family:Inter,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#f7f7f5;">
+      <tr>
+        <td align="center" style="padding:0;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:680px;border-collapse:collapse;background:#ffffff;">
             <tr>
-              <td style="padding:2px 32px 36px 32px;">
-                <a href="${escapeHtml(siteUrl)}" style="display:block;text-align:center;text-decoration:none;background:#0a0a0a;color:#ffffff;border-radius:12px;padding:16px 18px;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;">Open Hussh One</a>
-                <p style="margin:18px 0 0 0;color:#8e8e93;font-size:12px;line-height:1.7;">This email contains the full normalized scan result. Keep it private.</p>
+              <td style="padding:34px 32px 38px 32px;background:#0a0a0a;color:#ffffff;">
+                <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#8fc9ff;font-weight:700;">${escapeHtml(eyebrow)}</div>
+                <h1 style="margin:16px 0 0 0;font-size:34px;line-height:1.08;font-weight:600;color:#ffffff;">Hussh One scan results</h1>
+                <p style="margin:14px 0 0 0;font-size:14px;line-height:1.7;color:#d7d7d7;">${escapeHtml(intro)}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:30px 32px 18px 32px;">
+                <p style="margin:0;color:#1d1d1f;font-size:15px;line-height:1.7;">${escapeHtml(result.summary)}</p>
+              </td>
+            </tr>
+            ${body}
+            <tr>
+              <td style="padding:8px 32px 36px 32px;">
+                <a href="${escapeHtml(ctaHref)}" style="display:block;text-align:center;text-decoration:none;background:#0a0a0a;color:#ffffff;border-radius:12px;padding:16px 18px;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;">${escapeHtml(ctaLabel)}</a>
+                <p style="margin:18px 0 0 0;color:#8e8e93;font-size:12px;line-height:1.7;">${escapeHtml(privacyLine)}</p>
               </td>
             </tr>
           </table>

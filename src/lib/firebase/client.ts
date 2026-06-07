@@ -1,9 +1,14 @@
 import { getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import {
+  browserLocalPersistence,
   getAuth,
   GoogleAuthProvider,
+  onAuthStateChanged,
+  setPersistence,
   signInWithPopup,
   signOut,
+  type Auth,
+  type Unsubscribe,
   type User,
 } from "firebase/auth";
 
@@ -27,8 +32,34 @@ function getFirebaseApp(): FirebaseApp {
   return getApps()[0] ?? initializeApp(firebaseConfig);
 }
 
+// Firebase already defaults to browserLocalPersistence, but we pin it
+// explicitly (cached) so a signed-in session reliably survives a page refresh.
+let persistenceReady: Promise<void> | null = null;
+function ensurePersistence(auth: Auth): Promise<void> {
+  if (!persistenceReady) {
+    persistenceReady = setPersistence(auth, browserLocalPersistence).catch(() => undefined);
+  }
+  return persistenceReady;
+}
+
+/**
+ * Subscribe to Firebase auth state. Fires once on load with the restored user
+ * (or null) after Firebase reads its persisted session — this is how the app
+ * rehydrates a signed-in user on refresh WITHOUT re-showing the Google popup.
+ */
+export function observeAuth(onChange: (user: User | null) => void): Unsubscribe {
+  if (!isFirebaseClientConfigured()) {
+    onChange(null);
+    return () => undefined;
+  }
+  const auth = getAuth(getFirebaseApp());
+  void ensurePersistence(auth);
+  return onAuthStateChanged(auth, onChange);
+}
+
 export async function signInWithGoogle() {
   const auth = getAuth(getFirebaseApp());
+  await ensurePersistence(auth);
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
   const result = await signInWithPopup(auth, provider);
