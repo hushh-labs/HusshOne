@@ -1,0 +1,26 @@
+{
+  "displayName": "[Shadow API] hushh-ria-intelligence-api /health DOWN (uptime)",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "RIA /health uptime check failing",
+      "conditionThreshold": {
+        "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" resource.type=\"uptime_url\" metric.label.\"check_id\"=\"hushh-ria-intelligence-api-health-AToyD2c2RGg\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_NEXT_OLDER",
+            "crossSeriesReducer": "REDUCE_COUNT_FALSE",
+            "groupByFields": ["resource.label.host"]
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 1,
+        "duration": "300s",
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": ["projects/hushone-app/notificationChannels/4619923041387238844"],
+  "enabled": true
+}

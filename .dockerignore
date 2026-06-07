@@ -1,0 +1,16 @@
+.git
+node_modules
+.next
+out
+build
+.env.local
+.env*.local
+.codex-screens
+.claude
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+Dockerfile
+.dockerignore
+README.md
+CONTEXT.md

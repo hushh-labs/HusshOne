@@ -1,0 +1,13 @@
+{
+  "description": "Count of 5xx responses from the upstream Hushh Shadow API (/v1/hushh-shadow/report) on the RIA service. Derived from EXISTING request logs — no change to the RIA service.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"hushh-ria-intelligence-api\" httpRequest.requestUrl:\"/v1/hushh-shadow/report\" httpRequest.status>=500",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "labels": [{ "key": "status", "valueType": "STRING" }]
+  },
+  "labelExtractors": {
+    "status": "EXTRACT(httpRequest.status)"
+  }
+}

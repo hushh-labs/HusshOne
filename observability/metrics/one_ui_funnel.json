@@ -1,0 +1,13 @@
+{
+  "description": "Client UI funnel events for one.hushh.ai, labelled by stage/branch (stage_landing, signed_in, stage_precollect, stage_collect, stage_dashboard, geo_denied, started_over, ...). Source: one.ui.* beacon logs from /api/one/events.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event:\"one.ui.\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "labels": [{ "key": "ui_event", "valueType": "STRING" }]
+  },
+  "labelExtractors": {
+    "ui_event": "REGEXP_EXTRACT(jsonPayload.event, \"one[.]ui[.](.+)\")"
+  }
+}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { trace } from "@opentelemetry/api";
 import type { Prisma } from "@prisma/client";
 import { verifyOneRequest } from "@/lib/auth/verify";
 import { isValidEmail, normalizeEmail, normalizeName } from "@/lib/auth/identity";
@@ -174,13 +175,16 @@ async function resolveResult(
 }
 
 export async function POST(request: Request) {
+  const requestStartedAt = Date.now();
   // Phase 1 (synchronous, returns proper HTTP status on failure): auth + validate + create scan.
   let input: OneSubjectInput;
   let mode: LocationMode;
   let userId: string | null;
   let scanRunId: string | null;
+  let firebaseUid: string | null = null;
   try {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
+    firebaseUid = verified.uid;
     input = normalizeInput(await parseBody(request), verified.email);
     mode = typeof input.latitude === "number" && typeof input.longitude === "number" ? "precise" : "limited";
     const user = await upsertOneUser({
@@ -206,7 +210,19 @@ export async function POST(request: Request) {
     const statusCode = statusCodeOf(error) ?? 500;
     const status = statusCode >= 400 ? statusCode : 500;
     const message = error instanceof Error ? error.message : "One could not start the scan";
-    console.error(JSON.stringify({ event: "one.dashboard.precheck_failed", status, message }));
+    // 4xx (missing auth, bad input, email mismatch) are expected client errors —
+    // log as WARNING so they don't pollute Error Reporting or the scan-error alert.
+    // Only genuine 5xx are ERROR (with a stack trace for Error Reporting).
+    const isServerError = status >= 500;
+    console[isServerError ? "error" : "warn"](
+      JSON.stringify({
+        event: "one.dashboard.precheck_failed",
+        severity: isServerError ? "ERROR" : "WARNING",
+        status,
+        message,
+        ...(isServerError && error instanceof Error ? { stack_trace: error.stack } : {}),
+      }),
+    );
     return NextResponse.json({ ok: false, error: message }, { status });
   }
 
@@ -249,13 +265,44 @@ export async function POST(request: Request) {
           console.error(
             JSON.stringify({
               event: "one.scan_email.failed",
+              severity: "ERROR",
               scanRunId,
               message: notificationError instanceof Error ? notificationError.message : "Unknown email notification error",
+              stack_trace: notificationError instanceof Error ? notificationError.stack : undefined,
             }),
           );
         }
 
         send({ type: "done", ok: true, result, source: result.source, audit: null, emailDelivery });
+
+        // Success-path structured log — the happy path was previously silent.
+        // Correlates with the trace (logging.googleapis.com/trace) and is the
+        // source for the one_scan_* log-based metrics.
+        const spanCtx = trace.getActiveSpan()?.spanContext();
+        const gcpProject = process.env.GOOGLE_CLOUD_PROJECT ?? "hushone-app";
+        console.info(
+          JSON.stringify({
+            event: "one.scan.completed",
+            severity: "INFO",
+            scanRunId,
+            firebaseUid,
+            source: result.source,
+            mode,
+            totalMs: Date.now() - requestStartedAt,
+            evidenceCount: result.rich?.evidence?.length ?? 0,
+            findingsCount: result.privateDataEstimation?.length ?? 0,
+            sourceCount: result.rich?.sourceCount ?? null,
+            redactionCount: result.redactions?.length ?? 0,
+            emailUserStatus: emailDelivery?.user?.status ?? null,
+            emailAdminStatus: emailDelivery?.admins?.status ?? null,
+            ...(spanCtx
+              ? {
+                  "logging.googleapis.com/trace": `projects/${gcpProject}/traces/${spanCtx.traceId}`,
+                  "logging.googleapis.com/spanId": spanCtx.spanId,
+                }
+              : {}),
+          }),
+        );
       } catch (error) {
         const statusCode = statusCodeOf(error) ?? 500;
         const status = statusCode >= 400 ? statusCode : 500;
@@ -263,10 +310,12 @@ export async function POST(request: Request) {
         console.error(
           JSON.stringify({
             event: "one.dashboard.failed",
+            severity: "ERROR",
             status,
             scanRunId,
             message,
             upstreamStatus: upstreamStatus(error),
+            stack_trace: error instanceof Error ? error.stack : undefined,
           }),
         );
         await failScanRun(scanRunId, message).catch(() => undefined);

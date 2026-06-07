@@ -1,0 +1,17 @@
+{
+  "description": "Count of completed One scans, labelled by intelligence source (shadow | person_intelligence | temporary). Source: one.scan.completed structured log.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event=\"one.scan.completed\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "labels": [
+      { "key": "source", "valueType": "STRING" },
+      { "key": "mode", "valueType": "STRING" }
+    ]
+  },
+  "labelExtractors": {
+    "source": "EXTRACT(jsonPayload.source)",
+    "mode": "EXTRACT(jsonPayload.mode)"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "description": "End-to-end One scan duration (ms), from request start to done. Source: one.scan.completed structured log (jsonPayload.totalMs).",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event=\"one.scan.completed\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "DISTRIBUTION",
+    "unit": "ms",
+    "labels": [{ "key": "source", "valueType": "STRING" }]
+  },
+  "valueExtractor": "EXTRACT(jsonPayload.totalMs)",
+  "labelExtractors": {
+    "source": "EXTRACT(jsonPayload.source)"
+  },
+  "bucketOptions": {
+    "explicitBuckets": {
+      "bounds": [1000, 5000, 15000, 30000, 60000, 90000, 120000, 180000, 240000, 300000, 420000, 600000]
+    }
+  }
+}

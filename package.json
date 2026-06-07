@@ -12,12 +12,19 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy"
   },
   "engines": {
     "node": ">=20.19.0"
   },
   "dependencies": {
+    "@google-cloud/opentelemetry-cloud-trace-exporter": "^3.0.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
     "@prisma/client": "^6.19.0",
     "firebase": "^12.14.0",
     "firebase-admin": "^13.10.0",

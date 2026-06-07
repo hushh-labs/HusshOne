@@ -1,0 +1,15 @@
+{
+  "description": "Upstream Hushh Shadow intelligence API duration (ms) on /v1/hushh-shadow/report. Derived from the RIA service's EXISTING app log ('Request completed ... duration_ms=...') — no change to the RIA service.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"hushh-ria-intelligence-api\" textPayload:\"Request completed\" textPayload:\"path=/v1/hushh-shadow/report\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "DISTRIBUTION",
+    "unit": "ms"
+  },
+  "valueExtractor": "REGEXP_EXTRACT(textPayload, \"duration_ms=([0-9.]+)\")",
+  "bucketOptions": {
+    "explicitBuckets": {
+      "bounds": [1000, 5000, 15000, 30000, 60000, 90000, 120000, 180000, 240000, 300000, 420000, 600000]
+    }
+  }
+}
