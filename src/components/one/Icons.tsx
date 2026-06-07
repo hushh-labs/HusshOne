@@ -6,7 +6,7 @@ import type { ReactElement } from "react";
    ─────────────────────────────────────────────────────────── */
 export const Icons = {
   husshMark: (): ReactElement => (
-    <span className="hmark" role="img" aria-label="Hussh">🤫</span>
+    <span className="hmark" role="img" aria-label="hussh">🤫</span>
   ),
   google: (): ReactElement => (
     <svg className="g-g" viewBox="0 0 48 48" aria-hidden="true">
