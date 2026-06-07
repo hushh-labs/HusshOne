@@ -355,6 +355,9 @@ export function mapShadowReport(
     conflicts: uniqueCleanList(r.conflicts, redactions, 12),
     missingEvidence: uniqueCleanList(r.missingEvidence, redactions, 12),
     sourceUrls,
+    // Filled by enrichSourceLinks() in the dashboard route (post-resolution).
+    sourceCards: [],
+    verifiedWebCount: 0,
   };
 
   const locationBits = [

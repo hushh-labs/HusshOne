@@ -8,6 +8,7 @@ import { buildTemporaryDashboard, fetchDashboardIntelligence } from "@/lib/ria/c
 import { fetchShadowReport, mapShadowReport } from "@/lib/ria/shadow";
 import { normalizeDashboardPayload } from "@/lib/ria/sanitize";
 import { shadowPhaseIndex } from "@/lib/ria/progress";
+import { buildSourceCards } from "@/lib/ria/source-links";
 import type { LocationMode, OneDashboardResult, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -174,6 +175,26 @@ async function resolveResult(
   }
 }
 
+/* Resolve the Shadow report's raw grounding-redirect URLs into clean, personalized
+   source cards. Best-effort + bounded — never fails the scan. */
+async function enrichSourceLinks(result: OneDashboardResult, subjectName: string) {
+  if (!result.rich) return;
+  try {
+    const { cards, verifiedWebCount } = await buildSourceCards(result.rich.sourceUrls, subjectName);
+    result.rich.sourceCards = cards;
+    result.rich.verifiedWebCount = verifiedWebCount;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "one.source_links.enrich_failed",
+        severity: "WARNING",
+        scanRunId: result.scanRunId,
+        message: error instanceof Error ? error.message : "unknown",
+      }),
+    );
+  }
+}
+
 export async function POST(request: Request) {
   const requestStartedAt = Date.now();
   // Phase 1 (synchronous, returns proper HTTP status on failure): auth + validate + create scan.
@@ -256,6 +277,7 @@ export async function POST(request: Request) {
 
       try {
         const result = await resolveResult(input, mode, scanRunId);
+        await enrichSourceLinks(result, input.name);
         await completeScanRun(scanRunId, toJsonValue(result), result.summary);
 
         let emailDelivery: ScanEmailDeliverySummary | null = null;
