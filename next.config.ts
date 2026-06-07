@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
     "@opentelemetry/sdk-node",
     "@opentelemetry/auto-instrumentations-node",
     "@google-cloud/opentelemetry-cloud-trace-exporter",
+    "nodemailer",
   ],
   async rewrites() {
     return [
