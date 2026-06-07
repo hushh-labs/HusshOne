@@ -14,6 +14,7 @@ import {
   getFirebaseBearer,
   isFirebaseClientConfigured,
   makeDevUser,
+  observeAuth,
   signInWithGoogle,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
@@ -29,8 +30,10 @@ import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, scanningSourceAt, shadowPhaseIndex 
 import { track } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
+import { ParticleMorph } from "./ParticleMorph";
+import LandingPage from "./landing/LandingPage";
 
-type Stage = "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error";
+type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 
 interface Identity {
@@ -48,9 +51,8 @@ interface ScanFinal {
   emailDelivery?: ScanEmailDeliverySummary | null;
 }
 
-const HEADLINE = 'Meet <span class="em">One</span>.';
 const MOTION = 0.7;
-const ACCENT = "#4C9DFF";
+const ACCENT = "#111113";
 
 function hexA(hex: string, a: number) {
   const h = hex.replace("#", "");
@@ -67,6 +69,47 @@ function shouldAllowDevAuth() {
 
 function extractIdentity(user: ClientUser): Identity {
   return { name: normalizeName(user.displayName), email: normalizeEmail(user.email) };
+}
+
+/* ── persisted state (namespaced like the analytics `one_sid`) ─────────────
+   localStorage survives a browser restart; sessionStorage is per-tab. We never
+   store the PII result blob — only ids that are re-fetched from the server. */
+const LS_PHONE = "one_phone"; // typed phone, restored across refresh
+const LS_LAST_SCAN = "one_last_scan"; // last completed scan id → dashboard restore
+const SS_SCAN_RUN = "one_scan_run"; // in-flight scan id (tab-scoped) → mid-scan recovery
+const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
+const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
+
+function safeGet(store: "local" | "session", key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return (store === "local" ? window.localStorage : window.sessionStorage).getItem(key);
+  } catch {
+    return null;
+  }
+}
+function safeSet(store: "local" | "session", key: string, value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    (store === "local" ? window.localStorage : window.sessionStorage).setItem(key, value);
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+}
+function safeDel(store: "local" | "session", key: string) {
+  if (typeof window === "undefined") return;
+  try {
+    (store === "local" ? window.localStorage : window.sessionStorage).removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+}
+function clearPersisted() {
+  safeDel("local", LS_PHONE);
+  safeDel("local", LS_LAST_SCAN);
+  safeDel("session", SS_SCAN_RUN);
+  safeDel("session", SS_DEV_AUTH);
+  safeDel("session", SS_PENDING);
 }
 
 function mmss(ms: number) {
@@ -122,31 +165,8 @@ async function readScanStream(
   return last as never;
 }
 
-/* ── auth button ────────────────────────────────────────── */
-function AuthButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button className="btn" onClick={onClick}>
-      {Icons.google()}
-      <span>Continue with Google</span>
-    </button>
-  );
-}
-
-/* ── A. Landing / sign-in ───────────────────────────────── */
-function Landing({ onAuth, error }: { onAuth: () => void; error: string }) {
-  return (
-    <div className="screen hero screen-enter">
-      <div className="content hero-copy">
-        <h1 className="display" dangerouslySetInnerHTML={{ __html: HEADLINE }} />
-        <p className="sub">Your personal intelligence agent.</p>
-        <div className="auth-stack">
-          <AuthButton onClick={onAuth} />
-        </div>
-        {error ? <p className="trust-line" style={{ color: "#c2554d" }}>{error}</p> : null}
-      </div>
-    </div>
-  );
-}
+/* ── A. Landing / sign-in lives in ./landing/LandingPage (hellow-style
+      minimal home); its CTA calls onAuth below. ─────────────── */
 
 /* ── B. Manual name / email fallback ────────────────────── */
 function Manual({
@@ -213,6 +233,37 @@ function Manual({
 }
 
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
+const COUNTRY_CODES: { flag: string; dial: string; iso: string }[] = [
+  { flag: "🇮🇳", dial: "+91", iso: "IN" },
+  { flag: "🇺🇸", dial: "+1", iso: "US" },
+  { flag: "🇬🇧", dial: "+44", iso: "GB" },
+  { flag: "🇦🇪", dial: "+971", iso: "AE" },
+  { flag: "🇦🇺", dial: "+61", iso: "AU" },
+  { flag: "🇸🇬", dial: "+65", iso: "SG" },
+  { flag: "🇩🇪", dial: "+49", iso: "DE" },
+  { flag: "🇫🇷", dial: "+33", iso: "FR" },
+  { flag: "🇳🇱", dial: "+31", iso: "NL" },
+  { flag: "🇪🇸", dial: "+34", iso: "ES" },
+  { flag: "🇮🇹", dial: "+39", iso: "IT" },
+  { flag: "🇨🇭", dial: "+41", iso: "CH" },
+  { flag: "🇸🇪", dial: "+46", iso: "SE" },
+  { flag: "🇮🇪", dial: "+353", iso: "IE" },
+  { flag: "🇯🇵", dial: "+81", iso: "JP" },
+  { flag: "🇰🇷", dial: "+82", iso: "KR" },
+  { flag: "🇨🇳", dial: "+86", iso: "CN" },
+  { flag: "🇭🇰", dial: "+852", iso: "HK" },
+  { flag: "🇧🇷", dial: "+55", iso: "BR" },
+  { flag: "🇲🇽", dial: "+52", iso: "MX" },
+  { flag: "🇿🇦", dial: "+27", iso: "ZA" },
+  { flag: "🇳🇬", dial: "+234", iso: "NG" },
+  { flag: "🇸🇦", dial: "+966", iso: "SA" },
+  { flag: "🇮🇩", dial: "+62", iso: "ID" },
+  { flag: "🇵🇰", dial: "+92", iso: "PK" },
+  { flag: "🇧🇩", dial: "+880", iso: "BD" },
+  { flag: "🇨🇦", dial: "+1", iso: "CA" },
+  { flag: "🇳🇿", dial: "+64", iso: "NZ" },
+];
+
 function PreCollect({
   user,
   phone,
@@ -225,7 +276,13 @@ function PreCollect({
   onCollect: () => void;
 }) {
   const initials = initialsForName(user.name);
-  const valid = isValidPhone(phone);
+  const [code, setCode] = useState(() => {
+    const m = phone.match(/^(\+\d{1,4})\s/);
+    return m ? m[1] : "+91";
+  });
+  const [national, setNational] = useState(() => phone.replace(/^\+\d{1,4}\s/, ""));
+  const combine = (c: string, n: string) => (n.trim() ? `${c} ${n.trim()}` : "");
+  const valid = isValidPhone(combine(code, national));
   const magnetRef = useRef<HTMLSpanElement | null>(null);
   const onMove = (e: React.MouseEvent) => {
     const el = magnetRef.current;
@@ -249,43 +306,59 @@ function PreCollect({
           <h1 className="display pc-title">One will connect what matters.</h1>
         </div>
 
-        <div className="pc-id">
-          <div className="pc-avatar">
-            <span>{initials}</span>
-            <i className="scan" aria-hidden="true"></i>
+        <div className="pc-box">
+          <div className="pc-id">
+            <div className="pc-avatar">
+              <span>{initials}</span>
+              <i className="scan" aria-hidden="true"></i>
+            </div>
+            <div className="pc-meta">
+              <div className="anchor">Identity locked</div>
+              <div className="nm">{user.name}</div>
+              <div className="em">{user.email}</div>
+            </div>
+            <div className="pc-verified" title="Verified identity">
+              {Icons.check(13)}
+            </div>
           </div>
-          <div className="pc-meta">
-            <div className="anchor">Identity locked</div>
-            <div className="nm">{user.name}</div>
-            <div className="em">{user.email}</div>
-          </div>
-          <div className="pc-verified" title="Verified identity">
-            {Icons.check(13)}
-          </div>
-        </div>
 
-        <div className="pc-phone">
-          <label htmlFor="ph">Your phone number</label>
-          <input
-            id="ph"
-            className="input"
-            type="tel"
-            inputMode="tel"
-            autoComplete="tel"
-            placeholder="+1 555 000 1234"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-          />
-          <span className="field-hint">Used only to tell you apart from people with the same name — your number isn&apos;t stored raw.</span>
-        </div>
-
-        <div className="pc-thread" aria-hidden="true">
-          <i></i>
-          <i></i>
-          <i></i>
+          <div className="pc-phone">
+            <label htmlFor="ph">Your phone number</label>
+            <div className="phone-row">
+              <select
+                className="cc-select"
+                aria-label="Country code"
+                value={code}
+                onChange={(e) => {
+                  setCode(e.target.value);
+                  setPhone(combine(e.target.value, national));
+                }}
+              >
+                {COUNTRY_CODES.map((c) => (
+                  <option key={c.iso} value={c.dial}>
+                    {c.flag} {c.dial}
+                  </option>
+                ))}
+              </select>
+              <input
+                id="ph"
+                className="input phone-input"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                placeholder="98765 43210"
+                value={national}
+                onChange={(e) => {
+                  setNational(e.target.value);
+                  setPhone(combine(code, e.target.value));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submit();
+                }}
+              />
+            </div>
+            <span className="field-hint">Used only to tell you apart from people with the same name — your number isn&apos;t stored raw.</span>
+          </div>
         </div>
 
         <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
@@ -326,14 +399,21 @@ function CollectionOverlay({
   // Live "what's being checked" feed — real per-source when the upstream streams,
   // otherwise a curated cycle through the source categories Shadow checks.
   const scanning = liveSource || scanningSourceAt(elapsedMs);
+  const pct = Math.round(Math.max(0.03, progress) * 100);
   return (
     <div className="seq">
-      <div className="seq-copy" aria-live="polite">
+      <div className="scan-console" aria-live="polite">
+        <p className="scan-headline">
+          <span className="fade" key={headline}>
+            {overran ? "Composing your report — almost there…" : `One is ${headline.charAt(0).toLowerCase()}${headline.slice(1)}…`}
+          </span>
+        </p>
+
         <ol className="steps">
           {SHADOW_PHASES.map((label, i) => {
             const state = i < active ? "done" : i === active ? "active" : "pending";
             return (
-              <li className={`step ${state}`} key={label}>
+              <li className={`step ${state}`} key={label} style={{ ["--i" as string]: i }}>
                 <span className="step-dot" aria-hidden="true">
                   {state === "done" ? Icons.check(11) : null}
                 </span>
@@ -342,21 +422,23 @@ function CollectionOverlay({
             );
           })}
         </ol>
-        <p className="seq-line">
-          <span className="fade" key={headline}>
-            {overran ? "Composing your report — almost there…" : `One is ${headline.charAt(0).toLowerCase()}${headline.slice(1)}…`}
-          </span>
-        </p>
-        <p className="seq-line" style={{ marginTop: -6, opacity: 0.66, fontSize: "0.9em" }}>
-          <span className="fade" key={`scan-${scanning}`}>↳ scanning {scanning}…</span>
-        </p>
-        <div className="seq-progress">
-          <div className="bar" style={{ transform: `scaleX(${Math.max(0.03, progress)})` }} />
+
+        <div className="scan-progress">
+          <div className="seq-progress">
+            <div className="bar" style={{ transform: `scaleX(${Math.max(0.03, progress)})` }} />
+          </div>
+          <span className="scan-pct">{pct}%</span>
         </div>
-        <div className="seq-meta">
-          <span>Working through public sources — this deep scan takes a minute or two.</span>
+
+        <div className="scan-foot">
+          <span className="scan-live">
+            <i className="scan-live-dot" aria-hidden="true" />
+            <span className="scan-live-text">scanning {scanning}…</span>
+          </span>
           <span className="seq-elapsed">{mmss(elapsedMs)}</span>
         </div>
+
+        <p className="scan-note">Working through public sources — this deep scan takes a minute or two.</p>
       </div>
     </div>
   );
@@ -370,7 +452,7 @@ function ConfidenceRing({ value }: { value: number }) {
   return (
     <div className="ring">
       <svg width="116" height="116" viewBox="0 0 116 116">
-        <circle cx="58" cy="58" r={r} fill="none" stroke="#E8E8E8" strokeWidth="7" />
+        <circle cx="58" cy="58" r={r} fill="none" stroke="#EEEEF0" strokeWidth="7" />
         <circle
           cx="58"
           cy="58"
@@ -385,8 +467,8 @@ function ConfidenceRing({ value }: { value: number }) {
         />
         <defs>
           <linearGradient id="cg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#4C9DFF" />
-            <stop offset="1" stopColor="#8FE3F2" />
+            <stop offset="0" stopColor="#8FB6FF" />
+            <stop offset="1" stopColor="#E2AEF2" />
           </linearGradient>
         </defs>
       </svg>
@@ -746,7 +828,7 @@ function Dashboard({
                   const p = detectPlatform(s);
                   const name = p?.name || "Profile";
                   const a = p?.a || (s.trim()[0] || "·").toUpperCase();
-                  const color = p?.c || "#8E8E93";
+                  const color = "#111113";
                   return (
                     <div className="snode" key={i} title={s}>
                       <span className="sdot" style={{ background: color }}>
@@ -903,10 +985,12 @@ function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: 
 
 /* ── state machine ──────────────────────────────────────── */
 export default function OneExperience() {
-  const [stage, setStage] = useState<Stage>("landing");
+  const [stage, setStage] = useState<Stage>("hydrating");
   const [authUser, setAuthUser] = useState<ClientUser | null>(null);
   const [identity, setIdentity] = useState<Identity>({ name: "", email: "" });
-  const [phone, setPhone] = useState("");
+  // lazy-read the saved phone so a refresh keeps it without a setState-in-effect
+  // (SSR-safe: safeGet returns null on the server, and phone isn't rendered while hydrating)
+  const [phone, setPhone] = useState(() => safeGet("local", LS_PHONE) ?? "");
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
@@ -928,13 +1012,21 @@ export default function OneExperience() {
     const root = document.documentElement;
     root.style.setProperty("--blue-soft", ACCENT);
     root.style.setProperty("--motion", String(MOTION));
-    root.style.setProperty("--blue-glow", hexA(ACCENT, 0.55));
+    root.style.setProperty("--blue-glow", hexA(ACCENT, 0.16));
   }, []);
 
   // client behaviour funnel — one event per stage transition so drop-off
   // (landing → sign-in → precollect → collect → dashboard) is reconstructable.
   useEffect(() => {
     track(`stage_${stage}`);
+  }, [stage]);
+
+  // landing scrolls like a normal marketing page; app stages stay viewport-locked
+  useEffect(() => {
+    const b = document.body;
+    if (stage === "landing") b.classList.add("scroll-on");
+    else b.classList.remove("scroll-on");
+    return () => b.classList.remove("scroll-on");
   }, [stage]);
 
   // cinematic progress while collecting: ease toward 0.92 across the estimated
@@ -959,25 +1051,6 @@ export default function OneExperience() {
     };
   }, [stage]);
 
-  const onAuth = async () => {
-    setError("");
-    try {
-      let user: ClientUser;
-      if (isFirebaseClientConfigured()) user = await signInWithGoogle();
-      else if (shouldAllowDevAuth()) user = makeDevUser();
-      else throw new Error("Google sign-in is not configured for this build.");
-
-      const id = extractIdentity(user);
-      setAuthUser(user);
-      setIdentity(id);
-      track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
-      setStage(!id.name || !isValidEmail(id.email) ? "manual" : "precollect");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign-in failed.");
-      setStage("error");
-    }
-  };
-
   const onManualDone = (u: Identity) => {
     setIdentity(u);
     setStage("precollect");
@@ -992,6 +1065,9 @@ export default function OneExperience() {
     setAudit(final.audit || null);
     setEmailDelivery(final.emailDelivery || null);
     setProgress(1);
+    // promote the scan id to "last completed" so a later refresh restores the report
+    safeDel("session", SS_SCAN_RUN);
+    if (scanRunIdRef.current) safeSet("local", LS_LAST_SCAN, scanRunIdRef.current);
     const hasCategorySignal = Object.values(result.categories || {}).some((list) => (list as string[]).some(POSITIVE));
     const hasRichSignal = !!(
       result.rich &&
@@ -1022,6 +1098,127 @@ export default function OneExperience() {
       await new Promise((r) => setTimeout(r, 2500));
     }
     return null;
+  };
+
+  // Map a (restored or freshly signed-in) user → identity → the right screen,
+  // honoring a mid-scan recovery, an email deep-link, or a last-scan dashboard.
+  const hydrateFromUser = async (user: ClientUser) => {
+    try {
+      setAuthUser(user);
+      const id = extractIdentity(user);
+      setIdentity(id);
+      const baseStage: Stage = !id.name || !isValidEmail(id.email) ? "manual" : "precollect";
+
+      // (a) a scan was in flight in THIS tab → show collecting + try to recover
+      const inFlight = safeGet("session", SS_SCAN_RUN);
+      if (inFlight) {
+        scanRunIdRef.current = inFlight;
+        collectStart.current = performance.now();
+        setStage("collect");
+        const recovered = await tryRecoverResult(user);
+        safeDel("session", SS_SCAN_RUN);
+        if (recovered) {
+          await revealResult(recovered);
+          return;
+        }
+      }
+
+      // (b) an email deep-link (?scan=) or last completed scan → re-fetch by id
+      const pending = safeGet("session", SS_PENDING);
+      const restoreId = pending || safeGet("local", LS_LAST_SCAN);
+      if (restoreId) {
+        scanRunIdRef.current = restoreId;
+        const recovered = await tryRecoverResult(user);
+        safeDel("session", SS_PENDING);
+        if (recovered) {
+          await revealResult(recovered);
+          return;
+        }
+        if (!pending) safeDel("local", LS_LAST_SCAN); // stale/expired id
+      }
+
+      // (c) default — signed in, nothing to restore
+      setStage(baseStage);
+    } catch {
+      // token revoked / getIdToken threw → clean sign-out → landing
+      await signOutOfGoogle().catch(() => undefined);
+      clearPersisted();
+      setAuthUser(null);
+      setStage("landing");
+    }
+  };
+
+  // ── Rehydrate auth + app state on load so a refresh never re-prompts ──────
+  useEffect(() => {
+    // capture an email deep-link (?scan=<id>) for after sign-in, then clean the URL
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const scanId = params.get("scan");
+      if (scanId) {
+        safeSet("session", SS_PENDING, scanId);
+        params.delete("scan");
+        const qs = params.toString();
+        window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash);
+      }
+    } catch {
+      /* ignore malformed URL */
+    }
+
+    let cancelled = false;
+    let unsub: (() => void) | null = null;
+    // run async so we never call setState synchronously during the effect pass
+    const boot = async () => {
+      // dev mode has no Firebase session → restore the fake user from a flag
+      if (!isFirebaseClientConfigured()) {
+        if (shouldAllowDevAuth() && safeGet("session", SS_DEV_AUTH) === "1") await hydrateFromUser(makeDevUser());
+        else setStage("landing");
+        return;
+      }
+      let initialResolved = false;
+      unsub = observeAuth((user) => {
+        if (cancelled) return;
+        if (!initialResolved) {
+          initialResolved = true; // first emission = the persisted session (or null)
+          if (user) void hydrateFromUser(user);
+          else setStage("landing");
+          return;
+        }
+        // later emissions (token refresh, interactive sign-in, sign-out): keep the
+        // user reference fresh — routing is owned by onAuth/reset, not the listener.
+        setAuthUser(user);
+      });
+    };
+    void boot();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // persist the typed phone so a precollect refresh keeps it (skip the splash)
+  useEffect(() => {
+    if (stage === "hydrating") return;
+    if (phone.trim()) safeSet("local", LS_PHONE, phone);
+    else safeDel("local", LS_PHONE);
+  }, [phone, stage]);
+
+  const onAuth = async () => {
+    setError("");
+    try {
+      let user: ClientUser;
+      if (isFirebaseClientConfigured()) user = await signInWithGoogle();
+      else if (shouldAllowDevAuth()) {
+        user = makeDevUser();
+        safeSet("session", SS_DEV_AUTH, "1"); // so a refresh restores the dev user
+      } else throw new Error("Google sign-in is not configured for this build.");
+
+      track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
+      await hydrateFromUser(user); // single routing path (also honors a ?scan deep-link)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sign-in failed.");
+      setStage("error");
+    }
   };
 
   const runScan = async (location: Coordinates) => {
@@ -1071,7 +1268,10 @@ export default function OneExperience() {
       }
 
       const final = await readScanStream(response.body, (msg) => {
-        if (typeof msg.scanRunId === "string") scanRunIdRef.current = msg.scanRunId;
+        if (typeof msg.scanRunId === "string") {
+          scanRunIdRef.current = msg.scanRunId;
+          safeSet("session", SS_SCAN_RUN, msg.scanRunId); // recover this run on a mid-scan refresh
+        }
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
         if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
       });
@@ -1085,6 +1285,7 @@ export default function OneExperience() {
       if (recovered) {
         await revealResult(recovered);
       } else {
+        safeDel("session", SS_SCAN_RUN); // a failed run shouldn't resurrect as "collecting"
         setError(e instanceof Error ? e.message : "One could not complete the scan.");
         setStage("error");
       }
@@ -1117,6 +1318,8 @@ export default function OneExperience() {
   const reset = async () => {
     track("started_over");
     await signOutOfGoogle().catch(() => undefined);
+    clearPersisted();
+    scanRunIdRef.current = null;
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
     setPhone("");
@@ -1131,9 +1334,41 @@ export default function OneExperience() {
     setStage("landing");
   };
 
+  // While Firebase reports the persisted session, show a minimal splash (no CTA,
+  // no popup) so a signed-in refresh never flashes the landing or re-prompts.
+  if (stage === "hydrating") {
+    return (
+      <main className="stage landing-mode">
+        <div className="brandbar">
+          <div className="wordmark">
+            <span className="logo">{Icons.husshMark()}</span>
+            <span className="mark">One</span>
+            <span className="byline">by hussh</span>
+          </div>
+        </div>
+        <div className="hydrate-splash" aria-busy="true" aria-label="Restoring your session" />
+      </main>
+    );
+  }
+
+  // Landing is the hellow-style minimal home with its own shell.
+  if (stage === "landing") {
+    return (
+      <main className="stage landing-mode">
+        <div className="brandbar">
+          <div className="wordmark">
+            <span className="logo">{Icons.husshMark()}</span>
+            <span className="mark">One</span>
+            <span className="byline">by hussh</span>
+          </div>
+        </div>
+        <LandingPage onStart={onAuth} error={error} />
+      </main>
+    );
+  }
+
   let view: ReactElement | null = null;
-  if (stage === "landing") view = <Landing key="l" onAuth={onAuth} error={error} />;
-  else if (stage === "manual")
+  if (stage === "manual")
     view = (
       <Manual
         key="m"
@@ -1168,13 +1403,17 @@ export default function OneExperience() {
 
   return (
     <main className="stage">
-      <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />
+      {stage === "manual" || stage === "empty" || stage === "error" ? (
+        <ParticleMorph motion={MOTION} />
+      ) : (
+        <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />
+      )}
 
       <div className="brandbar">
         <div className="wordmark">
           <span className="logo">{Icons.husshMark()}</span>
           <span className="mark">One</span>
-          <span className="byline">by Hussh</span>
+          <span className="byline">by hussh</span>
         </div>
         <div className="trust">{Icons.shield(14)} Private by default</div>
       </div>
