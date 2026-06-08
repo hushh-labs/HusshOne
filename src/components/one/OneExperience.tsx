@@ -32,8 +32,10 @@ import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
 import { ParticleMorph } from "./ParticleMorph";
 import LandingPage from "./landing/LandingPage";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
-type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error";
+type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "settings";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 
 interface Identity {
@@ -53,6 +55,10 @@ interface ScanFinal {
 
 const MOTION = 0.7;
 const ACCENT = "#111113";
+/* When on, the number→scan flow is powered by the Deep Research API (markdown
+   dossier) instead of the Shadow structured scan. Server routes mirror the
+   /dashboard + /scans recovery protocol, so the rest of the flow is unchanged. */
+const RESEARCH_MODE = process.env.NEXT_PUBLIC_ONE_RESEARCH_MODE === "true";
 
 function hexA(hex: string, a: number) {
   const h = hex.replace("#", "");
@@ -76,7 +82,8 @@ function extractIdentity(user: ClientUser): Identity {
    store the PII result blob — only ids that are re-fetched from the server. */
 const LS_PHONE = "one_phone"; // typed phone, restored across refresh
 const LS_LAST_SCAN = "one_last_scan"; // last completed scan id → dashboard restore
-const SS_SCAN_RUN = "one_scan_run"; // in-flight scan id (tab-scoped) → mid-scan recovery
+const LS_ACTIVE_SCAN = "one_active_scan"; // in-flight scan id → resume after refresh OR app close
+const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
 
@@ -107,7 +114,8 @@ function safeDel(store: "local" | "session", key: string) {
 function clearPersisted() {
   safeDel("local", LS_PHONE);
   safeDel("local", LS_LAST_SCAN);
-  safeDel("session", SS_SCAN_RUN);
+  safeDel("local", LS_ACTIVE_SCAN);
+  safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
 }
@@ -745,6 +753,41 @@ function Dashboard({
   emailDelivery: ScanEmailDeliverySummary | null;
   onReset: () => void;
 }) {
+  // Deep Research path → render the markdown dossier instead of the structured grid.
+  if (result.report) {
+    return (
+      <div className="dash" data-screen-label="Dashboard">
+        <div className="dash-inner">
+          <div className="dash-head screen-enter">
+            <p className="eyebrow">Gathered by One</p>
+            <h1 className="display">Your deep research dossier.</h1>
+            <p className="sub">{result.summary || "One compiled this from public sources for you."}</p>
+            {emailDelivery ? (
+              <div className={"email-status " + (emailDelivery.user.status === "sent" ? "sent" : "failed")}>
+                {emailDelivery.user.status === "sent"
+                  ? `Full results were emailed to ${result.subject.email}.`
+                  : "Your dossier is ready."}
+              </div>
+            ) : null}
+          </div>
+          <article className="research-report screen-enter">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.report}</ReactMarkdown>
+          </article>
+          <div className="dash-foot">
+            <div className="privacy-row">
+              <span className="p">{Icons.shield(14)} Private by default</span>
+              <span className="p">{Icons.check(14)} You control what One keeps</span>
+              <span className="p">{Icons.check(14)} Remove anything, anytime</span>
+            </div>
+            <button className="ghost-btn" onClick={onReset}>
+              Start over
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const first = result.subject.name.split(" ")[0] || "you";
   const initials = initialsForName(result.subject.name);
   const cats = result.categories;
@@ -983,6 +1026,229 @@ function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: 
   );
 }
 
+/* ── G. Profile menu (header avatar dropdown) ───────────── */
+function ProfileMenu({
+  name,
+  email,
+  photoURL,
+  onSettings,
+  onLogout,
+  onDelete,
+}: {
+  name: string;
+  email: string;
+  photoURL: string | null;
+  onSettings: () => void;
+  onLogout: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e: MouseEvent | TouchEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("touchstart", onDocDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("touchstart", onDocDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const run = (fn: () => void) => () => {
+    setOpen(false);
+    fn();
+  };
+
+  return (
+    <div className="pm" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="pm-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="pm-avatar">
+          {photoURL ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={photoURL} alt="" referrerPolicy="no-referrer" />
+          ) : (
+            initialsForName(name)
+          )}
+        </span>
+      </button>
+      {open ? (
+        <div className="pm-panel" role="menu">
+          <div className="pm-head">
+            <div className="pm-nm">{name || "One user"}</div>
+            <div className="pm-em">{email}</div>
+          </div>
+          <button type="button" className="pm-item" role="menuitem" onClick={run(onSettings)}>
+            Settings
+          </button>
+          <button type="button" className="pm-item" role="menuitem" onClick={run(onLogout)}>
+            Log out
+          </button>
+          <button type="button" className="pm-item danger" role="menuitem" onClick={run(onDelete)}>
+            Delete account
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── H. Settings screen ─────────────────────────────────── */
+function Settings({
+  name,
+  email,
+  photoURL,
+  onBack,
+  onLogout,
+  onDelete,
+}: {
+  name: string;
+  email: string;
+  photoURL: string | null;
+  onBack: () => void;
+  onLogout: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="screen settings screen-enter">
+      <div className="content">
+        <p className="eyebrow">Your account</p>
+        <h1 className="display" style={{ fontSize: "clamp(26px,4vw,44px)" }}>
+          Settings
+        </h1>
+
+        <div className="set-box">
+          <div className="idcap">
+            <span className="avatar">
+              {photoURL ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={photoURL} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                initialsForName(name)
+              )}
+            </span>
+            <span className="meta">
+              <span className="nm">{name || "One user"}</span>
+              <span className="em">{email}</span>
+            </span>
+          </div>
+          <p className="sub set-note">
+            {Icons.shield(14)} One is private by default. Your report stays tied to your account, and you can remove
+            everything at any time.
+          </p>
+        </div>
+
+        <div className="set-actions">
+          <button className="ghost-btn" onClick={onLogout}>
+            Log out
+          </button>
+          <button className="ghost-btn danger" onClick={onDelete}>
+            Delete account
+          </button>
+        </div>
+
+        <button className="set-back" onClick={onBack}>
+          ← Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── I. Delete-account confirmation (type-to-confirm) ───── */
+function ConfirmDelete({
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  error: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // mounted fresh each open (parent renders conditionally) → autofocus the field
+  useEffect(() => {
+    const t = setTimeout(() => inputRef.current?.focus(), 30);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [busy, onCancel]);
+
+  const armed = value.trim().toUpperCase() === "DELETE" && !busy;
+
+  return (
+    <div className="modal-scrim" role="presentation" onClick={() => !busy && onCancel()}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="del-title"
+        aria-describedby="del-desc"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id="del-title" className="modal-title">
+          Delete your account?
+        </h2>
+        <p id="del-desc" className="sub" style={{ maxWidth: "none" }}>
+          This permanently removes your account, every scan and report, and your sign-in. This can&apos;t be undone.
+        </p>
+        <label className="modal-label" htmlFor="del-input">
+          Type <strong>DELETE</strong> to confirm
+        </label>
+        <input
+          id="del-input"
+          ref={inputRef}
+          className="input"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Type DELETE to confirm"
+        />
+        {error ? <p className="modal-error">{error}</p> : null}
+        <div className="modal-actions">
+          <button className="ghost-btn" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button className="danger-btn" onClick={onConfirm} disabled={!armed}>
+            {busy ? "Deleting…" : "Delete account"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── state machine ──────────────────────────────────────── */
 export default function OneExperience() {
   const [stage, setStage] = useState<Stage>("hydrating");
@@ -999,8 +1265,14 @@ export default function OneExperience() {
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState(""); // brief confirmation line on landing (e.g. after delete)
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const collectStart = useRef(0);
   const scanRunIdRef = useRef<string | null>(null);
+  const pollStopRef = useRef(false); // abort in-flight recovery polling on logout/delete/unmount
+  const prevStageRef = useRef<Stage>("precollect"); // where to return to when leaving Settings
 
   const mode: "idle" | "collect" | "dashboard" =
     stage === "collect" ? "collect" : stage === "dashboard" ? "dashboard" : "idle";
@@ -1056,6 +1328,14 @@ export default function OneExperience() {
     setStage("precollect");
   };
 
+  // Settings is a signed-in overlay stage; remember where we came from for "Done".
+  const goToSettings = () => {
+    if (stage === "settings") return;
+    prevStageRef.current = stage;
+    setStage("settings");
+  };
+  const leaveSettings = () => setStage(prevStageRef.current ?? "precollect");
+
   const revealResult = async (final: ScanFinal) => {
     const minDwell = 4500;
     const elapsed = performance.now() - collectStart.current;
@@ -1066,8 +1346,9 @@ export default function OneExperience() {
     setEmailDelivery(final.emailDelivery || null);
     setProgress(1);
     // promote the scan id to "last completed" so a later refresh restores the report
-    safeDel("session", SS_SCAN_RUN);
+    safeDel("local", LS_ACTIVE_SCAN);
     if (scanRunIdRef.current) safeSet("local", LS_LAST_SCAN, scanRunIdRef.current);
+    const hasReport = !!(result.report && result.report.trim());
     const hasCategorySignal = Object.values(result.categories || {}).some((list) => (list as string[]).some(POSITIVE));
     const hasRichSignal = !!(
       result.rich &&
@@ -1075,29 +1356,80 @@ export default function OneExperience() {
         result.rich.professional ||
         (result.rich.digitalFootprint && result.rich.digitalFootprint.profiles.length))
     );
-    setTimeout(() => setStage(hasCategorySignal || hasRichSignal ? "dashboard" : "empty"), 380);
+    setTimeout(() => setStage(hasReport || hasCategorySignal || hasRichSignal ? "dashboard" : "empty"), 380);
   };
 
-  // recovery net: if the stream dropped, the server may have saved the result
-  const tryRecoverResult = async (user: ClientUser): Promise<ScanFinal | null> => {
-    const id = scanRunIdRef.current;
-    if (!id) return null;
+  // one status probe for a scan id. 404 → "unknown"; otherwise the saved status.
+  const fetchScanStatus = async (
+    user: ClientUser,
+    id: string,
+  ): Promise<{ status: string; result: OneDashboardResult | null }> => {
     const authorization = await getFirebaseBearer(user as User);
+    const res = await fetch(
+      `${RESEARCH_MODE ? "/api/one/research/" : "/api/one/scans/"}${encodeURIComponent(id)}`,
+      { headers: { Authorization: authorization } },
+    );
+    if (res.status === 404) return { status: "unknown", result: null };
+    if (!res.ok) return { status: "error", result: null };
+    const payload = (await res.json().catch(() => null)) as { status?: string; result?: OneDashboardResult | null } | null;
+    return { status: payload?.status || "unknown", result: payload?.result ?? null };
+  };
+
+  // Fast path for an ALREADY-completed scan (deep-link / last-scan). A few quick
+  // tries; bail immediately once it's clearly not a finished result to wait on.
+  const tryRecoverCompleted = async (user: ClientUser, id: string): Promise<OneDashboardResult | null> => {
     for (let i = 0; i < 3; i += 1) {
       try {
-        const res = await fetch(`/api/one/scans/${encodeURIComponent(id)}`, {
-          headers: { Authorization: authorization },
-        });
-        if (res.ok) {
-          const payload = (await res.json().catch(() => null)) as { ok?: boolean; result?: OneDashboardResult } | null;
-          if (payload?.ok && payload.result) return { result: payload.result, audit: null, emailDelivery: null };
-        }
+        const { status, result } = await fetchScanStatus(user, id);
+        if (status === "completed" && result) return result;
+        if (status === "failed" || status === "unknown") return null;
       } catch {
-        /* keep polling */
+        /* transient — retry */
       }
-      await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, 2000));
     }
     return null;
+  };
+
+  // In-flight recovery: the server keeps running after a disconnect, so poll with
+  // backoff (capped near the route's 900s maxDuration) until it finishes. The
+  // caller owns showing the "collect" stage; this reveals on success.
+  const POLL_MAX_MS = 900_000;
+  const resilientRecover = async (user: ClientUser, id: string): Promise<"revealed" | "failed" | "gaveup"> => {
+    pollStopRef.current = false;
+    const startedAt = performance.now();
+    let delay = 2000;
+    let unknownStreak = 0;
+    while (!pollStopRef.current && scanRunIdRef.current === id && performance.now() - startedAt < POLL_MAX_MS) {
+      let status = "running";
+      let result: OneDashboardResult | null = null;
+      try {
+        ({ status, result } = await fetchScanStatus(user, id));
+      } catch {
+        status = "error"; // network blip → treat as still running, keep polling
+      }
+      if (status === "completed" && result) {
+        await revealResult({ result, audit: null, emailDelivery: null });
+        return "revealed";
+      }
+      if (status === "failed") {
+        safeDel("local", LS_ACTIVE_SCAN);
+        return "failed";
+      }
+      if (status === "unknown") {
+        unknownStreak += 1;
+        if (unknownStreak >= 3) {
+          // the row truly isn't there after a few tries → stop chasing it
+          safeDel("local", LS_ACTIVE_SCAN);
+          return "gaveup";
+        }
+      } else {
+        unknownStreak = 0;
+      }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(10_000, Math.round(delay * 1.4));
+    }
+    return "gaveup";
   };
 
   // Map a (restored or freshly signed-in) user → identity → the right screen,
@@ -1109,35 +1441,71 @@ export default function OneExperience() {
       setIdentity(id);
       const baseStage: Stage = !id.name || !isValidEmail(id.email) ? "manual" : "precollect";
 
-      // (a) a scan was in flight in THIS tab → show collecting + try to recover
-      const inFlight = safeGet("session", SS_SCAN_RUN);
+      // (a) a scan was in flight (localStorage → survives refresh AND app close)
+      const inFlight = safeGet("local", LS_ACTIVE_SCAN);
       if (inFlight) {
         scanRunIdRef.current = inFlight;
         collectStart.current = performance.now();
         setStage("collect");
-        const recovered = await tryRecoverResult(user);
-        safeDel("session", SS_SCAN_RUN);
-        if (recovered) {
-          await revealResult(recovered);
+        const outcome = await resilientRecover(user, inFlight);
+        if (outcome === "revealed") return;
+        if (outcome === "failed") {
+          setError("That scan didn't finish. Start a new one when you're ready.");
+          setStage("error");
           return;
         }
+        // gaveup → fall through to the other recovery paths
       }
 
-      // (b) an email deep-link (?scan=) or last completed scan → re-fetch by id
+      // (b) an email deep-link (?scan=) or last completed scan → completed-only fetch
       const pending = safeGet("session", SS_PENDING);
       const restoreId = pending || safeGet("local", LS_LAST_SCAN);
       if (restoreId) {
         scanRunIdRef.current = restoreId;
-        const recovered = await tryRecoverResult(user);
+        const result = await tryRecoverCompleted(user, restoreId);
         safeDel("session", SS_PENDING);
-        if (recovered) {
-          await revealResult(recovered);
+        if (result) {
+          await revealResult({ result, audit: null, emailDelivery: null });
           return;
         }
         if (!pending) safeDel("local", LS_LAST_SCAN); // stale/expired id
       }
 
-      // (c) default — signed in, nothing to restore
+      // (c) nothing local — ask the server for this user's most recent scan, so a
+      // full app close mid-scan (no local id) still reconnects.
+      try {
+        const authorization = await getFirebaseBearer(user as User);
+        const res = await fetch("/api/one/scans/latest", { headers: { Authorization: authorization } });
+        if (res.ok) {
+          const payload = (await res.json().catch(() => null)) as {
+            status?: string;
+            scanRunId?: string | null;
+            result?: OneDashboardResult | null;
+          } | null;
+          if (payload?.scanRunId && payload.status === "running") {
+            scanRunIdRef.current = payload.scanRunId;
+            safeSet("local", LS_ACTIVE_SCAN, payload.scanRunId);
+            collectStart.current = performance.now();
+            setStage("collect");
+            const outcome = await resilientRecover(user, payload.scanRunId);
+            if (outcome === "revealed") return;
+            if (outcome === "failed") {
+              setError("That scan didn't finish. Start a new one when you're ready.");
+              setStage("error");
+              return;
+            }
+          } else if (payload?.scanRunId && payload.status === "completed" && payload.result) {
+            scanRunIdRef.current = payload.scanRunId;
+            safeSet("local", LS_LAST_SCAN, payload.scanRunId);
+            await revealResult({ result: payload.result, audit: null, emailDelivery: null });
+            return;
+          }
+        }
+      } catch {
+        /* probe failed — never block sign-in on it */
+      }
+
+      // (d) default — signed in, nothing to restore
       setStage(baseStage);
     } catch {
       // token revoked / getIdToken threw → clean sign-out → landing
@@ -1191,6 +1559,7 @@ export default function OneExperience() {
     void boot();
     return () => {
       cancelled = true;
+      pollStopRef.current = true; // stop recovery polling if the component unmounts
       if (unsub) unsub();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1205,6 +1574,7 @@ export default function OneExperience() {
 
   const onAuth = async () => {
     setError("");
+    setNotice("");
     try {
       let user: ClientUser;
       if (isFirebaseClientConfigured()) user = await signInWithGoogle();
@@ -1244,7 +1614,7 @@ export default function OneExperience() {
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);
-      const response = await fetch("/api/one/dashboard", {
+      const response = await fetch(RESEARCH_MODE ? "/api/one/research" : "/api/one/dashboard", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: authorization },
         signal: controller.signal,
@@ -1270,7 +1640,7 @@ export default function OneExperience() {
       const final = await readScanStream(response.body, (msg) => {
         if (typeof msg.scanRunId === "string") {
           scanRunIdRef.current = msg.scanRunId;
-          safeSet("session", SS_SCAN_RUN, msg.scanRunId); // recover this run on a mid-scan refresh
+          safeSet("local", LS_ACTIVE_SCAN, msg.scanRunId); // recover this run after a refresh OR app close
         }
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
         if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
@@ -1281,14 +1651,19 @@ export default function OneExperience() {
       }
       await revealResult({ result: final.result, audit: final.audit, emailDelivery: final.emailDelivery });
     } catch (e) {
-      const recovered = await tryRecoverResult(authUser).catch(() => null);
-      if (recovered) {
-        await revealResult(recovered);
-      } else {
-        safeDel("session", SS_SCAN_RUN); // a failed run shouldn't resurrect as "collecting"
-        setError(e instanceof Error ? e.message : "One could not complete the scan.");
-        setStage("error");
+      // the stream dropped, but the scan keeps running server-side — keep polling
+      if (scanRunIdRef.current) {
+        const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
+        if (outcome === "revealed") return;
+        if (outcome === "failed") {
+          setError("One could not complete the scan.");
+          setStage("error");
+          return;
+        }
       }
+      safeDel("local", LS_ACTIVE_SCAN); // nothing to resurrect as "collecting"
+      setError(e instanceof Error ? e.message : "One could not complete the scan.");
+      setStage("error");
     } finally {
       clearTimeout(abortTimer);
     }
@@ -1317,6 +1692,7 @@ export default function OneExperience() {
 
   const reset = async () => {
     track("started_over");
+    pollStopRef.current = true; // halt any in-flight recovery polling
     await signOutOfGoogle().catch(() => undefined);
     clearPersisted();
     scanRunIdRef.current = null;
@@ -1332,6 +1708,53 @@ export default function OneExperience() {
     setServerStage(0);
     setLiveSource(null);
     setStage("landing");
+  };
+
+  // Irreversible: wipe the account + all data server-side, then tear down locally.
+  const deleteAccount = async () => {
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      if (isFirebaseClientConfigured() && authUser) {
+        const authorization = await getFirebaseBearer(authUser as User);
+        const res = await fetch("/api/one/account", { method: "DELETE", headers: { Authorization: authorization } });
+        // 401 = token already revoked → treat as already deleted; other !ok = real failure
+        if (!res.ok && res.status !== 401) {
+          const payload = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(payload.error || "Could not delete your account.");
+        }
+      } else if (shouldAllowDevAuth() && authUser) {
+        await fetch("/api/one/account", {
+          method: "DELETE",
+          headers: { Authorization: "Bearer DEV_TOKEN" },
+        }).catch(() => undefined);
+      }
+
+      // teardown — mirrors reset() (minus the "started_over" event)
+      pollStopRef.current = true;
+      await signOutOfGoogle().catch(() => undefined);
+      clearPersisted();
+      scanRunIdRef.current = null;
+      setAuthUser(null);
+      setIdentity({ name: "", email: "" });
+      setPhone("");
+      setDashboard(null);
+      setAudit(null);
+      setEmailDelivery(null);
+      setError("");
+      setProgress(0);
+      setElapsedMs(0);
+      setServerStage(0);
+      setLiveSource(null);
+      setDeleteOpen(false);
+      setNotice("Your account and all data were deleted.");
+      track("account_deleted");
+      setStage("landing");
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Could not delete your account.");
+    } finally {
+      setDeleteBusy(false);
+    }
   };
 
   // While Firebase reports the persisted session, show a minimal splash (no CTA,
@@ -1362,13 +1785,30 @@ export default function OneExperience() {
             <span className="byline">by hussh</span>
           </div>
         </div>
+        {notice ? (
+          <div className="toast" role="status">
+            {Icons.check(14)} {notice}
+          </div>
+        ) : null}
         <LandingPage onStart={onAuth} error={error} />
       </main>
     );
   }
 
   let view: ReactElement | null = null;
-  if (stage === "manual")
+  if (stage === "settings")
+    view = (
+      <Settings
+        key="s"
+        name={identity.name}
+        email={identity.email}
+        photoURL={authUser?.photoURL ?? null}
+        onBack={leaveSettings}
+        onLogout={reset}
+        onDelete={() => setDeleteOpen(true)}
+      />
+    );
+  else if (stage === "manual")
     view = (
       <Manual
         key="m"
@@ -1403,7 +1843,7 @@ export default function OneExperience() {
 
   return (
     <main className="stage">
-      {stage === "manual" || stage === "empty" || stage === "error" ? (
+      {stage === "manual" || stage === "empty" || stage === "error" || stage === "settings" ? (
         <ParticleMorph motion={MOTION} />
       ) : (
         <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />
@@ -1415,10 +1855,35 @@ export default function OneExperience() {
           <span className="mark">One</span>
           <span className="byline">by hussh</span>
         </div>
-        <div className="trust">{Icons.shield(14)} Private by default</div>
+        {authUser && stage !== "collect" ? (
+          <ProfileMenu
+            name={identity.name}
+            email={identity.email}
+            photoURL={authUser.photoURL ?? null}
+            onSettings={goToSettings}
+            onLogout={reset}
+            onDelete={() => setDeleteOpen(true)}
+          />
+        ) : (
+          <div className="trust">{Icons.shield(14)} Private by default</div>
+        )}
       </div>
 
       <div className="ui">{view}</div>
+
+      {deleteOpen ? (
+        <ConfirmDelete
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            if (!deleteBusy) {
+              setDeleteOpen(false);
+              setDeleteError("");
+            }
+          }}
+          onConfirm={deleteAccount}
+        />
+      ) : null}
     </main>
   );
 }
