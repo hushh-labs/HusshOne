@@ -44,3 +44,6 @@ next-env.d.ts
 
 # local tooling artifacts
 .codex-screens/
+
+# research output dossiers — contain personal data (PII); never commit
+research-exports/

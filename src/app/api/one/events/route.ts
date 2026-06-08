@@ -22,11 +22,13 @@ const ALLOWED_EVENTS = new Set([
   "stage_dashboard",
   "stage_empty",
   "stage_error",
+  "stage_settings",
   "signed_in",
   "phone_entered",
   "scan_started",
   "geo_denied",
   "started_over",
+  "account_deleted",
 ]);
 
 const noContent = () => new NextResponse(null, { status: 204 });
