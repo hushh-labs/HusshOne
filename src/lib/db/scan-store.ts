@@ -123,6 +123,63 @@ export async function getOwnedScanRun(firebaseUid: string, scanRunId: string) {
   }
 }
 
+/* Like getOwnedScanRun but also returns the stored input (which carries the
+   Deep Research jobId) and userId, so the research poll route can resume the
+   upstream job and attribute the result. Null when unset/unowned. */
+export async function getResearchJob(firebaseUid: string, scanRunId: string) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const scan = await prisma.scanRun.findFirst({
+      where: { id: scanRunId, userId: user.id },
+      select: { status: true, normalizedResult: true, error: true, input: true },
+    });
+    if (!scan) return null;
+    return { ...scan, userId: user.id };
+  } catch {
+    return null;
+  }
+}
+
+/* Full account deletion. Removing the OneUser cascades (per schema) to its
+   consent events, scan runs — and through them audit jobs and notifications —
+   and data requests. Returns false when the DB is unset or the user was already
+   gone (P2025), true on a real delete. Other DB errors bubble so the caller
+   never reports a fake success. */
+export async function deleteOneUser(firebaseUid: string): Promise<boolean> {
+  const prisma = getPrismaClient();
+  if (!prisma) return false;
+  try {
+    await prisma.oneUser.delete({ where: { firebaseUid } });
+    return true;
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2025") return false; // already deleted
+    throw error;
+  }
+}
+
+/* The user's most recent scan (running or completed), so the client can
+   re-attach after a full app close when it has no local scan id. Uses the
+   [userId, createdAt] index. Null when the DB is unset, the user is unknown,
+   or there are no scans. */
+export async function getLatestScanForUser(firebaseUid: string) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    return await prisma.scanRun.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, normalizedResult: true, error: true },
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function createAuditJob(params: {
   scanRunId: string | null;
   upstreamJobId?: string | null;

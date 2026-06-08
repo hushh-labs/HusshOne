@@ -1,6 +1,6 @@
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
-export type ResultSource = "shadow" | "person_intelligence" | "temporary";
+export type ResultSource = "shadow" | "person_intelligence" | "temporary" | "deep_research";
 
 export interface OneSubjectInput {
   name: string;
@@ -237,6 +237,12 @@ export interface OneDashboardResult {
   warnings: string[];
   /** Full Shadow report, sanitized. Null on the person-intelligence / temporary paths. */
   rich: OneRichReport | null;
+  /** Deep Research markdown report (deep_research source only). FINAL = Phase 2 (Opus synthesis). */
+  report?: string;
+  /** Raw phase-1 (Gemini) dossier, retained for audit; not rendered. */
+  rawReport?: string;
+  /** Deep Research citations (deep_research source only). */
+  citations?: unknown[];
 }
 
 export interface PersonAuditStatus {
