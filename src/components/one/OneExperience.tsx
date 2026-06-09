@@ -28,12 +28,14 @@ import type {
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
+import { INTELLIGENCE_VERSION } from "@/lib/research/version";
 import { track } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
 import { ParticleMorph } from "./ParticleMorph";
 import LandingPage from "./landing/LandingPage";
 import DossierReport from "./DossierReport";
+import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
 type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
@@ -646,7 +648,19 @@ function ConfChip({ level }: { level: string | null }) {
 }
 
 /* rich Shadow-only cards, appended after the core grid when result.rich exists */
-function RichCards({ rich }: { rich: NonNullable<OneDashboardResult["rich"]> }) {
+function RichCards({ rich: rawRich }: { rich: NonNullable<OneDashboardResult["rich"]> }) {
+  // Defensive: a recovered / older stored result may lack some rich.* arrays (the type
+  // marks them required, but old DB rows predate fields). Normalize so render never throws
+  // (this is what blanked the app with "undefined is not an object 'sourceCards.length'").
+  const rich = {
+    ...rawRich,
+    evidence: rawRich.evidence ?? [],
+    conflicts: rawRich.conflicts ?? [],
+    missingEvidence: rawRich.missingEvidence ?? [],
+    sourceCards: rawRich.sourceCards ?? [],
+    sourceUrls: rawRich.sourceUrls ?? [],
+    verifiedWebCount: rawRich.verifiedWebCount ?? 0,
+  };
   const cards: ReactElement[] = [];
   const next = () => 720 + cards.length * 80;
 
@@ -799,11 +813,13 @@ function Dashboard({
   audit,
   emailDelivery,
   onReset,
+  onScanAgain,
 }: {
   result: OneDashboardResult;
   audit: PersonAuditStatus | null;
   emailDelivery: ScanEmailDeliverySummary | null;
   onReset: () => void;
+  onScanAgain: () => void;
 }) {
   // Deep Research path → render the markdown dossier instead of the structured grid.
   if (result.report) {
@@ -828,9 +844,15 @@ function Dashboard({
               <span className="p">{Icons.check(14)} You control what One keeps</span>
               <span className="p">{Icons.check(14)} Remove anything, anytime</span>
             </div>
-            <button className="ghost-btn" onClick={onReset}>
-              Start over
-            </button>
+            <div className="state-actions">
+              <button className="cta" style={{ height: 48, fontSize: 15 }} onClick={onScanAgain}>
+                {Icons.retry(16)}
+                <span className="label">Scan again</span>
+              </button>
+              <button className="ghost-btn" onClick={onReset}>
+                Start over
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1415,6 +1437,22 @@ export default function OneExperience() {
     track(`stage_${stage}`);
   }, [stage]);
 
+  // Surface uncaught client errors to the server logs (one.ui.client_error) — crashes
+  // not caught by the React error boundary are otherwise invisible in Cloud Logging.
+  useEffect(() => {
+    const onErr = (e: ErrorEvent) => reportClientError(e.message || "window.onerror", e.filename || "window");
+    const onRej = (e: PromiseRejectionEvent) => {
+      const r = e.reason as { message?: string } | string | undefined;
+      reportClientError(typeof r === "string" ? r : r?.message || "unhandledrejection", "unhandledrejection");
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
+
   // landing scrolls like a normal marketing page; app stages stay viewport-locked
   useEffect(() => {
     const b = document.body;
@@ -1474,9 +1512,9 @@ export default function OneExperience() {
     const hasCategorySignal = Object.values(result.categories || {}).some((list) => (list as string[]).some(POSITIVE));
     const hasRichSignal = !!(
       result.rich &&
-      (result.rich.evidence.length ||
+      (result.rich.evidence?.length ||
         result.rich.professional ||
-        (result.rich.digitalFootprint && result.rich.digitalFootprint.profiles.length))
+        result.rich.digitalFootprint?.profiles?.length)
     );
     setTimeout(() => setStage(hasReport || hasCategorySignal || hasRichSignal ? "dashboard" : "empty"), 380);
   };
@@ -1599,6 +1637,14 @@ export default function OneExperience() {
         const recovered = await tryRecoverCompleted(user, restoreId);
         safeDel("session", SS_PENDING);
         if (recovered) {
+          // Intelligence layer changed since this scan → don't show the stale report;
+          // route back to Send One to re-run on the new intelligence. (An explicit email
+          // deep-link ?scan= is a request for that specific report → still open it.)
+          if (!pending && recovered.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
+            safeDel("local", LS_LAST_SCAN);
+            setStage(baseStage);
+            return;
+          }
           await revealResult({ result: recovered.result, audit: null, emailDelivery: recovered.emailDelivery });
           return;
         }
@@ -1630,6 +1676,12 @@ export default function OneExperience() {
               return;
             }
           } else if (payload?.scanRunId && payload.status === "completed" && payload.result) {
+            // intelligence changed since this scan → re-run on the new layer, not restore
+            if (payload.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
+              safeDel("local", LS_LAST_SCAN);
+              setStage(baseStage);
+              return;
+            }
             scanRunIdRef.current = payload.scanRunId;
             safeSet("local", LS_LAST_SCAN, payload.scanRunId);
             await revealResult({ result: payload.result, audit: null, emailDelivery: payload.emailDelivery ?? null });
@@ -1846,6 +1898,23 @@ export default function OneExperience() {
     );
   };
 
+  // Re-run a fresh scan without signing out — on-demand re-test / pick up new intelligence.
+  const scanAgain = () => {
+    pollStopRef.current = true;
+    scanRunIdRef.current = null;
+    safeDel("local", LS_LAST_SCAN);
+    safeDel("local", LS_ACTIVE_SCAN);
+    setDashboard(null);
+    setAudit(null);
+    setEmailDelivery(null);
+    setError("");
+    setProgress(0);
+    setElapsedMs(0);
+    setServerStage(0);
+    setLiveSource(null);
+    setStage("precollect");
+  };
+
   const reset = async () => {
     track("started_over");
     pollStopRef.current = true; // halt any in-flight recovery polling
@@ -1980,7 +2049,7 @@ export default function OneExperience() {
   else if (stage === "collect")
     view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
-    view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} />;
+    view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} onScanAgain={scanAgain} />;
   else if (stage === "empty")
     view = (
       <EmptyState
@@ -2037,7 +2106,9 @@ export default function OneExperience() {
         )}
       </div>
 
-      <div className="ui">{view}</div>
+      <div className="ui">
+        <ErrorBoundary>{view}</ErrorBoundary>
+      </div>
 
       {deleteOpen ? (
         <ConfirmDelete

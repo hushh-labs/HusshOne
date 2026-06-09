@@ -29,6 +29,7 @@ const ALLOWED_EVENTS = new Set([
   "geo_denied",
   "started_over",
   "account_deleted",
+  "client_error",
 ]);
 
 const noContent = () => new NextResponse(null, { status: 204 });
@@ -54,11 +55,19 @@ export async function POST(request: Request) {
     props = undefined;
   }
 
+  // Client crashes (from the error boundary / window hooks) carry a message + source so
+  // they're actually visible in Cloud Logging — logged at ERROR severity to surface them.
+  const isClientError = event === "client_error";
+  const message = isClientError && typeof body.message === "string" ? body.message.slice(0, 500) : undefined;
+  const source = isClientError && typeof body.source === "string" ? body.source.slice(0, 200) : undefined;
+
   console.info(
     JSON.stringify({
       event: `one.ui.${event}`,
-      severity: "INFO",
+      severity: isClientError ? "ERROR" : "INFO",
       sessionId,
+      message,
+      source,
       props,
     }),
   );
