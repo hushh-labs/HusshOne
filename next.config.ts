@@ -18,6 +18,24 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async headers() {
+    // The app shell (the `/` document) is a statically prerendered page, so Next
+    // serves it with the default `Cache-Control: s-maxage=31536000` (1 year). That
+    // let CDNs/browsers keep serving a STALE shell after a deploy — users never
+    // pulled the new code or the new intelligence layer until a hard refresh.
+    //
+    // Force the document to always revalidate. The build is content-addressed via
+    // an ETag, so revalidation is a cheap 304 when nothing changed, and a fresh
+    // pull the moment we ship. Hash-named `/_next/static/*` chunks stay `immutable`
+    // (Next ignores overrides for those by design — and they're safe to cache
+    // forever because their filenames change on every build).
+    return [
+      {
+        source: "/",
+        headers: [{ key: "Cache-Control", value: "no-cache, must-revalidate" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

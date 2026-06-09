@@ -1,6 +1,7 @@
 /* Build the Deep Research question from the One subject, and map the returned
    markdown report into the OneDashboardResult the UI + DB already use. */
 import type { DashboardCategoryMap, LocationMode, OneDashboardResult, OneSubjectInput } from "@/lib/ria/types";
+import { INTELLIGENCE_VERSION } from "./version";
 
 function emptyCategories(): DashboardCategoryMap {
   return {
@@ -139,5 +140,6 @@ export function mapResearchResult(
     report,
     ...(rawReport && rawReport !== report ? { rawReport } : {}),
     citations: Array.isArray(citations) ? citations : [],
+    intelligenceVersion: INTELLIGENCE_VERSION,
   };
 }

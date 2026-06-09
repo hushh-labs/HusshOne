@@ -243,6 +243,9 @@ export interface OneDashboardResult {
   rawReport?: string;
   /** Deep Research citations (deep_research source only). */
   citations?: unknown[];
+  /** Intelligence-layer version (INTELLIGENCE_VERSION) that produced this result.
+      On load, a recovered scan whose version !== current is treated as stale → re-scan. */
+  intelligenceVersion?: string;
 }
 
 export interface PersonAuditStatus {
