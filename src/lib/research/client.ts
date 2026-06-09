@@ -174,7 +174,9 @@ export interface SynthIdentity {
 /** Synthesis runs Claude server-side; allow longer than the poll/start timeout. */
 function synthTimeoutMs() {
   const value = Number.parseInt(process.env.DEEP_RESEARCH_SYNTH_TIMEOUT_MS || "", 10);
-  return Number.isFinite(value) ? Math.min(Math.max(value, 30_000), 300_000) : 180_000;
+  // Phase-2 now emits a much larger 22-section markdown report → allow more headroom
+  // before the fail-safe (raw phase-1) kicks in.
+  return Number.isFinite(value) ? Math.min(Math.max(value, 30_000), 300_000) : 270_000;
 }
 
 /**
