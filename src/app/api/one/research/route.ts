@@ -6,7 +6,7 @@ import { createConsentAndScan, completeScanRun, failScanRun, upsertOneUser } fro
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
-import { shadowPhaseIndex } from "@/lib/ria/progress";
+import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
 import type { LocationMode, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -154,9 +154,17 @@ export async function POST(request: Request) {
         }
       };
 
-      send({ type: "start", scanRunId, stage: 0, elapsedMs: 0 });
+      // Live progress, personalized as One acting. Phase 1 → driven by the real DR
+      // progress (dr.progress); Phase 2 (synthesis) → a fixed "composing" line.
+      let latestRawProgress: string | null = null;
+      let phase2 = false;
+      const stageNow = () => (phase2 ? SHADOW_PHASES.length - 1 : shadowPhaseIndex(Date.now() - startedAt));
+      const scanningNow = () =>
+        phase2 ? "One is composing your report…" : oneVoiceProgress(latestRawProgress, stageNow());
+
+      send({ type: "start", scanRunId, stage: 0, elapsedMs: 0, scanning: oneVoiceProgress(null, 0) });
       heartbeat = setInterval(() => {
-        send({ type: "progress", stage: shadowPhaseIndex(Date.now() - startedAt), elapsedMs: Date.now() - startedAt });
+        send({ type: "progress", stage: stageNow(), elapsedMs: Date.now() - startedAt, scanning: scanningNow() });
       }, 7000);
 
       try {
@@ -165,6 +173,7 @@ export async function POST(request: Request) {
         for (;;) {
           if (closed) return; // client disconnected; recovery route will resume
           const dr = await pollResearch(jobId);
+          if (dr.progress) latestRawProgress = dr.progress; // keep the latest real signal
           if (dr.status === "completed" && dr.report) {
             report = dr.report;
             citations = dr.citations;
@@ -173,10 +182,14 @@ export async function POST(request: Request) {
           if (dr.status === "failed") {
             throw Object.assign(new Error(dr.error || "Deep Research could not complete"), { statusCode: 502 });
           }
+          // push a fresh One-voiced line right after each poll (don't wait for the heartbeat)
+          send({ type: "progress", stage: stageNow(), elapsedMs: Date.now() - startedAt, scanning: scanningNow() });
           await sleep(POLL_INTERVAL_MS);
         }
 
         // Phase 2: refine into the focused, disambiguated final dossier (fail-safe to raw).
+        phase2 = true; // heartbeats now show "One is composing your report…"
+        send({ type: "progress", stage: SHADOW_PHASES.length - 1, elapsedMs: Date.now() - startedAt, scanning: "One is composing your report…" });
         const result = await finalizeResearch(report, citations, input, mode, scanRunId);
         await completeScanRun(scanRunId, toJsonValue(result), result.summary);
 
