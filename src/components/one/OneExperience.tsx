@@ -27,14 +27,13 @@ import type {
   PersonAuditStatus,
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
-import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, scanningSourceAt, shadowPhaseIndex } from "@/lib/ria/progress";
+import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { track } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
 import { ParticleMorph } from "./ParticleMorph";
 import LandingPage from "./landing/LandingPage";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import DossierReport from "./DossierReport";
 
 type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
@@ -457,16 +456,16 @@ function CollectionOverlay({
   const active = Math.min(phaseIndex, SHADOW_PHASES.length - 1);
   const headline = SHADOW_PHASES[active];
   const overran = elapsedMs > SHADOW_ESTIMATED_MS && active >= SHADOW_PHASES.length - 1;
-  // Live "what's being checked" feed — real per-source when the upstream streams,
-  // otherwise a curated cycle through the source categories Shadow checks.
-  const scanning = liveSource || scanningSourceAt(elapsedMs);
+  // Live "what One is doing" feed — the real DR progress (personalized as One) arrives
+  // via liveSource; before the first real line we fall back to a One-voiced source cycle.
+  const scanning = liveSource || oneVoiceScanningAt(elapsedMs);
   const pct = Math.round(Math.max(0.03, progress) * 100);
   return (
     <div className="seq">
       <div className="scan-console" aria-live="polite">
         <p className="scan-headline">
           <span className="fade" key={headline}>
-            {overran ? "Composing your report — almost there…" : `One is ${headline.charAt(0).toLowerCase()}${headline.slice(1)}…`}
+            {overran ? "One is composing your report — almost there…" : `One is ${headline.charAt(0).toLowerCase()}${headline.slice(1)}…`}
           </span>
         </p>
 
@@ -494,7 +493,7 @@ function CollectionOverlay({
         <div className="scan-foot">
           <span className="scan-live">
             <i className="scan-live-dot" aria-hidden="true" />
-            <span className="scan-live-text">scanning {scanning}…</span>
+            <span className="scan-live-text">{scanning}</span>
           </span>
           <span className="seq-elapsed">{mmss(elapsedMs)}</span>
         </div>
@@ -814,7 +813,6 @@ function Dashboard({
           <div className="dash-head screen-enter">
             <p className="eyebrow">Gathered by One</p>
             <h1 className="display">Your deep research dossier.</h1>
-            <p className="sub">{result.summary || "One compiled this from public sources for you."}</p>
             {emailDelivery ? (
               <div className={"email-status " + (emailDelivery.user.status === "sent" ? "sent" : "failed")}>
                 {emailDelivery.user.status === "sent"
@@ -823,20 +821,7 @@ function Dashboard({
               </div>
             ) : null}
           </div>
-          <article className="research-report screen-enter">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                a: ({ href, children }) => (
-                  <a href={href} target="_blank" rel="noopener noreferrer">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {result.report}
-            </ReactMarkdown>
-          </article>
+          <DossierReport report={result.report} />
           <div className="dash-foot">
             <div className="privacy-row">
               <span className="p">{Icons.shield(14)} Private by default</span>

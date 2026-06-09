@@ -1385,3 +1385,139 @@ button { font-family: inherit; cursor: pointer; }
   .research-report { padding: 18px 16px; font-size: 14.5px; }
 }
 
+/* ── Deep Research dossier — Swiss modular grid + section nav ──────────────────
+   The dossier markdown is split into "##" sections (see DossierReport). Each section
+   is a hairline-boxed card; a sticky rail (desktop) / dropdown (mobile) navigates them
+   with scroll-spy. Inner markdown reuses the .research-report element styles via
+   .dossier-md, with the card box neutralized so we don't double-box. */
+.dossier {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: clamp(24px, 4vw, 56px);
+  max-width: 1080px;
+  margin: 10px auto 0;
+  align-items: start;
+}
+
+/* reuse .research-report element styling inside sections, but strip its card */
+.dossier-md.research-report,
+.dossier-fallback .research-report {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+.dossier-md { font-size: 14.5px; line-height: 1.68; }
+.dossier-md > :first-child { margin-top: 0; }
+.dossier-md > :last-child { margin-bottom: 0; }
+.dossier-fallback { max-width: 820px; margin: 8px auto 0; }
+.dossier-fallback .research-report { font-size: 15px; }
+
+/* desktop section rail */
+.dossier-jump { display: none; }
+.dossier-nav { position: sticky; top: calc(70px + env(safe-area-inset-top)); align-self: start; }
+.dossier-nav-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gray-2);
+  margin: 0 0 12px 14px;
+}
+.dossier-nav ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--hair); }
+.dossier-nav-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+  padding: 7px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--gray);
+  cursor: pointer;
+  transition: color 0.18s ease, border-color 0.18s ease;
+}
+.dossier-nav-link:hover { color: var(--ink-2); }
+.dossier-nav-link.active { color: var(--ink-2); font-weight: 600; border-left-color: var(--ink-2); }
+
+/* main column */
+.dossier-main { min-width: 0; }
+.dossier-intro {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  margin: 0 0 20px;
+  padding: 0 2px 20px;
+  border-bottom: 1px solid var(--hair);
+}
+
+/* boxed sections */
+.dossier-section {
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: clamp(18px, 2.4vw, 28px);
+  margin: 0 0 16px;
+  scroll-margin-top: calc(74px + env(safe-area-inset-top));
+}
+.dossier-section:last-child { margin-bottom: 0; }
+.dossier-section-title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: clamp(17px, 2.2vw, 21px);
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--ink-2);
+  margin: 0 0 14px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--hair);
+}
+
+/* mobile: section rail → sticky jump-to dropdown */
+@media (max-width: 860px) {
+  .dossier { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .dossier-nav { display: none; }
+  .dossier-section { scroll-margin-top: calc(120px + env(safe-area-inset-top)); }
+  .dossier-jump {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: sticky;
+    top: calc(58px + env(safe-area-inset-top));
+    z-index: 6;
+    background: var(--paper);
+    padding: 12px 0 14px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .dossier-jump-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--gray-2);
+  }
+  .dossier-select {
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    font-family: var(--font-body);
+    font-size: 15px;
+    color: var(--ink-2);
+    background-color: var(--white);
+    border: 1px solid var(--hair);
+    border-radius: var(--radius-btn);
+    padding: 12px 40px 12px 14px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%233B3B3B' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+}
+
