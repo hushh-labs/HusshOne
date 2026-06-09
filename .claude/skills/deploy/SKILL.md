@@ -117,12 +117,15 @@ Pick a marker you know changed (page `<title>`, a new font like `space_grotesk`,
 copy). If the domain still shows the old marker, you almost certainly deployed to the
 wrong service — re-check the domain mapping and redeploy to `one` / `hushone-app`.
 
-> Note on browsers: the home page sends `Cache-Control: s-maxage=31536000`. That's for
-> *shared* caches (none sits in front of one.hushh.ai today), but a user's browser may
-> still show a locally-cached copy — tell them to hard-refresh (Cmd+Shift+R). If the
-> app ever moves behind a CDN/Firebase Hosting, that 1-year header would pin pages
-> there and you'd need a CDN purge; consider lowering it then (this repo's Next is
-> customized — read `node_modules/next/dist/docs/` before changing caching).
+> Note on caching: the home page document now sends `Cache-Control: no-cache,
+> must-revalidate` (set via `headers()` in `next.config.ts`), so browsers and any
+> shared cache revalidate the shell on every load and pick up a new deploy
+> immediately — no hard-refresh needed in normal cases. Hash-named
+> `/_next/static/*` chunks stay `public, max-age=31536000, immutable` (safe — the
+> filenames change each build). Verify after deploy:
+> `curl -sI https://one.hushh.ai/ | grep -i cache-control` → `no-cache, must-revalidate`.
+> (This repo's Next is customized — read `node_modules/next/dist/docs/` before
+> changing caching.)
 
 ## Rollback
 
@@ -158,4 +161,4 @@ dig +short one.hushh.ai
 - [ ] deploying to **service `one`, project `hushone-app`, us-central1** (NOT one-hushh-ai)
 - [ ] new revision serving 100%
 - [ ] `https://one.hushh.ai/` shows the new marker (HTTP 200) — verified on the domain
-- [ ] told the user to hard-refresh if their browser still shows the old page
+- [ ] `curl -sI https://one.hushh.ai/ | grep -i cache-control` → `no-cache, must-revalidate` (the document always revalidates; no hard-refresh needed in normal cases)
