@@ -1477,7 +1477,7 @@ function Disambiguate({
 
   return (
     <div className="screen disambiguate screen-enter">
-      <div className="content" style={{ gap: 18, maxWidth: 760, width: "100%" }}>
+      <div className="content" style={{ gap: 18, maxWidth: 940, width: "100%" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center" }}>
           <p className="eyebrow">Confirm it&apos;s you</p>
           <h1 className="display" style={{ fontSize: "clamp(24px,3.6vw,36px)" }}>Which of these are you?</h1>
@@ -1514,11 +1514,11 @@ function Disambiguate({
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18, width: "100%" }}>
             {groups.map((g) => (
-              <div key={g.category} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div key={g.category} style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
                 <div className="eyebrow" style={{ textAlign: "left" }}>{g.category}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 10, width: "100%" }}>
                   {g.items.map((c) => {
                     const selected = confirmedUrls.has(c.url);
                     return (
