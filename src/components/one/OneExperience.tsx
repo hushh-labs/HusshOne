@@ -29,7 +29,7 @@ import type {
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { INTELLIGENCE_VERSION } from "@/lib/research/version";
-import { track } from "@/lib/analytics/track";
+import { track, getSessionId } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
 import { ParticleMorph } from "./ParticleMorph";
@@ -37,7 +37,7 @@ import LandingPage from "./landing/LandingPage";
 import DossierReport from "./DossierReport";
 import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
-type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings";
+type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
@@ -172,7 +172,9 @@ async function readScanStream(
       return;
     }
     if (msg.type === "progress" || msg.type === "start") onProgress(msg as never);
-    else if (msg.type === "done" || msg.type === "error") last = msg;
+    // "pending" = soft-deadline handoff: the scan is still running server-side. Treat it
+    // as terminal for the stream so the caller switches to patient recovery (not an error).
+    else if (msg.type === "done" || msg.type === "error" || msg.type === "pending") last = msg;
   };
 
   for (;;) {
@@ -1097,6 +1099,36 @@ function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: 
   );
 }
 
+/* ── F1b. Pending — a deep scan ran past our soft deadline; it keeps working
+   server-side and the result is emailed. Calm, not an error. ── */
+function PendingState({ email, onCheck, onReset }: { email?: string; onCheck: () => void; onReset: () => void }) {
+  return (
+    <div className="screen hero screen-enter">
+      <div className="content hero-copy">
+        <p className="eyebrow">Still working</p>
+        <h1 className="display" style={{ fontSize: "clamp(26px,4vw,44px)" }}>
+          One is finishing
+          <br />
+          your dossier.
+        </h1>
+        <p className="sub">
+          This one&apos;s deeper than most, so it&apos;s taking a little longer. One will keep working and email the full
+          dossier{email ? ` to ${email}` : ""} the moment it&apos;s ready — you can safely close this tab.
+        </p>
+        <div className="state-actions">
+          <button className="cta" style={{ height: 56, fontSize: 16 }} onClick={onCheck}>
+            {Icons.retry(16)}
+            <span className="label">Check again</span>
+          </button>
+          <button className="ghost-btn" style={{ height: 56 }} onClick={onReset}>
+            Start over
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── F2. Location fallback — geolocation failed; retry or ZIP (extreme case) ── */
 function LocationFallback({
   reason,
@@ -1562,10 +1594,11 @@ export default function OneExperience() {
     return null;
   };
 
-  // In-flight recovery: the server keeps running after a disconnect, so poll with
-  // backoff (capped near the route's 900s maxDuration) until it finishes. The
-  // caller owns showing the "collect" stage; this reveals on success.
-  const POLL_MAX_MS = 900_000;
+  // In-flight recovery: the server keeps running after a disconnect or a soft-deadline
+  // handoff, so poll with backoff until it finishes. The DR job can run up to ~3600s on
+  // its own service, so be patient (30 min) — beyond that the email is the guaranteed
+  // delivery and we show the calm "pending" screen. Caller owns the "collect" stage.
+  const POLL_MAX_MS = 1_800_000;
   const resilientRecover = async (user: ClientUser, id: string): Promise<"revealed" | "failed" | "gaveup"> => {
     pollStopRef.current = false;
     const startedAt = performance.now();
@@ -1827,6 +1860,7 @@ export default function OneExperience() {
           phone: phone.trim() || undefined,
           consentAttestation: true,
           purpose: "self_audit",
+          sessionId: getSessionId(), // links server scan events to this UI session
         }),
       });
 
@@ -1845,6 +1879,23 @@ export default function OneExperience() {
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
         if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
       });
+
+      // Soft-deadline handoff: the scan is still running server-side (Phase-1 ran long).
+      // Poll patiently, reassure the user, and fall back to the email — never a hard error.
+      if (final?.type === "pending") {
+        setLiveSource("One is taking longer than usual — it'll keep working and email you.");
+        if (scanRunIdRef.current) {
+          const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
+          if (outcome === "revealed") return;
+          if (outcome === "failed") {
+            setError("One could not complete the scan.");
+            setStage("error");
+            return;
+          }
+        }
+        setStage("pending"); // still running after our patience window → it'll arrive by email
+        return;
+      }
 
       if (!final || final.type === "error" || !final.result) {
         throw new Error(final?.error || "One could not complete the scan.");
@@ -1913,6 +1964,24 @@ export default function OneExperience() {
     setServerStage(0);
     setLiveSource(null);
     setStage("precollect");
+  };
+
+  // From the calm "pending" (deadline-handoff) screen → re-check whether the scan finished.
+  const checkPending = async () => {
+    if (!authUser || !scanRunIdRef.current) {
+      setStage(identity.name && isValidEmail(identity.email) ? "precollect" : "manual");
+      return;
+    }
+    setLiveSource("One is checking on your dossier…");
+    setStage("collect");
+    const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
+    if (outcome === "revealed") return;
+    if (outcome === "failed") {
+      setError("One could not complete the scan.");
+      setStage("error");
+      return;
+    }
+    setStage("pending");
   };
 
   const reset = async () => {
@@ -2067,6 +2136,8 @@ export default function OneExperience() {
         onManual={() => setStage("manual")}
       />
     );
+  else if (stage === "pending")
+    view = <PendingState key="pend" email={identity.email} onCheck={() => void checkPending()} onReset={reset} />;
   else if (stage === "location")
     view = (
       <LocationFallback
@@ -2080,7 +2151,7 @@ export default function OneExperience() {
 
   return (
     <main className="stage">
-      {stage === "manual" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" ? (
+      {stage === "manual" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" || stage === "pending" ? (
         <ParticleMorph motion={MOTION} />
       ) : (
         <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />

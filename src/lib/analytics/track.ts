@@ -24,6 +24,12 @@ function sessionId(): string {
   return cachedSessionId;
 }
 
+/** The per-tab session id (same `one_sid` the funnel events use). Exported so the
+ *  scan request can send it → server scan events link to this user's UI funnel. */
+export function getSessionId(): string {
+  return sessionId();
+}
+
 export function track(event: string, props?: Record<string, unknown>): void {
   if (typeof window === "undefined") return;
   try {

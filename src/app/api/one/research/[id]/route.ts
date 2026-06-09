@@ -59,7 +59,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     if (dr.status === "completed" && dr.report) {
       const mode: LocationMode =
         typeof stored.latitude === "number" && typeof stored.longitude === "number" ? "precise" : "limited";
-      const result = await finalizeResearch(
+      const { result, phase2Ms } = await finalizeResearch(
         dr.report,
         dr.citations,
         {
@@ -75,7 +75,32 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         mode,
         id,
       );
-      await completeScanRun(id, toJsonValue(result), result.summary);
+      // Recovery completes a scan whose original stream was cut (deadline/disconnect).
+      // We can't see the exact Phase-1 boundary from here, so approximate from the scan's
+      // creation time: total = now − createdAt, phase1 ≈ total − phase2.
+      const totalMs = Date.now() - new Date(scan.createdAt).getTime();
+      const phase1Ms = Math.max(0, totalMs - phase2Ms);
+      await completeScanRun(id, toJsonValue(result), result.summary, {
+        phase1Ms,
+        phase2Ms,
+        totalMs,
+        outcome: "completed_via_recovery",
+        deepResearchJobId: jobId,
+      });
+      console.info(
+        JSON.stringify({
+          event: "one.research.completed",
+          severity: "INFO",
+          scanRunId: id,
+          email: stored.email || null,
+          jobId,
+          phase1Ms,
+          phase2Ms,
+          totalMs,
+          outcome: "completed_via_recovery",
+          source: result.source,
+        }),
+      );
       // The streaming POST normally sends the result emails, but when it was interrupted
       // (client disconnect / route timeout) THIS resume path is what completes the scan —
       // so send here too. The OneNotification unique constraint dedupes if both ever run.
@@ -102,7 +127,24 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, status: "completed", result, emailDelivery });
     }
     if (dr.status === "failed") {
-      await failScanRun(id, dr.error || "Deep Research could not complete").catch(() => undefined);
+      const failMs = Date.now() - new Date(scan.createdAt).getTime();
+      console.error(
+        JSON.stringify({
+          event: "one.research.failed",
+          severity: "ERROR",
+          scanRunId: id,
+          email: stored.email || null,
+          jobId,
+          phase1Ms: failMs,
+          outcome: "failed",
+          via: "recovery",
+          message: dr.error ?? "Research failed",
+        }),
+      );
+      await failScanRun(id, dr.error || "Deep Research could not complete", {
+        phase1Ms: failMs,
+        deepResearchJobId: jobId,
+      }).catch(() => undefined);
       return NextResponse.json({ ok: false, status: "failed", error: dr.error ?? "Research failed", result: null });
     }
     return NextResponse.json({ ok: false, status: "running", result: null });

@@ -54,6 +54,16 @@ model ScanRun {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
   completedAt     DateTime?
+  // Observability: per-phase timing + how the scan ended. Populated on
+  // completion / recovery / deadline-handoff so we can report, per user, how long
+  // Phase-1 (Gemini) and Phase-2 (Opus synth) took and why a scan did or didn't
+  // deliver. Nullable: old rows + in-flight scans have none. See scan-timings skill.
+  phase1Ms          Int?
+  phase2Ms          Int?
+  totalMs           Int?
+  outcome           String? // completed | completed_via_recovery | deadline | failed
+  deepResearchJobId String?
+  sessionId         String?
   user            OneUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
   auditJobs       AuditJob[]
   notifications   OneNotification[]

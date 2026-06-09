@@ -30,6 +30,36 @@ function hashValue(value?: string | null) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+/* Per-phase scan timing + outcome, persisted onto ScanRun for durable, per-user
+   reporting (how long Phase-1/Phase-2 took, and why a scan ended). */
+export interface ScanTiming {
+  phase1Ms?: number | null;
+  phase2Ms?: number | null;
+  totalMs?: number | null;
+  outcome?: string | null; // completed | completed_via_recovery | deadline | failed
+  sessionId?: string | null;
+  deepResearchJobId?: string | null;
+}
+
+function timingData(timing?: ScanTiming): Prisma.ScanRunUpdateInput {
+  const d: Prisma.ScanRunUpdateInput = {};
+  if (!timing) return d;
+  if (typeof timing.phase1Ms === "number") d.phase1Ms = Math.round(timing.phase1Ms);
+  if (typeof timing.phase2Ms === "number") d.phase2Ms = Math.round(timing.phase2Ms);
+  if (typeof timing.totalMs === "number") d.totalMs = Math.round(timing.totalMs);
+  if (timing.outcome) d.outcome = timing.outcome;
+  if (timing.sessionId) d.sessionId = timing.sessionId;
+  if (timing.deepResearchJobId) d.deepResearchJobId = timing.deepResearchJobId;
+  return d;
+}
+
+// The timing columns may not be migrated yet in a given environment (the deploy does
+// not auto-migrate). A "column does not exist" error (P2022) must NEVER block a scan
+// from completing/failing — so callers fall back to a timing-less write in that case.
+function isMissingColumn(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === "P2022";
+}
+
 export async function upsertOneUser(input: UpsertUserInput) {
   const prisma = getPrismaClient();
   if (!prisma) return null;
@@ -82,31 +112,66 @@ export async function createConsentAndScan(input: CreateScanInput) {
   return { scanRunId: scan.id };
 }
 
-export async function completeScanRun(scanRunId: string | null, data: Prisma.InputJsonValue, summary?: string) {
+export async function completeScanRun(
+  scanRunId: string | null,
+  data: Prisma.InputJsonValue,
+  summary?: string,
+  timing?: ScanTiming,
+) {
   const prisma = getPrismaClient();
   if (!prisma || !scanRunId) return;
-  await prisma.scanRun.update({
-    where: { id: scanRunId },
-    data: {
-      status: "completed",
-      normalizedResult: data,
-      summary,
-      completedAt: new Date(),
-    },
-  });
+  const base: Prisma.ScanRunUpdateInput = {
+    status: "completed",
+    normalizedResult: data,
+    summary,
+    completedAt: new Date(),
+  };
+  try {
+    await prisma.scanRun.update({ where: { id: scanRunId }, data: { ...base, ...timingData({ outcome: "completed", ...timing }) } });
+  } catch (error) {
+    if (!isMissingColumn(error)) throw error;
+    console.warn(JSON.stringify({ event: "one.scan.timing_columns_missing", scanRunId, where: "complete" }));
+    await prisma.scanRun.update({ where: { id: scanRunId }, data: base });
+  }
 }
 
-export async function failScanRun(scanRunId: string | null, message: string) {
+export async function failScanRun(scanRunId: string | null, message: string, timing?: ScanTiming) {
   const prisma = getPrismaClient();
   if (!prisma || !scanRunId) return;
-  await prisma.scanRun.update({
-    where: { id: scanRunId },
-    data: {
-      status: "failed",
-      error: message,
-      completedAt: new Date(),
-    },
-  });
+  const base: Prisma.ScanRunUpdateInput = {
+    status: "failed",
+    error: message,
+    completedAt: new Date(),
+  };
+  try {
+    await prisma.scanRun.update({ where: { id: scanRunId }, data: { ...base, ...timingData({ outcome: "failed", ...timing }) } });
+  } catch (error) {
+    if (!isMissingColumn(error)) throw error;
+    console.warn(JSON.stringify({ event: "one.scan.timing_columns_missing", scanRunId, where: "fail" }));
+    await prisma.scanRun.update({ where: { id: scanRunId }, data: base });
+  }
+}
+
+/* Record a deadline handoff: the streamed request hit our soft deadline before the
+   job finished. Status stays "running" (recovery will resume + finalize), so we only
+   stamp the timing/outcome for observability. Best-effort — must never break the
+   handoff, so all errors are swallowed. */
+export async function recordScanDeadline(scanRunId: string | null, timing: ScanTiming) {
+  const prisma = getPrismaClient();
+  if (!prisma || !scanRunId) return;
+  try {
+    await prisma.scanRun.update({ where: { id: scanRunId }, data: timingData({ outcome: "deadline", ...timing }) });
+  } catch (error) {
+    if (!isMissingColumn(error)) {
+      console.warn(
+        JSON.stringify({
+          event: "one.scan.deadline_persist_failed",
+          scanRunId,
+          message: error instanceof Error ? error.message : "unknown",
+        }),
+      );
+    }
+  }
 }
 
 /* Recovery net for a dropped result stream: return the saved scan only if it
@@ -138,7 +203,10 @@ export async function getResearchJob(firebaseUid: string, scanRunId: string) {
     if (!user) return null;
     const scan = await prisma.scanRun.findFirst({
       where: { id: scanRunId, userId: user.id },
-      select: { status: true, normalizedResult: true, error: true, input: true },
+      // NOTE: only select columns guaranteed to exist (createdAt is from the init
+      // migration). Don't select the new timing columns here — they may be unmigrated
+      // in some envs and a missing-column read would throw and break recovery.
+      select: { status: true, normalizedResult: true, error: true, input: true, createdAt: true },
     });
     if (!scan) return null;
     return { ...scan, userId: user.id };
