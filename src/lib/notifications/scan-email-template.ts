@@ -1,4 +1,5 @@
 import type { DashboardCategoryMap, OneDashboardResult, PersonAuditStatus } from "@/lib/ria/types";
+import { renderDossierMarkdownToEmailHtml } from "./markdown-email";
 
 type Audience = "user" | "admin";
 
@@ -175,10 +176,49 @@ export function buildScanResultEmailHtml(params: {
     ? "A Hussh One scan completed. The full normalized scan data returned to the dashboard is included below."
     : "Your Hussh One scan is complete. Here's a quick summary — open your full, interactive report any time with the button below.";
 
+  // Deep Research mode returns a markdown dossier (categories/rich/private are empty);
+  // render that dossier in the email. Shadow mode keeps the structured-section layout.
+  const isDeepResearch = !!(result.report && result.report.trim());
+
   // The user gets a clean, readable email; the heavy data lives in the report.
   // The admin copy stays exhaustive (every section + the raw normalized payload).
   let body: string;
-  if (isAdmin) {
+  if (isDeepResearch) {
+    const dossier = renderSection("Deep research dossier", renderDossierMarkdownToEmailHtml(result.report!.trim()));
+    if (isAdmin) {
+      const payload = { result, audit, completedAt: completedAt.toISOString() };
+      body = `
+            ${renderSection(
+              "Scan metadata",
+              renderKeyValues([
+                ["Name", result.subject.name],
+                ["Email", result.subject.email],
+                ["Scan ID", result.scanRunId],
+                ["Scan mode", result.mode],
+                ["Source", result.source],
+                ["Completed at", completedAt.toISOString()],
+              ]),
+            )}
+            ${dossier}
+            ${renderSection(
+              "Complete normalized payload",
+              `<pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-family:SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;color:#1d1d1f;background:#fafafa;border:1px solid #eeeeee;border-radius:8px;padding:14px;">${escapeHtml(
+                JSON.stringify(payload, null, 2),
+              )}</pre>`,
+            )}`;
+    } else {
+      body = `
+            ${renderSection(
+              "Your scan",
+              renderKeyValues([
+                ["Name", result.subject.name],
+                ["Email", result.subject.email],
+                ["Completed", completedAt.toUTCString()],
+              ]),
+            )}
+            ${dossier}`;
+    }
+  } else if (isAdmin) {
     const payload = { result, audit, completedAt: completedAt.toISOString() };
     body = `
             ${renderSection(
