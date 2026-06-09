@@ -792,24 +792,37 @@ function Dashboard({
   emailDelivery: ScanEmailDeliverySummary | null;
   onReset: () => void;
 }) {
-  // Deep Research path → render the markdown dossier instead of the structured grid.
+  // Deep Research path → render the markdown dossier as an editorial magazine page.
   if (result.report) {
+    const dossierTitle = result.subject.name?.trim() || "Your deep research dossier.";
+    const sourceCount = Array.isArray(result.citations) ? result.citations.length : 0;
     return (
-      <div className="dash" data-screen-label="Dashboard">
+      <div className="dash magazine" data-screen-label="Dashboard">
         <div className="dash-inner">
-          <div className="dash-head screen-enter">
-            <p className="eyebrow">Gathered by One</p>
-            <h1 className="display">Your deep research dossier.</h1>
-            <p className="sub">{result.summary || "One compiled this from public sources for you."}</p>
+          <header className="mag-masthead screen-enter">
+            <p className="mag-kicker">Deep research dossier</p>
+            <h1 className="mag-title">{dossierTitle}</h1>
+            <p className="mag-standfirst">{result.summary || "One compiled this from public sources for you."}</p>
+            <div className="mag-byline">
+              <span>Compiled by One</span>
+              <span className="mag-byline-sep" aria-hidden="true">·</span>
+              <span>Public sources</span>
+              {sourceCount > 0 ? (
+                <>
+                  <span className="mag-byline-sep" aria-hidden="true">·</span>
+                  <span>{sourceCount} {sourceCount === 1 ? "source" : "sources"}</span>
+                </>
+              ) : null}
+            </div>
             {emailDelivery ? (
-              <div className={"email-status " + (emailDelivery.user.status === "sent" ? "sent" : "failed")}>
+              <p className="mag-dateline">
                 {emailDelivery.user.status === "sent"
-                  ? `Full results were emailed to ${result.subject.email}.`
+                  ? `Full results emailed to ${result.subject.email}.`
                   : "Your dossier is ready."}
-              </div>
+              </p>
             ) : null}
-          </div>
-          <article className="research-report screen-enter">
+          </header>
+          <article className="research-report magazine-report screen-enter">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
