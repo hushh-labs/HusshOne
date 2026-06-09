@@ -22,6 +22,7 @@ export async function GET(request: Request) {
       ok: scan.status === "completed",
       status: scan.status,
       scanRunId: scan.id,
+      createdAt: scan.createdAt?.toISOString() ?? null, // lets the client resume the elapsed timer correctly
       result: scan.normalizedResult ?? null,
       error: scan.error ?? null,
       emailDelivery,

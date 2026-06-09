@@ -15,6 +15,15 @@
         "ONE_DISABLE_OTEL=true ONE_ENABLE_DEV_AUTH=true NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH=true ONE_ENABLE_MOCK_RIA=true ONE_MOCK_RIA_DELAY_MS=8000 NEXT_PUBLIC_FIREBASE_API_KEY= DATABASE_URL= npm run dev -- --port 3177"
       ],
       "port": 3177
+    },
+    {
+      "name": "one-research-mock",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "ONE_DISABLE_OTEL=true ONE_ENABLE_DEV_AUTH=true NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH=true NEXT_PUBLIC_ONE_RESEARCH_MODE=true ONE_ENABLE_MOCK_RESEARCH=true NEXT_PUBLIC_FIREBASE_API_KEY= DATABASE_URL= npm run dev -- --port 3178"
+      ],
+      "port": 3178
     }
   ]
 }

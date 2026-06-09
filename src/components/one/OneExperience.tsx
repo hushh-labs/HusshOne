@@ -20,7 +20,9 @@ import {
   signOutOfGoogle,
 } from "@/lib/firebase/client";
 import type {
+  ConfirmedProfile,
   DashboardCategoryMap,
+  DiscoverCandidate,
   OneDashboardResult,
   OneSafeFinding,
   OneSourceCard,
@@ -37,7 +39,7 @@ import LandingPage from "./landing/LandingPage";
 import DossierReport from "./DossierReport";
 import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
-type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
+type Stage = "hydrating" | "landing" | "manual" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
@@ -100,9 +102,14 @@ function extractIdentity(user: ClientUser): Identity {
 const LS_PHONE = "one_phone"; // typed phone, restored across refresh
 const LS_LAST_SCAN = "one_last_scan"; // last completed scan id → dashboard restore
 const LS_ACTIVE_SCAN = "one_active_scan"; // in-flight scan id → resume after refresh OR app close
+const LS_ACTIVE_STARTED_AT = "one_active_started_at"; // epoch ms the active scan began → resume the elapsed/progress correctly across refresh/background/close
+const LS_DISCOVERY = "one_discovery"; // in-progress Phase-0 disambiguation (confirmed + shown + location)
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
+
+/** Confirmed-pivot count required before Phase-1 research fires (Intelius-style gate). */
+const DISCOVER_GATE = 4;
 
 function safeGet(store: "local" | "session", key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -132,6 +139,8 @@ function clearPersisted() {
   safeDel("local", LS_PHONE);
   safeDel("local", LS_LAST_SCAN);
   safeDel("local", LS_ACTIVE_SCAN);
+  safeDel("local", LS_ACTIVE_STARTED_AT);
+  safeDel("local", LS_DISCOVERY);
   safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
@@ -156,7 +165,7 @@ function isValidPhone(value: string) {
 async function readScanStream(
   body: ReadableStream<Uint8Array>,
   onProgress: (msg: { type: string; stage?: number; elapsedMs?: number; scanRunId?: string | null; scanning?: string }) => void,
-): Promise<{ type: string; result?: OneDashboardResult; audit?: PersonAuditStatus | null; emailDelivery?: ScanEmailDeliverySummary | null; error?: string } | null> {
+): Promise<{ type: string; result?: OneDashboardResult; audit?: PersonAuditStatus | null; emailDelivery?: ScanEmailDeliverySummary | null; candidates?: DiscoverCandidate[]; error?: string } | null> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1423,6 +1432,164 @@ function ConfirmDelete({
   );
 }
 
+/* ── C2. Disambiguation — Phase-0 "is this you?" pivots (click-only gate) ──
+   Surfaces candidate public profiles; the user taps the ones that are theirs.
+   Once DISCOVER_GATE are confirmed, Phase-1 research fires seeded with them. */
+function Disambiguate({
+  candidates,
+  confirmedUrls,
+  confirmedCount,
+  busy,
+  error,
+  liveLine,
+  onConfirm,
+  onDismiss,
+  onMore,
+  onContinue,
+}: {
+  candidates: DiscoverCandidate[];
+  confirmedUrls: Set<string>;
+  confirmedCount: number;
+  busy: boolean;
+  error: string;
+  liveLine: string | null;
+  onConfirm: (c: DiscoverCandidate) => void;
+  onDismiss: (c: DiscoverCandidate) => void;
+  onMore: () => void;
+  onContinue: () => void;
+}) {
+  const remaining = Math.max(0, DISCOVER_GATE - confirmedCount);
+  const ready = confirmedCount >= DISCOVER_GATE;
+  const firstLoad = busy && candidates.length === 0;
+
+  // group visible candidates by category, preserving first-seen order
+  const groups: { category: string; items: DiscoverCandidate[] }[] = [];
+  const byCat = new Map<string, DiscoverCandidate[]>();
+  for (const c of candidates) {
+    let bucket = byCat.get(c.category);
+    if (!bucket) {
+      bucket = [];
+      byCat.set(c.category, bucket);
+      groups.push({ category: c.category, items: bucket });
+    }
+    bucket.push(c);
+  }
+
+  return (
+    <div className="screen disambiguate screen-enter">
+      <div className="content" style={{ gap: 18, maxWidth: 760, width: "100%" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center" }}>
+          <p className="eyebrow">Confirm it&apos;s you</p>
+          <h1 className="display" style={{ fontSize: "clamp(24px,3.6vw,36px)" }}>Which of these are you?</h1>
+          <p className="sub" style={{ margin: "0 auto" }}>
+            Tap the profiles that are really yours. One needs {DISCOVER_GATE} to lock onto the right person — no typing, just tap.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }} aria-live="polite">
+          <div style={{ display: "flex", gap: 6 }}>
+            {Array.from({ length: DISCOVER_GATE }).map((_, i) => (
+              <span
+                key={i}
+                style={{ width: 26, height: 6, borderRadius: 3, background: i < confirmedCount ? ACCENT : "#E6E6EA", transition: "background .3s" }}
+              />
+            ))}
+          </div>
+          <span className="sub" style={{ fontSize: 13, margin: 0 }}>{confirmedCount} of {DISCOVER_GATE} confirmed</span>
+        </div>
+
+        {firstLoad ? (
+          <div className="card" style={{ textAlign: "center", padding: 28 }}>
+            <span
+              aria-hidden="true"
+              style={{ width: 22, height: 22, borderRadius: "50%", border: "2px solid rgba(0,0,0,0.12)", borderTopColor: ACCENT, animation: "scanSpin .7s linear infinite", display: "inline-block" }}
+            />
+            <p className="sub" style={{ marginTop: 12 }}>{liveLine || "One is finding your public profiles…"}</p>
+          </div>
+        ) : candidates.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 24 }}>
+            <p className="sub">{error || "One couldn't surface profiles this time."}</p>
+            <div className="cta-block">
+              <button className="solid-cta" onClick={onMore} disabled={busy}>Try again</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            {groups.map((g) => (
+              <div key={g.category} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="eyebrow" style={{ textAlign: "left" }}>{g.category}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+                  {g.items.map((c) => {
+                    const selected = confirmedUrls.has(c.url);
+                    return (
+                      <div
+                        key={c.id}
+                        style={{ border: `1.5px solid ${selected ? ACCENT : "#E6E6EA"}`, borderRadius: 14, padding: 12, background: selected ? hexA(ACCENT, 0.04) : "#fff", display: "flex", flexDirection: "column", gap: 8, transition: "border-color .2s, background .2s" }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span
+                            aria-hidden="true"
+                            style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: "#111113", color: "#fff", display: "grid", placeItems: "center", fontSize: 12, fontWeight: 600, overflow: "hidden" }}
+                          >
+                            {c.avatarUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={c.avatarUrl} alt="" width={34} height={34} referrerPolicy="no-referrer" style={{ objectFit: "cover" }} />
+                            ) : (
+                              (c.platform[0] || "·").toUpperCase()
+                            )}
+                          </span>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.platform}</div>
+                            <div className="sub" style={{ margin: 0, fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.handle}</div>
+                          </div>
+                        </div>
+                        {c.context ? <div className="sub" style={{ margin: 0, fontSize: 12, lineHeight: 1.35 }}>{c.context}</div> : null}
+                        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+                          <button
+                            type="button"
+                            onClick={() => onConfirm(c)}
+                            aria-pressed={selected}
+                            style={{ flex: 1, height: 34, borderRadius: 9, cursor: "pointer", border: `1px solid ${selected ? ACCENT : "#DADADE"}`, background: selected ? ACCENT : "#fff", color: selected ? "#fff" : "#111113", fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+                          >
+                            {Icons.check(13)} {selected ? "It's me" : "This is me"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDismiss(c)}
+                            aria-label="Not me"
+                            title="Not me"
+                            style={{ width: 38, height: 34, borderRadius: 9, cursor: "pointer", border: "1px solid #DADADE", background: "#fff", color: "#9A9AA2", fontSize: 16 }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && candidates.length > 0 ? <p className="sub" style={{ color: "#b4453a", margin: 0 }}>{error}</p> : null}
+
+        {candidates.length > 0 ? (
+          <div className="state-actions" style={{ marginTop: 4 }}>
+            <button className="cta" style={{ height: 52, fontSize: 15 }} onClick={onContinue} disabled={!ready}>
+              {Icons.spark()}
+              <span className="label">{ready ? "These are mine →" : `Confirm ${remaining} more`}</span>
+            </button>
+            <button className="ghost-btn" onClick={onMore} disabled={busy}>
+              {busy ? "Finding more…" : "Show more options"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /* ── state machine ──────────────────────────────────────── */
 export default function OneExperience() {
   const [stage, setStage] = useState<Stage>("hydrating");
@@ -1445,7 +1612,18 @@ export default function OneExperience() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
-  const collectStart = useRef(0);
+  // Phase-0 disambiguation state
+  const [candidates, setCandidates] = useState<DiscoverCandidate[]>([]);
+  const [confirmed, setConfirmed] = useState<ConfirmedProfile[]>([]);
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [discoverBusy, setDiscoverBusy] = useState(false);
+  const [discoverError, setDiscoverError] = useState("");
+  const [restorePending, setRestorePending] = useState<{ location: Coordinates; shownUrls: string[] } | null>(null);
+  const discoverLocRef = useRef<Coordinates | null>(null);
+  const discoverAbortRef = useRef<AbortController | null>(null);
+  const restoredRef = useRef(false); // ensure the cross-refresh discovery resume fires once
+  const collectStart = useRef(0); // performance.now() of THIS mount entering collect — for the reveal min-dwell
+  const scanStartedAtRef = useRef(0); // absolute epoch ms the scan began — resumable elapsed across refresh/background
   const scanRunIdRef = useRef<string | null>(null);
   const pollStopRef = useRef(false); // abort in-flight recovery polling on logout/delete/unmount
   const prevStageRef = useRef<Stage>("precollect"); // where to return to when leaving Settings
@@ -1497,21 +1675,28 @@ export default function OneExperience() {
   // multi-minute run, track elapsed; never regress, never complete until the result lands
   useEffect(() => {
     if (stage !== "collect") return;
-    let raf = 0;
+    // Resume from the scan's ABSOLUTE start (epoch ms) so refresh / background / reconnect
+    // all show the TRUE elapsed. Date.now() is wall-clock — unlike rAF it keeps advancing
+    // in a hidden tab, and a setInterval (not rAF) still fires (throttled) in the background.
+    let startedAt = scanStartedAtRef.current;
+    if (!startedAt) {
+      const persisted = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+      startedAt = Number.isFinite(persisted) && persisted > 0 ? persisted : Date.now();
+      scanStartedAtRef.current = startedAt;
+    }
     let stopped = false;
-    const start = performance.now();
-    const tick = (now: number) => {
+    const tick = () => {
       if (stopped) return;
-      const elapsed = now - start;
+      const elapsed = Math.max(0, Date.now() - startedAt);
       setElapsedMs(elapsed);
       const eased = Math.min(0.92, elapsed / SHADOW_ESTIMATED_MS);
       setProgress((prev) => (prev >= 1 ? prev : Math.max(prev, eased)));
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    tick(); // paint the correct position immediately on (re)entry
+    const iv = setInterval(tick, 250);
     return () => {
       stopped = true;
-      cancelAnimationFrame(raf);
+      clearInterval(iv);
     };
   }, [stage]);
 
@@ -1539,6 +1724,7 @@ export default function OneExperience() {
     setProgress(1);
     // promote the scan id to "last completed" so a later refresh restores the report
     safeDel("local", LS_ACTIVE_SCAN);
+    safeDel("local", LS_ACTIVE_STARTED_AT);
     if (scanRunIdRef.current) safeSet("local", LS_LAST_SCAN, scanRunIdRef.current);
     const hasReport = !!(result.report && result.report.trim());
     const hasCategorySignal = Object.values(result.categories || {}).some((list) => (list as string[]).some(POSITIVE));
@@ -1619,6 +1805,7 @@ export default function OneExperience() {
       }
       if (status === "failed") {
         safeDel("local", LS_ACTIVE_SCAN);
+        safeDel("local", LS_ACTIVE_STARTED_AT);
         return "failed";
       }
       if (status === "unknown") {
@@ -1626,6 +1813,7 @@ export default function OneExperience() {
         if (unknownStreak >= 3) {
           // the row truly isn't there after a few tries → stop chasing it
           safeDel("local", LS_ACTIVE_SCAN);
+          safeDel("local", LS_ACTIVE_STARTED_AT);
           return "gaveup";
         }
       } else {
@@ -1636,6 +1824,25 @@ export default function OneExperience() {
     }
     return "gaveup";
   };
+
+  // Snappy resume: when the user returns to a backgrounded tab mid-scan, do a one-shot
+  // status check so a finished scan reveals at once (the wall-clock timer already self-
+  // heals on the next tick). One check — not a new poll loop — so it can't stack.
+  useEffect(() => {
+    if (stage !== "collect" && stage !== "pending") return;
+    const onVis = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+      const id = scanRunIdRef.current || safeGet("local", LS_ACTIVE_SCAN);
+      if (!id || !authUser) return;
+      void fetchScanStatus(authUser, id)
+        .then(({ status, result, emailDelivery }) => {
+          if (status === "completed" && result) void revealResult({ result, audit: null, emailDelivery });
+        })
+        .catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [stage, authUser]);
 
   // Map a (restored or freshly signed-in) user → identity → the right screen,
   // honoring a mid-scan recovery, an email deep-link, or a last-scan dashboard.
@@ -1650,6 +1857,10 @@ export default function OneExperience() {
       const inFlight = safeGet("local", LS_ACTIVE_SCAN);
       if (inFlight) {
         scanRunIdRef.current = inFlight;
+        // Resume the timer from the scan's TRUE start (persisted) so the bar shows the real
+        // elapsed instead of restarting at ~3%. Fall back to now only if we have no record.
+        const startedAt = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+        scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
         collectStart.current = performance.now();
         setStage("collect");
         const outcome = await resilientRecover(user, inFlight);
@@ -1693,12 +1904,18 @@ export default function OneExperience() {
           const payload = (await res.json().catch(() => null)) as {
             status?: string;
             scanRunId?: string | null;
+            createdAt?: string | null;
             result?: OneDashboardResult | null;
             emailDelivery?: ScanEmailDeliverySummary | null;
           } | null;
           if (payload?.scanRunId && payload.status === "running") {
             scanRunIdRef.current = payload.scanRunId;
             safeSet("local", LS_ACTIVE_SCAN, payload.scanRunId);
+            // Seed the timer from the server's scan createdAt so a cold reopen (no local
+            // state) still shows the true elapsed, then persist it for subsequent refreshes.
+            const createdMs = payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now();
+            scanStartedAtRef.current = Number.isFinite(createdMs) ? createdMs : Date.now();
+            safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
             collectStart.current = performance.now();
             setStage("collect");
             const outcome = await resilientRecover(user, payload.scanRunId);
@@ -1725,6 +1942,29 @@ export default function OneExperience() {
         /* probe failed — never block sign-in on it */
       }
 
+      // (d) default — signed in, nothing to restore. In Deep Research mode, resume an
+      // in-progress disambiguation (confirmed pivots + shown set) if one was saved.
+      if (RESEARCH_MODE && baseStage === "precollect") {
+        const rawDisc = safeGet("local", LS_DISCOVERY);
+        if (rawDisc) {
+          try {
+            const saved = JSON.parse(rawDisc) as {
+              confirmed?: ConfirmedProfile[];
+              shownUrls?: string[];
+              location?: Coordinates;
+            };
+            if (saved.location && ((saved.confirmed?.length ?? 0) > 0 || (saved.shownUrls?.length ?? 0) > 0)) {
+              setConfirmed(saved.confirmed ?? []);
+              discoverLocRef.current = saved.location;
+              setRestorePending({ location: saved.location, shownUrls: saved.shownUrls ?? [] });
+              setStage("disambiguate");
+              return;
+            }
+          } catch {
+            safeDel("local", LS_DISCOVERY);
+          }
+        }
+      }
       // (d) default — signed in, nothing to restore
       setStage(baseStage);
     } catch {
@@ -1824,12 +2064,13 @@ export default function OneExperience() {
     }
   };
 
-  const runScan = async (location: Coordinates) => {
+  const runScan = async (location: Coordinates, confirmedProfiles?: ConfirmedProfile[]) => {
     if (!authUser) {
       setError("Sign in again to continue.");
       setStage("error");
       return;
     }
+    safeDel("local", LS_DISCOVERY); // past disambiguation — don't resurrect it on refresh
     setProgress(0);
     setElapsedMs(0);
     setServerStage(0);
@@ -1839,6 +2080,7 @@ export default function OneExperience() {
     setEmailDelivery(null);
     setError("");
     scanRunIdRef.current = null;
+    scanStartedAtRef.current = Date.now(); // absolute start → resumable elapsed across refresh/close
     setStage("collect");
     collectStart.current = performance.now();
 
@@ -1858,6 +2100,7 @@ export default function OneExperience() {
           longitude: location.longitude,
           zipCode: location.zipCode,
           phone: phone.trim() || undefined,
+          confirmedProfiles, // Phase-0 anchors → seed Phase 1 + 2
           consentAttestation: true,
           purpose: "self_audit",
           sessionId: getSessionId(), // links server scan events to this UI session
@@ -1874,7 +2117,10 @@ export default function OneExperience() {
       const final = await readScanStream(response.body, (msg) => {
         if (typeof msg.scanRunId === "string") {
           scanRunIdRef.current = msg.scanRunId;
-          safeSet("local", LS_ACTIVE_SCAN, msg.scanRunId); // recover this run after a refresh OR app close
+          // recover this run after a refresh OR app close — persist id + the absolute start
+          // so the resumed timer shows the true elapsed (not a reset-to-0% bar).
+          safeSet("local", LS_ACTIVE_SCAN, msg.scanRunId);
+          safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current || Date.now()));
         }
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
         if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
@@ -1911,8 +2157,16 @@ export default function OneExperience() {
           setStage("error");
           return;
         }
+        // gaveup but the scan is still tracked (recovery just timed out — not a vanished
+        // row, which resilientRecover would have cleared) → it's still running. Show the
+        // calm pending screen and KEEP it resumable; the email delivers it.
+        if (safeGet("local", LS_ACTIVE_SCAN)) {
+          setStage("pending");
+          return;
+        }
       }
       safeDel("local", LS_ACTIVE_SCAN); // nothing to resurrect as "collecting"
+      safeDel("local", LS_ACTIVE_STARTED_AT);
       setError(e instanceof Error ? e.message : "One could not complete the scan.");
       setStage("error");
     } finally {
@@ -1920,8 +2174,148 @@ export default function OneExperience() {
     }
   };
 
+  // Phase 0: discover candidate profiles for the user to confirm. `append` keeps the
+  // running batch (Show more / restore); otherwise it starts a fresh session. `exclude`
+  // overrides the excluded set (used on cross-refresh restore).
+  const runDiscover = async (location: Coordinates, opts?: { append?: boolean; exclude?: string[] }) => {
+    if (!authUser) {
+      setError("Sign in again to continue.");
+      setStage("error");
+      return;
+    }
+    const append = !!opts?.append;
+    discoverLocRef.current = location;
+    const excludeUrls = opts?.exclude ?? (append ? candidates.map((c) => c.url) : []);
+    if (!append) {
+      setCandidates([]);
+      setConfirmed([]);
+      setDismissed([]);
+    }
+    setDiscoverError("");
+    setDiscoverBusy(true);
+    setLiveSource(null);
+    setStage("disambiguate");
+    track("discover_started");
+
+    discoverAbortRef.current?.abort();
+    const controller = new AbortController();
+    discoverAbortRef.current = controller;
+    const abortTimer = setTimeout(() => controller.abort(), 600_000);
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const response = await fetch("/api/one/discover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: authorization },
+        signal: controller.signal,
+        body: JSON.stringify({
+          name: identity.name,
+          email: identity.email,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          zipCode: location.zipCode,
+          phone: phone.trim() || undefined,
+          excludeUrls,
+          sessionId: getSessionId(),
+        }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok || !response.body || contentType.includes("application/json")) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error || "One could not find your profiles.");
+      }
+      const final = await readScanStream(response.body, (msg) => {
+        if (typeof msg.scanning === "string") setLiveSource(msg.scanning);
+      });
+      if (!final || final.type === "error") throw new Error(final?.error || "One could not find your profiles.");
+      const fresh = (final.candidates ?? []) as DiscoverCandidate[];
+      setCandidates((prev) => {
+        const seen = new Set(prev.map((c) => c.url));
+        return [...prev, ...fresh.filter((c) => c && c.url && !seen.has(c.url))];
+      });
+      track("discover_candidates", { count: fresh.length });
+    } catch (e) {
+      if ((e as { name?: string })?.name === "AbortError") return;
+      setDiscoverError(e instanceof Error ? e.message : "One could not find your profiles.");
+    } finally {
+      clearTimeout(abortTimer);
+      setDiscoverBusy(false);
+    }
+  };
+
+  const confirmedUrls = new Set(confirmed.map((p) => p.url));
+  // visible = surfaced, not dismissed (dismissed stay hidden but excluded next cycle)
+  const visibleCandidates = candidates.filter((c) => !dismissed.includes(c.url));
+
+  const toggleConfirm = (c: DiscoverCandidate) => {
+    setConfirmed((prev) => {
+      if (prev.some((p) => p.url === c.url)) return prev.filter((p) => p.url !== c.url);
+      track("pivot_confirmed", { platform: c.platform });
+      return [...prev, { platform: c.platform, handle: c.handle, url: c.url, category: c.category }];
+    });
+  };
+  const dismissCandidate = (c: DiscoverCandidate) => {
+    setConfirmed((prev) => prev.filter((p) => p.url !== c.url));
+    setDismissed((prev) => (prev.includes(c.url) ? prev : [...prev, c.url]));
+    track("pivot_rejected", { platform: c.platform });
+  };
+  const moreOptions = () => {
+    const loc = discoverLocRef.current;
+    if (!loc || discoverBusy) return;
+    track("discover_cycle");
+    void runDiscover(loc, { append: true });
+  };
+  const proceedFromDisambiguation = () => {
+    if (confirmed.length < DISCOVER_GATE) return;
+    const loc = discoverLocRef.current ?? {};
+    track("disambiguation_complete", { confirmed: confirmed.length });
+    safeDel("local", LS_DISCOVERY);
+    void runScan(loc, confirmed);
+  };
+
+  // persist in-progress disambiguation so a refresh restores the gate progress
+  useEffect(() => {
+    if (stage !== "disambiguate") return;
+    const loc = discoverLocRef.current;
+    if (!loc) return;
+    safeSet(
+      "local",
+      LS_DISCOVERY,
+      JSON.stringify({ confirmed, shownUrls: [...candidates.map((c) => c.url), ...dismissed], location: loc }),
+    );
+  }, [stage, confirmed, candidates, dismissed]);
+
+  // cross-refresh restore: re-run discovery (excluding already-shown) to resume picking.
+  // Guard with a ref so it fires once even if authUser re-emits (token refresh).
+  useEffect(() => {
+    if (!restorePending || !authUser || restoredRef.current) return;
+    restoredRef.current = true;
+    void runDiscover(restorePending.location, { append: true, exclude: restorePending.shownUrls });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restorePending, authUser]);
+
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
+    // A scan is already running (e.g. user landed back on precollect after a recovery
+    // timeout) → RESUME it instead of POSTing a duplicate. "Scan again"/"Start over"
+    // clear LS_ACTIVE_SCAN first, so an intentional fresh scan still starts cleanly.
+    const active = safeGet("local", LS_ACTIVE_SCAN);
+    if (active && authUser) {
+      scanRunIdRef.current = active;
+      const startedAt = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+      scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
+      collectStart.current = performance.now();
+      setError("");
+      setStage("collect");
+      void resilientRecover(authUser, active).then((outcome) => {
+        if (outcome === "failed") {
+          setError("That scan didn't finish. Start a new one when you're ready.");
+          setStage("error");
+        } else if (outcome === "gaveup" && safeGet("local", LS_ACTIVE_SCAN)) {
+          setStage("pending");
+        }
+      });
+      return;
+    }
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setGeoReason("unsupported");
       setStage("location");
@@ -1932,10 +2326,13 @@ export default function OneExperience() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setGeoBusy(false);
-        void runScan({
+        const loc = {
           latitude: Number(pos.coords.latitude.toFixed(6)),
           longitude: Number(pos.coords.longitude.toFixed(6)),
-        });
+        };
+        // Deep Research → confirm identity first (Phase 0); Shadow → scan directly.
+        if (RESEARCH_MODE) void runDiscover(loc);
+        else void runScan(loc);
       },
       (err) => {
         setGeoBusy(false);
@@ -1953,8 +2350,11 @@ export default function OneExperience() {
   const scanAgain = () => {
     pollStopRef.current = true;
     scanRunIdRef.current = null;
+    scanStartedAtRef.current = 0;
     safeDel("local", LS_LAST_SCAN);
     safeDel("local", LS_ACTIVE_SCAN);
+    safeDel("local", LS_ACTIVE_STARTED_AT);
+    safeDel("local", LS_DISCOVERY);
     setDashboard(null);
     setAudit(null);
     setEmailDelivery(null);
@@ -1963,6 +2363,10 @@ export default function OneExperience() {
     setElapsedMs(0);
     setServerStage(0);
     setLiveSource(null);
+    setCandidates([]);
+    setConfirmed([]);
+    setDismissed([]);
+    setDiscoverError("");
     setStage("precollect");
   };
 
@@ -2002,6 +2406,10 @@ export default function OneExperience() {
     setServerStage(0);
     setLiveSource(null);
     setGeoBusy(false);
+    setCandidates([]);
+    setConfirmed([]);
+    setDismissed([]);
+    setDiscoverError("");
     setStage("landing");
   };
 
@@ -2041,6 +2449,10 @@ export default function OneExperience() {
       setElapsedMs(0);
       setServerStage(0);
       setLiveSource(null);
+      setCandidates([]);
+      setConfirmed([]);
+      setDismissed([]);
+      setDiscoverError("");
       setDeleteOpen(false);
       setNotice("Your account and all data were deleted.");
       track("account_deleted");
@@ -2115,6 +2527,22 @@ export default function OneExperience() {
     );
   else if (stage === "precollect")
     view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} busy={geoBusy} />;
+  else if (stage === "disambiguate")
+    view = (
+      <Disambiguate
+        key="dis"
+        candidates={visibleCandidates}
+        confirmedUrls={confirmedUrls}
+        confirmedCount={confirmed.length}
+        busy={discoverBusy}
+        error={discoverError}
+        liveLine={liveSource}
+        onConfirm={toggleConfirm}
+        onDismiss={dismissCandidate}
+        onMore={moreOptions}
+        onContinue={proceedFromDisambiguation}
+      />
+    );
   else if (stage === "collect")
     view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
@@ -2145,7 +2573,7 @@ export default function OneExperience() {
         reason={geoReason}
         busy={geoBusy}
         onRetry={startCollect}
-        onZip={(zip) => void runScan({ zipCode: zip })}
+        onZip={(zip) => (RESEARCH_MODE ? void runDiscover({ zipCode: zip }) : void runScan({ zipCode: zip }))}
       />
     );
 

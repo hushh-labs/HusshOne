@@ -55,7 +55,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: false, status: "running", result: null });
     }
 
-    const dr = await pollResearch(jobId);
+    // Fast status poll: a snappy reconnect beats blocking for minutes on a slow upstream
+    // status endpoint. If the check is slow/errors, report "running" so the client retries.
+    let dr;
+    try {
+      dr = await pollResearch(jobId, { fast: true });
+    } catch {
+      return NextResponse.json({ ok: false, status: "running", result: null });
+    }
     if (dr.status === "completed" && dr.report) {
       const mode: LocationMode =
         typeof stored.latitude === "number" && typeof stored.longitude === "number" ? "precise" : "limited";
@@ -69,6 +76,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
           longitude: stored.longitude,
           zipCode: stored.zipCode,
           phone: stored.phone,
+          confirmedProfiles: stored.confirmedProfiles,
           consentAttestation: true,
           purpose: "self_audit",
         },
