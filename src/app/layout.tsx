@@ -1,18 +1,10 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Inter, Fragment_Mono, Newsreader } from "next/font/google";
+import { Space_Grotesk, Inter, Fragment_Mono } from "next/font/google";
 import "./globals.css";
 
 // Display / headings — Space Grotesk (the hellowstd.com display face).
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-grotesk",
-  subsets: ["latin"],
-});
-
-// Editorial serif — Newsreader (deep-research dossier body, standfirst, pull-quotes).
-const newsreader = Newsreader({
-  weight: ["400", "600"],
-  style: ["normal", "italic"],
-  variable: "--font-newsreader",
   subsets: ["latin"],
 });
 
@@ -50,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable} ${newsreader.variable}`}>
+    <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable}`}>
       <body>{children}</body>
     </html>
   );
