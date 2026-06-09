@@ -23,6 +23,8 @@ const ALLOWED_EVENTS = new Set([
   "stage_empty",
   "stage_error",
   "stage_settings",
+  "stage_location",
+  "stage_pending",
   "signed_in",
   "phone_entered",
   "scan_started",
