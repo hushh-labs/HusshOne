@@ -1476,7 +1476,10 @@ function Disambiguate({
   }
 
   return (
-    <div className="screen disambiguate screen-enter">
+    <div
+      className="screen disambiguate screen-enter"
+      style={{ overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", justifyContent: "flex-start", paddingBottom: 56 }}
+    >
       <div className="content" style={{ gap: 18, maxWidth: 940, width: "100%" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center" }}>
           <p className="eyebrow">Confirm it&apos;s you</p>
