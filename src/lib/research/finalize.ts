@@ -37,6 +37,8 @@ export async function finalizeResearch(
       email: input.email,
       phone: input.phone,
       location: locationLabel(input),
+      // Phase-0 anchors → Phase-2 so Claude disambiguates/structures around the real person.
+      confirmedProfiles: input.confirmedProfiles,
     };
     const synthStart = Date.now();
     try {

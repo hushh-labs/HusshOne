@@ -7,7 +7,7 @@ import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
-import type { LocationMode, OneSubjectInput } from "@/lib/ria/types";
+import type { ConfirmedProfile, LocationMode, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 
@@ -54,6 +54,26 @@ function numberOrUndefined(value: unknown) {
   return value;
 }
 
+/** Sanitize the Phase-0 confirmed pivots from the request body into ConfirmedProfile[]. */
+function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: ConfirmedProfile[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const p = item as Record<string, unknown>;
+    const url = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
+    if (!url) continue;
+    out.push({
+      url,
+      platform: typeof p.platform === "string" ? p.platform.trim().slice(0, 60) : "",
+      handle: typeof p.handle === "string" ? p.handle.trim().slice(0, 120) : "",
+      category: typeof p.category === "string" ? p.category.trim().slice(0, 60) : "",
+    });
+    if (out.length >= 12) break;
+  }
+  return out.length ? out : undefined;
+}
+
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
@@ -93,7 +113,17 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Browser coordinates or zip code are required"), { statusCode: 400 });
   }
 
-  return { name, email, latitude, longitude, zipCode, phone: phone || undefined, consentAttestation: true, purpose: "self_audit" };
+  return {
+    name,
+    email,
+    latitude,
+    longitude,
+    zipCode,
+    phone: phone || undefined,
+    confirmedProfiles: parseConfirmedProfiles(body.confirmedProfiles),
+    consentAttestation: true,
+    purpose: "self_audit",
+  };
 }
 
 export async function POST(request: Request) {

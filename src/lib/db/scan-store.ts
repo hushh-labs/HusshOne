@@ -245,7 +245,7 @@ export async function getLatestScanForUser(firebaseUid: string) {
     return await prisma.scanRun.findFirst({
       where: { userId: user.id },
       orderBy: { createdAt: "desc" },
-      select: { id: true, status: true, normalizedResult: true, error: true },
+      select: { id: true, status: true, normalizedResult: true, error: true, createdAt: true },
     });
   } catch {
     return null;

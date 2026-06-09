@@ -2,6 +2,38 @@ export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type ResultSource = "shadow" | "person_intelligence" | "temporary" | "deep_research";
 
+/** A public profile/link surfaced in Phase-0 discovery for the user to confirm/reject.
+    Pure data shown as a click-only pivot card — never an identity claim until confirmed. */
+export interface DiscoverCandidate {
+  /** Stable id within a discovery session (used as the React key + selection key). */
+  id: string;
+  /** Bucket, e.g. "Dev/code", "Professional", "Social", "Articles". */
+  category: string;
+  /** Platform/site label, e.g. "GitHub", "LinkedIn", "Medium". */
+  platform: string;
+  /** Handle/username/title shown on the card. */
+  handle: string;
+  /** Optional fuller display name. */
+  displayName?: string;
+  /** Canonical profile/page URL — also the dedupe + exclude key across cycles. */
+  url: string;
+  /** Optional avatar/thumbnail URL. */
+  avatarUrl?: string;
+  /** One-line "why this might be you" context. */
+  context: string;
+  /** Optional rough confidence hint (e.g. "strong" | "possible"). */
+  confidenceHint?: string;
+}
+
+/** A Phase-0 candidate the subject confirmed is theirs ("this is me").
+    These are the verified ground-truth anchors threaded into BOTH Phase 1 and Phase 2. */
+export interface ConfirmedProfile {
+  platform: string;
+  handle: string;
+  url: string;
+  category: string;
+}
+
 export interface OneSubjectInput {
   name: string;
   email: string;
@@ -10,6 +42,9 @@ export interface OneSubjectInput {
   zipCode?: string;
   /** Phone number — used by the Hushh Shadow endpoint for disambiguation only. */
   phone?: string;
+  /** Phase-0 subject-confirmed profiles ("this is me"). Ground-truth anchors that seed
+      the Phase-1 research prompt AND the Phase-2 synthesis (disambiguation). */
+  confirmedProfiles?: ConfirmedProfile[];
   consentAttestation: boolean;
   purpose: "self_audit";
 }

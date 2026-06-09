@@ -18,6 +18,7 @@ const ALLOWED_EVENTS = new Set([
   "stage_landing",
   "stage_manual",
   "stage_precollect",
+  "stage_disambiguate",
   "stage_collect",
   "stage_dashboard",
   "stage_empty",
@@ -32,6 +33,13 @@ const ALLOWED_EVENTS = new Set([
   "started_over",
   "account_deleted",
   "client_error",
+  // Phase-0 disambiguation funnel
+  "discover_started",
+  "discover_candidates",
+  "discover_cycle",
+  "pivot_confirmed",
+  "pivot_rejected",
+  "disambiguation_complete",
 ]);
 
 const noContent = () => new NextResponse(null, { status: 204 });

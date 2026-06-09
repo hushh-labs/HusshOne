@@ -1,6 +1,7 @@
 /* Client for the standalone Hushh Deep Research API (Vertex-backed).
    Mirrors src/lib/ria/client.ts: env base URL + Bearer token, AbortController
    timeout, retry with backoff, {statusCode} error convention. */
+import type { ConfirmedProfile, DiscoverCandidate } from "@/lib/ria/types";
 
 const DEFAULT_BASE_URL = "https://deep-research-api-bmrh3cdxwa-el.a.run.app";
 const RETRYABLE_UPSTREAM_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
@@ -26,6 +27,13 @@ function apiToken() {
 function timeoutMs() {
   const value = Number.parseInt(process.env.DEEP_RESEARCH_TIMEOUT_MS || "", 10);
   return Number.isFinite(value) ? Math.min(Math.max(value, 5_000), 120_000) : 60_000;
+}
+
+// Short timeout for recovery/status polls so a reconnect is snappy even when the upstream
+// status endpoint is slow (a slow check just reads as "still running" — the client retries).
+function statusTimeoutMs() {
+  const value = Number.parseInt(process.env.DEEP_RESEARCH_STATUS_TIMEOUT_MS || "", 10);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 4_000), 60_000) : 25_000;
 }
 
 function retryCount() {
@@ -54,14 +62,14 @@ function shouldRetry(error: unknown) {
   return status !== null && RETRYABLE_UPSTREAM_STATUSES.has(status);
 }
 
-async function callJsonOnce<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function callJsonOnce<T>(path: string, options: RequestInit = {}, timeoutOverrideMs?: number): Promise<T> {
   const token = apiToken();
   if (!token) {
     throw Object.assign(new Error("Deep Research API token is not configured"), { statusCode: 503 });
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs());
+  const timeout = setTimeout(() => controller.abort(), timeoutOverrideMs ?? timeoutMs());
   try {
     const response = await fetch(`${baseUrl()}${path}`, {
       ...options,
@@ -97,11 +105,15 @@ async function callJsonOnce<T>(path: string, options: RequestInit = {}): Promise
   }
 }
 
-async function callJson<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const retries = retryCount();
+async function callJson<T>(
+  path: string,
+  options: RequestInit = {},
+  cfg?: { retries?: number; timeoutMs?: number },
+): Promise<T> {
+  const retries = cfg?.retries ?? retryCount();
   for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
     try {
-      return await callJsonOnce<T>(path, options);
+      return await callJsonOnce<T>(path, options, cfg?.timeoutMs);
     } catch (error) {
       if (!shouldRetry(error) || attempt > retries) throw error;
       const delayMs = retryDelayMs(attempt, errorStatus(error));
@@ -143,22 +155,120 @@ export async function startResearch(question: string, depth: ResearchDepth): Pro
   return { jobId };
 }
 
-/** Poll a Deep Research job for its current status / final report. */
-export async function pollResearch(jobId: string): Promise<ResearchPollResult> {
+/** Poll a Deep Research job for its current status / final report.
+ *  `opts.fast` uses a short timeout + no retry — for the recovery/status path where a
+ *  snappy "still running" answer beats blocking the request for minutes on a slow
+ *  upstream status endpoint. */
+export async function pollResearch(jobId: string, opts?: { fast?: boolean }): Promise<ResearchPollResult> {
   if (process.env.ONE_ENABLE_MOCK_RESEARCH === "true") {
     return { status: "completed", report: MOCK_REPORT, citations: [], progress: null, error: null };
   }
+  const cfg = opts?.fast ? { retries: 0, timeoutMs: statusTimeoutMs() } : undefined;
   const data = await callJson<{
     status?: string;
     report?: string | null;
     citations?: unknown[];
     progress?: string | null;
     error?: string | null;
-  }>(`/v1/research/${encodeURIComponent(jobId)}`, { method: "GET" });
+  }>(`/v1/research/${encodeURIComponent(jobId)}`, { method: "GET" }, cfg);
   return {
     status: String(data.status || "in_progress").toLowerCase(),
     report: data.report ?? null,
     citations: Array.isArray(data.citations) ? data.citations : [],
+    progress: data.progress ?? null,
+    error: data.error ?? null,
+  };
+}
+
+/* ── Phase 0: candidate discovery (DR fast agent → structured pivots) ──────── */
+
+export interface DiscoverRequest {
+  name: string;
+  email: string;
+  phone?: string;
+  /** Human-readable location label for disambiguation (e.g. "lat 18.533, lon 73.864"). */
+  location?: string;
+  /** URLs already shown in prior cycles — excluded so each cycle surfaces fresh candidates. */
+  excludeUrls?: string[];
+}
+
+export interface DiscoverPollResult {
+  status: string; // in_progress | completed | failed
+  candidates: DiscoverCandidate[];
+  progress: string | null;
+  error: string | null;
+}
+
+/* Mock candidates (local dev): deterministic + cycle-aware so the "show more" loop
+   surfaces a fresh batch as the user excludes shown ones. Cycle 0 seeds 4 "strong"
+   matches so the 4-✓ gate can be reached on the first batch. */
+const MOCK_DISCOVER_BATCH = 8;
+function mockDiscoverCandidates(cycle: number): DiscoverCandidate[] {
+  const specs: Array<[string, string, string]> = [
+    ["Dev/code", "GitHub", "github.com"],
+    ["Professional", "LinkedIn", "linkedin.com/in"],
+    ["Social", "X", "x.com"],
+    ["Social", "Instagram", "instagram.com"],
+    ["Content", "Medium", "medium.com/@"],
+    ["Academic", "Google Scholar", "scholar.google.com/citations?user="],
+    ["Creative", "Behance", "behance.net"],
+    ["Articles/press", "News", "example-news.com/profile"],
+  ];
+  return specs.map(([category, platform, host], i) => {
+    const n = cycle * MOCK_DISCOVER_BATCH + i + 1;
+    const handle = `mockuser${n}`;
+    const strong = cycle === 0 && i < 4;
+    return {
+      id: `mock-${cycle}-${i}`,
+      category,
+      platform,
+      handle,
+      displayName: `Mock User ${n}`,
+      url: `https://${host}/${handle}`,
+      context: strong ? "Strong match — name + email prefix align." : "Possible same-name match — confirm if it's you.",
+      confidenceHint: strong ? "strong" : "possible",
+    };
+  });
+}
+
+/** Start a Phase-0 candidate-discovery job (DR fast agent). Returns the jobId to poll. */
+export async function startDiscover(req: DiscoverRequest): Promise<{ jobId: string }> {
+  if (process.env.ONE_ENABLE_MOCK_RESEARCH === "true") {
+    const cycle = Math.floor((req.excludeUrls?.length ?? 0) / MOCK_DISCOVER_BATCH);
+    return { jobId: `mock-discover-job:${cycle}` };
+  }
+  const data = await callJson<{ jobId?: string; id?: string }>("/v1/discover", {
+    method: "POST",
+    body: JSON.stringify({
+      name: req.name,
+      email: req.email,
+      phone: req.phone,
+      location: req.location,
+      excludeUrls: req.excludeUrls ?? [],
+    }),
+  });
+  const jobId = data.jobId || data.id;
+  if (!jobId) {
+    throw Object.assign(new Error("Discovery did not return a job id"), { statusCode: 502 });
+  }
+  return { jobId };
+}
+
+/** Poll a Phase-0 discovery job for its candidate list. */
+export async function pollDiscover(jobId: string): Promise<DiscoverPollResult> {
+  if (process.env.ONE_ENABLE_MOCK_RESEARCH === "true") {
+    const cycle = Number.parseInt(jobId.split(":")[1] || "0", 10) || 0;
+    return { status: "completed", candidates: mockDiscoverCandidates(cycle), progress: null, error: null };
+  }
+  const data = await callJson<{
+    status?: string;
+    candidates?: DiscoverCandidate[];
+    progress?: string | null;
+    error?: string | null;
+  }>(`/v1/discover/${encodeURIComponent(jobId)}`, { method: "GET" });
+  return {
+    status: String(data.status || "in_progress").toLowerCase(),
+    candidates: Array.isArray(data.candidates) ? data.candidates : [],
     progress: data.progress ?? null,
     error: data.error ?? null,
   };
@@ -169,6 +279,8 @@ export interface SynthIdentity {
   email: string;
   phone?: string;
   location?: string;
+  /** Phase-0 subject-confirmed anchors — disambiguation ground truth for Phase 2. */
+  confirmedProfiles?: ConfirmedProfile[];
 }
 
 /** Synthesis runs Claude server-side; allow longer than the poll/start timeout. */

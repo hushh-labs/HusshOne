@@ -35,6 +35,14 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
         ? `location: ZIP/postal ${input.zipCode}`
         : "location: not provided";
 
+  // Phase-0 subject-confirmed profiles ("this is me") → DEFINITIVE identity anchors.
+  // Injected so the agent resolves the whole report around the real person and discards
+  // same-name look-alikes — this is what collapses the same-name noise.
+  const anchors = (input.confirmedProfiles ?? []).filter((p) => p && p.url);
+  const anchorsBlock = anchors.length
+    ? `\n\nVERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):\nThe subject personally confirmed the profiles below are theirs. Treat each as DEFINITIVE. Resolve the ENTIRE report around these anchors, cross-link every finding to them, and aggressively exclude same-name people/profiles that do not connect to them (mark such look-alikes "Likely false positive").\n${anchors.map((p) => `- confirmed ${p.platform}: ${p.url}`).join("\n")}`
+    : "";
+
   return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1: PUBLIC INTERNET INTELLIGENCE DISCOVERY & REPORT GENERATION
 
 The subject has explicitly consented to lawful public internet identity/context research, public profile enrichment, breach-exposure awareness, safety review, and consent-based personalization, for a self-audit of their own public footprint.
@@ -43,7 +51,7 @@ INPUT PARAMETERS:
 - name: ${input.name}
 - email: ${input.email}
 - contact: ${input.phone || "not provided"}
-- ${location}
+- ${location}${anchorsBlock}
 
 ROLE:
 You are a consent-based public intelligence analyst. Use only lawful publicly accessible information; build a rigorous public intelligence report; never expose secrets, stolen data, private credentials, or non-public information; clearly separate confirmed facts, probable matches, weak signals, inferred insights, unknowns, contradictions, and false-positive risks; and prefer "unknown" over guessing.
