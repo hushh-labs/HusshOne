@@ -76,6 +76,9 @@ npm run build                                # MUST pass — type-checks every s
 ```
 
 ### 4. Deploy
+- **If this release also changed `prisma/schema.prisma` → apply the migration to prod FIRST**
+  (deploy doesn't auto-migrate; Prisma RETURNING-selects every column, so an un-migrated
+  schema column breaks all queries on that table). See the `deploy` skill's **Step 2.5**.
 - **husshone → Cloud Run `one` / `hushone-app` / us-central1.** Follow the
   **`deploy`** skill (it has the wrong-service trap + exact command). Short form:
   ```bash
