@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { getOwnedScanRun } from "@/lib/db/scan-store";
+import { getOwnedScanRun, getScanEmailDelivery } from "@/lib/db/scan-store";
 
 export const runtime = "nodejs";
 
@@ -22,11 +22,14 @@ export async function GET(
       return NextResponse.json({ ok: false, status: "unknown", result: null }, { status: 404 });
     }
 
+    const emailDelivery = scan.status === "completed" ? await getScanEmailDelivery(verified.uid, scanRunId) : null;
+
     return NextResponse.json({
       ok: scan.status === "completed",
       status: scan.status,
       result: scan.normalizedResult ?? null,
       error: scan.error ?? null,
+      emailDelivery,
     });
   } catch (error) {
     const statusCode =

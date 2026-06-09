@@ -1,15 +1,27 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { getResearchJob, completeScanRun, failScanRun } from "@/lib/db/scan-store";
+import { getResearchJob, completeScanRun, failScanRun, getScanEmailDelivery } from "@/lib/db/scan-store";
 import { pollResearch } from "@/lib/research/client";
 import { finalizeResearch } from "@/lib/research/finalize";
+import { sendScanResultEmails } from "@/lib/notifications/scan-email";
+import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import type { LocationMode, OneSubjectInput } from "@/lib/ria/types";
 
 export const runtime = "nodejs";
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function requestOrigin(request: Request): string | null {
+  const explicit = request.headers.get("origin");
+  if (explicit?.startsWith("http")) return explicit.replace(/\/+$/, "");
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+  const host = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || request.headers.get("host")?.trim();
+  if (!host) return null;
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(host)) return null;
+  return `${proto}://${host}`;
 }
 
 /* Recovery / resume endpoint: if the streamed POST dropped (e.g. a long job past
@@ -29,7 +41,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: false, status: "unknown", result: null }, { status: 404 });
     }
     if (scan.status === "completed") {
-      return NextResponse.json({ ok: true, status: "completed", result: scan.normalizedResult ?? null });
+      const emailDelivery = await getScanEmailDelivery(verified.uid, id);
+      return NextResponse.json({ ok: true, status: "completed", result: scan.normalizedResult ?? null, emailDelivery });
     }
     if (scan.status === "failed") {
       return NextResponse.json({ ok: false, status: "failed", error: scan.error ?? "Research failed", result: null });
@@ -63,7 +76,30 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         id,
       );
       await completeScanRun(id, toJsonValue(result), result.summary);
-      return NextResponse.json({ ok: true, status: "completed", result });
+      // The streaming POST normally sends the result emails, but when it was interrupted
+      // (client disconnect / route timeout) THIS resume path is what completes the scan —
+      // so send here too. The OneNotification unique constraint dedupes if both ever run.
+      let emailDelivery: ScanEmailDeliverySummary | null = null;
+      try {
+        emailDelivery = await sendScanResultEmails({
+          userId: scan.userId,
+          scanRunId: id,
+          result,
+          audit: null,
+          siteUrl: requestOrigin(request),
+        });
+      } catch (notificationError) {
+        console.error(
+          JSON.stringify({
+            event: "one.research_email.failed",
+            severity: "ERROR",
+            scanRunId: id,
+            message: notificationError instanceof Error ? notificationError.message : "unknown",
+          }),
+        );
+        emailDelivery = await getScanEmailDelivery(verified.uid, id);
+      }
+      return NextResponse.json({ ok: true, status: "completed", result, emailDelivery });
     }
     if (dr.status === "failed") {
       await failScanRun(id, dr.error || "Deep Research could not complete").catch(() => undefined);

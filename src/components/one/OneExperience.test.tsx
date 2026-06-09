@@ -8,6 +8,7 @@ describe("OneExperience", () => {
 
     expect(screen.getByRole("button", { name: /continue with google/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /continue with apple/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/your personal intelligence agent/i)).toBeInTheDocument();
+    // exact-match the visible lead, not the sr-only h1 which also contains the phrase
+    expect(screen.getByText("Your personal intelligence agent.")).toBeInTheDocument();
   });
 });

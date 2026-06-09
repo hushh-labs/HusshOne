@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { getLatestScanForUser } from "@/lib/db/scan-store";
+import { getLatestScanForUser, getScanEmailDelivery } from "@/lib/db/scan-store";
 
 export const runtime = "nodejs";
 
@@ -17,12 +17,14 @@ export async function GET(request: Request) {
     if (!scan) {
       return NextResponse.json({ ok: false, status: "none", scanRunId: null, result: null });
     }
+    const emailDelivery = scan.status === "completed" ? await getScanEmailDelivery(verified.uid, scan.id) : null;
     return NextResponse.json({
       ok: scan.status === "completed",
       status: scan.status,
       scanRunId: scan.id,
       result: scan.normalizedResult ?? null,
       error: scan.error ?? null,
+      emailDelivery,
     });
   } catch (error) {
     const statusCode =
