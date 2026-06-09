@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import { getPrismaClient } from "./prisma";
+
+const USER_NOTIFICATION_TYPE = "scan_user_full_result";
+const ADMIN_NOTIFICATION_TYPE = "scan_admin_full_result";
 
 interface UpsertUserInput {
   firebaseUid: string;
@@ -175,6 +179,54 @@ export async function getLatestScanForUser(firebaseUid: string) {
       orderBy: { createdAt: "desc" },
       select: { id: true, status: true, normalizedResult: true, error: true },
     });
+  } catch {
+    return null;
+  }
+}
+
+/* Reconstruct the email-delivery summary for a completed scan from the persisted
+   OneNotification rows, so a RECOVERED dashboard (dropped stream / app re-open) can
+   still show the "emailed to you" banner — the live send only runs once, in the
+   streaming POST route. Null when the DB is unset, unowned, or nothing was logged
+   (e.g. a scan finalized on the resume path, which doesn't send email). */
+export async function getScanEmailDelivery(
+  firebaseUid: string,
+  scanRunId: string,
+): Promise<ScanEmailDeliverySummary | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const owns = await prisma.scanRun.findFirst({ where: { id: scanRunId, userId: user.id }, select: { id: true } });
+    if (!owns) return null;
+
+    const rows = await prisma.oneNotification.findMany({
+      where: { scanRunId, notificationType: { in: [USER_NOTIFICATION_TYPE, ADMIN_NOTIFICATION_TYPE] } },
+      select: { notificationType: true, recipientEmail: true, status: true, providerMessageId: true, errorMessage: true },
+    });
+    if (!rows.length) return null;
+
+    const audience = (type: string): ScanEmailAudienceDelivery => {
+      const recipients = rows
+        .filter((row) => row.notificationType === type)
+        .map((row) => ({
+          recipient: row.recipientEmail,
+          status: (row.status === "sent" ? "sent" : "failed") as "sent" | "failed" | "skipped",
+          messageId: row.providerMessageId ?? null,
+          error: row.errorMessage ?? null,
+        }));
+      const status: ScanEmailAudienceDelivery["status"] = !recipients.length
+        ? "skipped"
+        : recipients.every((r) => r.status === "sent")
+          ? "sent"
+          : recipients.every((r) => r.status === "failed")
+            ? "failed"
+            : "partial";
+      return { status, recipients, error: status === "sent" ? null : recipients.find((r) => r.error)?.error ?? null };
+    };
+
+    return { user: audience(USER_NOTIFICATION_TYPE), admins: audience(ADMIN_NOTIFICATION_TYPE) };
   } catch {
     return null;
   }

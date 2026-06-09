@@ -35,8 +35,10 @@ import LandingPage from "./landing/LandingPage";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "settings";
+type Stage = "hydrating" | "landing" | "manual" | "precollect" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
+/* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
+type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
 
 interface Identity {
   name: string;
@@ -180,21 +182,28 @@ async function readScanStream(
 function Manual({
   initialName,
   initialEmail,
+  lockedEmail,
   onContinue,
 }: {
   initialName: string;
   initialEmail: string;
+  lockedEmail?: string;
   onContinue: (u: Identity) => void;
 }) {
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  // The server only scans the signed-in Google email, so when we have a valid one we
+  // lock the field to it — editing it would surface as a confusing 403 later at scan time.
+  const locked = !!lockedEmail && EMAIL_RE.test(lockedEmail);
   const [name, setName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
   const [touched, setTouched] = useState(false);
-  const validEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+  const effectiveEmail = locked ? (lockedEmail as string) : email;
+  const validEmail = EMAIL_RE.test(effectiveEmail);
   const ok = name.trim().length > 1 && validEmail;
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!ok) return;
-    onContinue({ name: name.trim(), email: email.trim() });
+    onContinue({ name: name.trim(), email: effectiveEmail.trim() });
   };
   return (
     <div className="screen screen-enter">
@@ -215,20 +224,28 @@ function Manual({
               autoComplete="name"
             />
           </div>
-          <div className="field-group">
-            <label htmlFor="em">Email</label>
-            <input
-              id="em"
-              className={"input" + (touched && email && !validEmail ? " invalid" : "")}
-              placeholder="you@example.com"
-              value={email}
-              type="email"
-              inputMode="email"
-              onBlur={() => setTouched(true)}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
-          </div>
+          {locked ? (
+            <div className="field-group">
+              <label htmlFor="em">Email</label>
+              <input id="em" className="input" value={lockedEmail} readOnly aria-readonly="true" style={{ opacity: 0.7 }} />
+              <span className="field-hint">Signed in as {lockedEmail}. One can only search the account you signed in with.</span>
+            </div>
+          ) : (
+            <div className="field-group">
+              <label htmlFor="em">Email</label>
+              <input
+                id="em"
+                className={"input" + (touched && email && !validEmail ? " invalid" : "")}
+                placeholder="you@example.com"
+                value={email}
+                type="email"
+                inputMode="email"
+                onBlur={() => setTouched(true)}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </div>
+          )}
           <div className="cta-block">
             <button className="solid-cta" type="submit" disabled={!ok}>
               Continue
@@ -277,11 +294,13 @@ function PreCollect({
   phone,
   setPhone,
   onCollect,
+  busy,
 }: {
   user: Identity;
   phone: string;
   setPhone: (v: string) => void;
   onCollect: () => void;
+  busy: boolean;
 }) {
   const initials = initialsForName(user.name);
   const [code, setCode] = useState(() => {
@@ -304,7 +323,7 @@ function PreCollect({
     if (magnetRef.current) magnetRef.current.style.transform = "";
   };
   const submit = () => {
-    if (valid) onCollect();
+    if (valid && !busy) onCollect();
   };
   return (
     <div className="screen precollect screen-enter">
@@ -365,19 +384,39 @@ function PreCollect({
                 }}
               />
             </div>
-            <span className="field-hint">Used only to tell you apart from people with the same name — your number isn&apos;t stored raw.</span>
+            <span className="field-hint">Required — used only to tell you apart from people with the same name. Your number isn&apos;t stored raw.</span>
           </div>
         </div>
 
         <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
-          <button className="cta cta-xl" onClick={submit} disabled={!valid}>
-            {Icons.spark()}
-            <span className="label">Send One</span>
-            <span className="arrow" aria-hidden="true">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h13M13 6l6 6-6 6" />
-              </svg>
-            </span>
+          <button className="cta cta-xl" onClick={submit} disabled={!valid || busy}>
+            {busy ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 17,
+                    height: 17,
+                    borderRadius: "50%",
+                    border: "2px solid rgba(255,255,255,0.35)",
+                    borderTopColor: "#fff",
+                    animation: "scanSpin 0.7s linear infinite",
+                    display: "inline-block",
+                  }}
+                />
+                <span className="label">Locating…</span>
+              </>
+            ) : (
+              <>
+                {Icons.spark()}
+                <span className="label">Send One</span>
+                <span className="arrow" aria-hidden="true">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 12h13M13 6l6 6-6 6" />
+                  </svg>
+                </span>
+              </>
+            )}
           </button>
         </span>
 
@@ -771,7 +810,18 @@ function Dashboard({
             ) : null}
           </div>
           <article className="research-report screen-enter">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.report}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noopener noreferrer">
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {result.report}
+            </ReactMarkdown>
           </article>
           <div className="dash-foot">
             <div className="privacy-row">
@@ -1026,6 +1076,77 @@ function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: 
   );
 }
 
+/* ── F2. Location fallback — geolocation failed; retry or ZIP (extreme case) ── */
+function LocationFallback({
+  reason,
+  busy,
+  onRetry,
+  onZip,
+}: {
+  reason: GeoReason;
+  busy: boolean;
+  onRetry: () => void;
+  onZip: (zip: string) => void;
+}) {
+  const [zip, setZip] = useState("");
+  const zipOk = /^[A-Za-z0-9][A-Za-z0-9 -]{1,9}$/.test(zip.trim());
+  const headline =
+    reason === "denied"
+      ? "Location is turned off."
+      : reason === "timeout"
+        ? "Couldn't lock your location."
+        : reason === "unsupported"
+          ? "Location isn't available here."
+          : "Couldn't find your location.";
+  const detail =
+    reason === "denied"
+      ? "One uses your location to anchor the search. Re-enable location for this site in your browser settings and retry — or continue with your ZIP / postal code."
+      : reason === "timeout"
+        ? "That took too long. Make sure location is on, then try again — or continue with your ZIP / postal code."
+        : "Your device couldn't determine your location. Try again — or continue with your ZIP / postal code.";
+  const submitZip = (e: FormEvent) => {
+    e.preventDefault();
+    if (zipOk && !busy) onZip(zip.trim());
+  };
+  return (
+    <div className="screen hero screen-enter">
+      <div className="content hero-copy">
+        <p className="eyebrow">One needs a location</p>
+        <h1 className="display" style={{ fontSize: "clamp(26px,4vw,44px)" }}>
+          {headline}
+        </h1>
+        <p className="sub">{detail}</p>
+        <div className="state-actions">
+          <button className="cta" style={{ height: 56, fontSize: 16 }} onClick={onRetry} disabled={busy}>
+            {Icons.retry(16)}
+            <span className="label">{busy ? "Locating…" : "Enable location & retry"}</span>
+          </button>
+        </div>
+        <form className="card" style={{ marginTop: 18 }} onSubmit={submitZip}>
+          <div className="field-group">
+            <label htmlFor="zip">Or continue with your ZIP / postal code</label>
+            <input
+              id="zip"
+              className="input"
+              placeholder="400001"
+              value={zip}
+              onChange={(e) => setZip(e.target.value)}
+              autoComplete="postal-code"
+              disabled={busy}
+            />
+            <span className="field-hint">Less precise than live location, but enough to anchor the search.</span>
+          </div>
+          <div className="cta-block">
+            <button className="solid-cta" type="submit" disabled={!zipOk || busy}>
+              Continue with ZIP
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 /* ── G. Profile menu (header avatar dropdown) ───────────── */
 function ProfileMenu({
   name,
@@ -1265,6 +1386,8 @@ export default function OneExperience() {
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
   const [error, setError] = useState("");
+  const [geoBusy, setGeoBusy] = useState(false); // waiting on the browser location prompt
+  const [geoReason, setGeoReason] = useState<GeoReason>("denied"); // drives LocationFallback copy
   const [notice, setNotice] = useState(""); // brief confirmation line on landing (e.g. after delete)
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -1363,25 +1486,36 @@ export default function OneExperience() {
   const fetchScanStatus = async (
     user: ClientUser,
     id: string,
-  ): Promise<{ status: string; result: OneDashboardResult | null }> => {
+  ): Promise<{ status: string; result: OneDashboardResult | null; emailDelivery: ScanEmailDeliverySummary | null }> => {
     const authorization = await getFirebaseBearer(user as User);
     const res = await fetch(
       `${RESEARCH_MODE ? "/api/one/research/" : "/api/one/scans/"}${encodeURIComponent(id)}`,
       { headers: { Authorization: authorization } },
     );
-    if (res.status === 404) return { status: "unknown", result: null };
-    if (!res.ok) return { status: "error", result: null };
-    const payload = (await res.json().catch(() => null)) as { status?: string; result?: OneDashboardResult | null } | null;
-    return { status: payload?.status || "unknown", result: payload?.result ?? null };
+    if (res.status === 404) return { status: "unknown", result: null, emailDelivery: null };
+    if (!res.ok) return { status: "error", result: null, emailDelivery: null };
+    const payload = (await res.json().catch(() => null)) as {
+      status?: string;
+      result?: OneDashboardResult | null;
+      emailDelivery?: ScanEmailDeliverySummary | null;
+    } | null;
+    return {
+      status: payload?.status || "unknown",
+      result: payload?.result ?? null,
+      emailDelivery: payload?.emailDelivery ?? null,
+    };
   };
 
   // Fast path for an ALREADY-completed scan (deep-link / last-scan). A few quick
   // tries; bail immediately once it's clearly not a finished result to wait on.
-  const tryRecoverCompleted = async (user: ClientUser, id: string): Promise<OneDashboardResult | null> => {
+  const tryRecoverCompleted = async (
+    user: ClientUser,
+    id: string,
+  ): Promise<{ result: OneDashboardResult; emailDelivery: ScanEmailDeliverySummary | null } | null> => {
     for (let i = 0; i < 3; i += 1) {
       try {
-        const { status, result } = await fetchScanStatus(user, id);
-        if (status === "completed" && result) return result;
+        const { status, result, emailDelivery } = await fetchScanStatus(user, id);
+        if (status === "completed" && result) return { result, emailDelivery };
         if (status === "failed" || status === "unknown") return null;
       } catch {
         /* transient — retry */
@@ -1403,13 +1537,14 @@ export default function OneExperience() {
     while (!pollStopRef.current && scanRunIdRef.current === id && performance.now() - startedAt < POLL_MAX_MS) {
       let status = "running";
       let result: OneDashboardResult | null = null;
+      let emailDelivery: ScanEmailDeliverySummary | null = null;
       try {
-        ({ status, result } = await fetchScanStatus(user, id));
+        ({ status, result, emailDelivery } = await fetchScanStatus(user, id));
       } catch {
         status = "error"; // network blip → treat as still running, keep polling
       }
       if (status === "completed" && result) {
-        await revealResult({ result, audit: null, emailDelivery: null });
+        await revealResult({ result, audit: null, emailDelivery });
         return "revealed";
       }
       if (status === "failed") {
@@ -1462,10 +1597,10 @@ export default function OneExperience() {
       const restoreId = pending || safeGet("local", LS_LAST_SCAN);
       if (restoreId) {
         scanRunIdRef.current = restoreId;
-        const result = await tryRecoverCompleted(user, restoreId);
+        const recovered = await tryRecoverCompleted(user, restoreId);
         safeDel("session", SS_PENDING);
-        if (result) {
-          await revealResult({ result, audit: null, emailDelivery: null });
+        if (recovered) {
+          await revealResult({ result: recovered.result, audit: null, emailDelivery: recovered.emailDelivery });
           return;
         }
         if (!pending) safeDel("local", LS_LAST_SCAN); // stale/expired id
@@ -1481,6 +1616,7 @@ export default function OneExperience() {
             status?: string;
             scanRunId?: string | null;
             result?: OneDashboardResult | null;
+            emailDelivery?: ScanEmailDeliverySummary | null;
           } | null;
           if (payload?.scanRunId && payload.status === "running") {
             scanRunIdRef.current = payload.scanRunId;
@@ -1497,7 +1633,7 @@ export default function OneExperience() {
           } else if (payload?.scanRunId && payload.status === "completed" && payload.result) {
             scanRunIdRef.current = payload.scanRunId;
             safeSet("local", LS_LAST_SCAN, payload.scanRunId);
-            await revealResult({ result: payload.result, audit: null, emailDelivery: null });
+            await revealResult({ result: payload.result, audit: null, emailDelivery: payload.emailDelivery ?? null });
             return;
           }
         }
@@ -1586,8 +1722,22 @@ export default function OneExperience() {
       track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
       await hydrateFromUser(user); // single routing path (also honors a ?scan deep-link)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign-in failed.");
-      setStage("error");
+      const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
+      // user dismissed the Google popup (or it was double-triggered) → not an error, stay on landing quietly
+      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+        setError("");
+        return;
+      }
+      setError(
+        code === "auth/popup-blocked"
+          ? "Your browser blocked the sign-in popup. Allow popups for this site and try again."
+          : code === "auth/network-request-failed"
+            ? "Network issue — check your connection and try again."
+            : e instanceof Error
+              ? e.message
+              : "Sign-in failed.",
+      );
+      // LandingPage renders this error inline — no need to bounce to the error screen.
     }
   };
 
@@ -1670,23 +1820,31 @@ export default function OneExperience() {
   };
 
   const startCollect = () => {
+    if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setError("Browser location is unavailable on this device.");
-      setStage("error");
+      setGeoReason("unsupported");
+      setStage("location");
       return;
     }
+    setError("");
+    setGeoBusy(true);
     navigator.geolocation.getCurrentPosition(
-      (pos) =>
+      (pos) => {
+        setGeoBusy(false);
         void runScan({
           latitude: Number(pos.coords.latitude.toFixed(6)),
           longitude: Number(pos.coords.longitude.toFixed(6)),
-        }),
-      () => {
-        track("geo_denied");
-        setError("Location wasn't shared, so One couldn't anchor the search.");
-        setStage("error");
+        });
       },
-      { enableHighAccuracy: false, timeout: 12_000, maximumAge: 60_000 },
+      (err) => {
+        setGeoBusy(false);
+        const reason: GeoReason =
+          err.code === err.PERMISSION_DENIED ? "denied" : err.code === err.TIMEOUT ? "timeout" : "unavailable";
+        if (reason === "denied") track("geo_denied");
+        setGeoReason(reason);
+        setStage("location"); // retry + ZIP extreme fallback
+      },
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
     );
   };
 
@@ -1707,6 +1865,7 @@ export default function OneExperience() {
     setElapsedMs(0);
     setServerStage(0);
     setLiveSource(null);
+    setGeoBusy(false);
     setStage("landing");
   };
 
@@ -1814,11 +1973,12 @@ export default function OneExperience() {
         key="m"
         initialName={identity.name}
         initialEmail={identity.email}
+        lockedEmail={authUser?.email ?? undefined}
         onContinue={onManualDone}
       />
     );
   else if (stage === "precollect")
-    view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} />;
+    view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} busy={geoBusy} />;
   else if (stage === "collect")
     view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
@@ -1840,10 +2000,20 @@ export default function OneExperience() {
         onManual={() => setStage("manual")}
       />
     );
+  else if (stage === "location")
+    view = (
+      <LocationFallback
+        key="loc"
+        reason={geoReason}
+        busy={geoBusy}
+        onRetry={startCollect}
+        onZip={(zip) => void runScan({ zipCode: zip })}
+      />
+    );
 
   return (
     <main className="stage">
-      {stage === "manual" || stage === "empty" || stage === "error" || stage === "settings" ? (
+      {stage === "manual" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" ? (
         <ParticleMorph motion={MOTION} />
       ) : (
         <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />
