@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "
 import type { User } from "firebase/auth";
 import { isValidEmail, normalizeEmail, normalizeName, initialsForName } from "@/lib/auth/identity";
 import {
+  completeGoogleRedirect,
   getFirebaseBearer,
   isFirebaseClientConfigured,
   makeDevUser,
@@ -73,6 +74,19 @@ function hexA(hex: string, a: number) {
 
 function shouldAllowDevAuth() {
   return process.env.NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH === "true";
+}
+
+/* Map a Firebase sign-in error to a user-facing message. Returns "" for user-initiated
+   cancellations (popup closed / dismissed) so we stay quiet rather than show an error. */
+function mapSignInError(e: unknown): string {
+  const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
+  if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request" || code === "auth/user-cancelled") {
+    return "";
+  }
+  if (code === "auth/popup-blocked") return "Your browser blocked the sign-in popup. Allow popups for this site and try again.";
+  if (code === "auth/network-request-failed") return "Network issue — check your connection and try again.";
+  if (code === "auth/missing-or-invalid-nonce") return "Sign-in didn't complete. Please tap Continue with Google again.";
+  return e instanceof Error ? e.message : "Sign-in failed.";
 }
 
 function extractIdentity(user: ClientUser): Identity {
@@ -1678,6 +1692,14 @@ export default function OneExperience() {
         else setStage("landing");
         return;
       }
+      // Complete a pending mobile redirect sign-in first (and surface its errors). The
+      // resulting signed-in user is routed by the observeAuth first emission below.
+      try {
+        const redirectUser = await completeGoogleRedirect();
+        if (redirectUser) track("signed_in", { provider: "google" });
+      } catch (e) {
+        if (!cancelled) setError(mapSignInError(e));
+      }
       let initialResolved = false;
       unsub = observeAuth((user) => {
         if (cancelled) return;
@@ -1712,32 +1734,23 @@ export default function OneExperience() {
     setError("");
     setNotice("");
     try {
-      let user: ClientUser;
+      let user: ClientUser | null;
       if (isFirebaseClientConfigured()) user = await signInWithGoogle();
       else if (shouldAllowDevAuth()) {
         user = makeDevUser();
         safeSet("session", SS_DEV_AUTH, "1"); // so a refresh restores the dev user
       } else throw new Error("Google sign-in is not configured for this build.");
 
+      // Mobile (or a popup fallback) started a full-page redirect → no user on this page;
+      // boot()'s completeGoogleRedirect finishes the sign-in when the browser returns.
+      if (!user) return;
+
       track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
       await hydrateFromUser(user); // single routing path (also honors a ?scan deep-link)
     } catch (e) {
-      const code = typeof e === "object" && e && "code" in e ? String((e as { code?: string }).code) : "";
-      // user dismissed the Google popup (or it was double-triggered) → not an error, stay on landing quietly
-      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-        setError("");
-        return;
-      }
-      setError(
-        code === "auth/popup-blocked"
-          ? "Your browser blocked the sign-in popup. Allow popups for this site and try again."
-          : code === "auth/network-request-failed"
-            ? "Network issue — check your connection and try again."
-            : e instanceof Error
-              ? e.message
-              : "Sign-in failed.",
-      );
-      // LandingPage renders this error inline — no need to bounce to the error screen.
+      // LandingPage renders this error inline — no bounce to the error screen.
+      // mapSignInError returns "" for user cancellations (stay quiet).
+      setError(mapSignInError(e));
     }
   };
 
