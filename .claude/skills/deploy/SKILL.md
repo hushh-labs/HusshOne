@@ -74,6 +74,46 @@ npm run build                                # the real gate: compile + TypeScri
 files), so a broken WIP component fails the build. Fix or set it aside — don't deploy
 a red build.
 
+## Step 2.5 — Apply DB migrations FIRST (if the Prisma schema changed)
+
+⚠️ **This is mandatory and ordered. Skipping it caused a full prod outage once.**
+
+Deploy does **not** auto-migrate (`Dockerfile` `CMD` is just `node server.js`). And
+Prisma's `create`/`update`/`findX` emit a `RETURNING`/`SELECT` of **every** scalar
+column of the model — so a deployed client that knows a column the **database doesn't
+have** makes *every* query on that table fail, **including `create()`** (not just the
+code that reads the new field). Net effect: ship a new schema column without migrating
+first and **all scans break instantly** (`The column ScanRun.<x> does not exist`).
+
+So: **migrate prod BEFORE the new code serves.** Either migrate → deploy, or deploy to
+a no-traffic revision → migrate → flip traffic (the safe recovery order).
+
+The DB is **Cloud SQL** (`hushone-app:us-central1:hushh-identity-pg`) reached over a
+unix socket, so connect with the **Cloud SQL Auth Proxy** (authenticates via your
+gcloud creds — no network/security changes). `DATABASE_URL` is Secret Manager secret
+**`ONE_DATABASE_URL`**. **Never print the connection string.**
+
+```bash
+PROXY=$(command -v cloud-sql-proxy || echo ~/google-cloud-sdk/bin/cloud-sql-proxy)
+"$PROXY" hushone-app:us-central1:hushh-identity-pg --port 5433 >/tmp/csqlproxy.log 2>&1 &
+PROXY_PID=$!; trap 'kill $PROXY_PID 2>/dev/null' EXIT
+until grep -qi "ready for new connections" /tmp/csqlproxy.log; do sleep 0.5; done
+
+DBURL=$(gcloud secrets versions access latest --secret=ONE_DATABASE_URL --project hushone-app)
+# rebuild URL for the proxy (creds preserved, socket host → 127.0.0.1:5433); never echoed
+LOCALURL=$(DBURL="$DBURL" python3 -c "import os,urllib.parse as up;u=up.urlparse(os.environ['DBURL']);a=u.netloc.rsplit('@',1)[0] if '@' in u.netloc else '';print(up.urlunparse((u.scheme,(a+'@' if a else '')+'127.0.0.1:5433',u.path or '/postgres','','','')))")
+
+DATABASE_URL="$LOCALURL" npx prisma db execute --schema prisma/schema.prisma \
+  --file prisma/migrations/<NEW_MIGRATION_DIR>/migration.sql 2>&1 | sed -E 's#postgres(ql)?://[^ ]*#<redacted>#g'
+kill $PROXY_PID
+```
+
+Rules: write every migration **idempotent** (`ADD COLUMN IF NOT EXISTS`, etc.) so re-runs
+are safe and history-mismatch doesn't matter; pipe all output through the `sed` redactor
+so the URL can't leak on error; prefer `prisma db execute --file` over `migrate deploy`
+here (the `_prisma_migrations` history may be out of sync, and `migrate deploy` would try
+to replay the non-idempotent `init` migration and fail).
+
 ## Step 3 — Deploy (to the correct service)
 
 ```bash
@@ -158,6 +198,7 @@ dig +short one.hushh.ai
 
 - [ ] `git status` reviewed — only intended changes in the tree
 - [ ] `npm run build` passes (dev server stopped first)
+- [ ] **if `prisma/schema.prisma` changed → migration applied to prod FIRST** (Step 2.5) — else every query on that table breaks
 - [ ] deploying to **service `one`, project `hushone-app`, us-central1** (NOT one-hushh-ai)
 - [ ] new revision serving 100%
 - [ ] `https://one.hushh.ai/` shows the new marker (HTTP 200) — verified on the domain
