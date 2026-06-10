@@ -9,7 +9,15 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "react";
 import type { User } from "firebase/auth";
-import { isValidEmail, normalizeEmail, normalizeName, initialsForName } from "@/lib/auth/identity";
+import {
+  isValidEmail,
+  normalizeEmail,
+  normalizeName,
+  initialsForName,
+  isLinkedInUrl,
+  normalizeLinkedInUrl,
+  linkedinHandleFromUrl,
+} from "@/lib/auth/identity";
 import {
   completeGoogleRedirect,
   getFirebaseBearer,
@@ -65,6 +73,10 @@ const ACCENT = "#111113";
    dossier) instead of the Shadow structured scan. Server routes mirror the
    /dashboard + /scans recovery protocol, so the rest of the flow is unchanged. */
 const RESEARCH_MODE = process.env.NEXT_PUBLIC_ONE_RESEARCH_MODE === "true";
+/* Phase-0 candidate discovery (the "is this you?" pivot cards + 4-✓ gate) is now
+   DORMANT — Phase-0 identity is anchored by the user's pasted LinkedIn URL instead.
+   Flip this on to revive the old discover/disambiguation flow (kept intact behind it). */
+const DISCOVER_MODE = process.env.NEXT_PUBLIC_ONE_DISCOVER_MODE === "true";
 
 function hexA(hex: string, a: number) {
   const h = hex.replace("#", "");
@@ -100,6 +112,7 @@ function extractIdentity(user: ClientUser): Identity {
    localStorage survives a browser restart; sessionStorage is per-tab. We never
    store the PII result blob — only ids that are re-fetched from the server. */
 const LS_PHONE = "one_phone"; // typed phone, restored across refresh
+const LS_LINKEDIN = "one_linkedin"; // pasted LinkedIn URL (Phase-0 pivot), restored across refresh
 const LS_LAST_SCAN = "one_last_scan"; // last completed scan id → dashboard restore
 const LS_ACTIVE_SCAN = "one_active_scan"; // in-flight scan id → resume after refresh OR app close
 const LS_ACTIVE_STARTED_AT = "one_active_started_at"; // epoch ms the active scan began → resume the elapsed/progress correctly across refresh/background/close
@@ -137,6 +150,7 @@ function safeDel(store: "local" | "session", key: string) {
 }
 function clearPersisted() {
   safeDel("local", LS_PHONE);
+  safeDel("local", LS_LINKEDIN);
   safeDel("local", LS_LAST_SCAN);
   safeDel("local", LS_ACTIVE_SCAN);
   safeDel("local", LS_ACTIVE_STARTED_AT);
@@ -319,12 +333,18 @@ function PreCollect({
   user,
   phone,
   setPhone,
+  linkedin,
+  setLinkedin,
+  requireLinkedin,
   onCollect,
   busy,
 }: {
   user: Identity;
   phone: string;
   setPhone: (v: string) => void;
+  linkedin: string;
+  setLinkedin: (v: string) => void;
+  requireLinkedin: boolean;
   onCollect: () => void;
   busy: boolean;
 }) {
@@ -334,8 +354,10 @@ function PreCollect({
     return m ? m[1] : "+91";
   });
   const [national, setNational] = useState(() => phone.replace(/^\+\d{1,4}\s/, ""));
+  const [liTouched, setLiTouched] = useState(false);
   const combine = (c: string, n: string) => (n.trim() ? `${c} ${n.trim()}` : "");
-  const valid = isValidPhone(combine(code, national));
+  const linkedinOk = !requireLinkedin || isLinkedInUrl(linkedin);
+  const valid = isValidPhone(combine(code, national)) && linkedinOk;
   const magnetRef = useRef<HTMLSpanElement | null>(null);
   const onMove = (e: React.MouseEvent) => {
     const el = magnetRef.current;
@@ -374,6 +396,27 @@ function PreCollect({
               {Icons.check(13)}
             </div>
           </div>
+
+          {requireLinkedin ? (
+            <div className="pc-phone">
+              <label htmlFor="li">Your LinkedIn profile</label>
+              <input
+                id="li"
+                className={"input" + (liTouched && linkedin && !linkedinOk ? " invalid" : "")}
+                type="url"
+                inputMode="url"
+                autoComplete="url"
+                placeholder="linkedin.com/in/your-name"
+                value={linkedin}
+                onChange={(e) => setLinkedin(e.target.value)}
+                onBlur={() => setLiTouched(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submit();
+                }}
+              />
+              <span className="field-hint">One uses this to lock onto the real you and build a sharper report — paste your profile URL.</span>
+            </div>
+          ) : null}
 
           <div className="pc-phone">
             <label htmlFor="ph">Your phone number</label>
@@ -1601,6 +1644,8 @@ export default function OneExperience() {
   // lazy-read the saved phone so a refresh keeps it without a setState-in-effect
   // (SSR-safe: safeGet returns null on the server, and phone isn't rendered while hydrating)
   const [phone, setPhone] = useState(() => safeGet("local", LS_PHONE) ?? "");
+  // Phase-0 pivot: the user's LinkedIn URL (lazy-read so a refresh keeps it, SSR-safe).
+  const [linkedin, setLinkedin] = useState(() => safeGet("local", LS_LINKEDIN) ?? "");
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
@@ -1945,9 +1990,12 @@ export default function OneExperience() {
         /* probe failed — never block sign-in on it */
       }
 
-      // (d) default — signed in, nothing to restore. In Deep Research mode, resume an
-      // in-progress disambiguation (confirmed pivots + shown set) if one was saved.
-      if (RESEARCH_MODE && baseStage === "precollect") {
+      // (d) default — signed in, nothing to restore. With the dormant discover flow
+      // revived (DISCOVER_MODE), resume an in-progress disambiguation if one was saved.
+      // When it's off (the LinkedIn-pivot flow), drop any stale saved discovery so it
+      // can't resurrect the retired screen for a returning user.
+      if (!DISCOVER_MODE) safeDel("local", LS_DISCOVERY);
+      if (RESEARCH_MODE && DISCOVER_MODE && baseStage === "precollect") {
         const rawDisc = safeGet("local", LS_DISCOVERY);
         if (rawDisc) {
           try {
@@ -2042,6 +2090,13 @@ export default function OneExperience() {
     if (phone.trim()) safeSet("local", LS_PHONE, phone);
     else safeDel("local", LS_PHONE);
   }, [phone, stage]);
+
+  // persist the pasted LinkedIn URL the same way so a precollect refresh keeps it
+  useEffect(() => {
+    if (stage === "hydrating") return;
+    if (linkedin.trim()) safeSet("local", LS_LINKEDIN, linkedin);
+    else safeDel("local", LS_LINKEDIN);
+  }, [linkedin, stage]);
 
   const onAuth = async () => {
     setError("");
@@ -2296,6 +2351,14 @@ export default function OneExperience() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restorePending, authUser]);
 
+  // The pasted LinkedIn URL → the single Phase-0 anchor threaded into Phase 1 + 2.
+  // Empty array when nothing valid was entered (anchor-less scan, fail-soft).
+  const linkedinPivot = (): ConfirmedProfile[] => {
+    const url = normalizeLinkedInUrl(linkedin);
+    if (!url) return [];
+    return [{ platform: "LinkedIn", handle: linkedinHandleFromUrl(url), url, category: "Professional" }];
+  };
+
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
     // A scan is already running (e.g. user landed back on precollect after a recovery
@@ -2333,8 +2396,10 @@ export default function OneExperience() {
           latitude: Number(pos.coords.latitude.toFixed(6)),
           longitude: Number(pos.coords.longitude.toFixed(6)),
         };
-        // Deep Research → confirm identity first (Phase 0); Shadow → scan directly.
-        if (RESEARCH_MODE) void runDiscover(loc);
+        // Deep Research → anchor on the pasted LinkedIn pivot and scan directly.
+        // (DISCOVER_MODE revives the old "confirm candidates" Phase-0 instead.) Shadow → scan directly.
+        if (RESEARCH_MODE && DISCOVER_MODE) void runDiscover(loc);
+        else if (RESEARCH_MODE) void runScan(loc, linkedinPivot());
         else void runScan(loc);
       },
       (err) => {
@@ -2400,6 +2465,7 @@ export default function OneExperience() {
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
     setPhone("");
+    setLinkedin("");
     setDashboard(null);
     setAudit(null);
     setEmailDelivery(null);
@@ -2529,7 +2595,19 @@ export default function OneExperience() {
       />
     );
   else if (stage === "precollect")
-    view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} busy={geoBusy} />;
+    view = (
+      <PreCollect
+        key="p"
+        user={identity}
+        phone={phone}
+        setPhone={setPhone}
+        linkedin={linkedin}
+        setLinkedin={setLinkedin}
+        requireLinkedin={RESEARCH_MODE && !DISCOVER_MODE}
+        onCollect={startCollect}
+        busy={geoBusy}
+      />
+    );
   else if (stage === "disambiguate")
     view = (
       <Disambiguate
@@ -2576,7 +2654,13 @@ export default function OneExperience() {
         reason={geoReason}
         busy={geoBusy}
         onRetry={startCollect}
-        onZip={(zip) => (RESEARCH_MODE ? void runDiscover({ zipCode: zip }) : void runScan({ zipCode: zip }))}
+        onZip={(zip) =>
+          RESEARCH_MODE && DISCOVER_MODE
+            ? void runDiscover({ zipCode: zip })
+            : RESEARCH_MODE
+              ? void runScan({ zipCode: zip }, linkedinPivot())
+              : void runScan({ zipCode: zip })
+        }
       />
     );
 

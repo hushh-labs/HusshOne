@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { isValidEmail, normalizeEmail, normalizeName } from "@/lib/auth/identity";
+import { isValidEmail, normalizeEmail, normalizeName, normalizeLinkedInUrl } from "@/lib/auth/identity";
 import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
@@ -61,8 +61,11 @@ function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] | undefined 
   for (const item of value) {
     if (!item || typeof item !== "object") continue;
     const p = item as Record<string, unknown>;
-    const url = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
-    if (!url) continue;
+    const rawUrl = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
+    if (!rawUrl) continue;
+    // Canonicalize the LinkedIn pivot so the anchor is clean ground truth for both phases
+    // (client already gates on a valid URL; fall back to the raw value if it doesn't normalize).
+    const url = /linkedin\.com/i.test(rawUrl) ? normalizeLinkedInUrl(rawUrl) || rawUrl : rawUrl;
     out.push({
       url,
       platform: typeof p.platform === "string" ? p.platform.trim().slice(0, 60) : "",

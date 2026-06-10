@@ -37,11 +37,40 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
 
   // Phase-0 subject-confirmed profiles ("this is me") → DEFINITIVE identity anchors.
   // Injected so the agent resolves the whole report around the real person and discards
-  // same-name look-alikes — this is what collapses the same-name noise.
+  // same-name look-alikes — this is what collapses the same-name noise. The user's pasted
+  // LinkedIn URL (when present) is promoted to the PRIMARY anchor: the spine the entire
+  // search plan is derived from, which is what makes Phase 1 sharp.
   const anchors = (input.confirmedProfiles ?? []).filter((p) => p && p.url);
-  const anchorsBlock = anchors.length
-    ? `\n\nVERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):\nThe subject personally confirmed the profiles below are theirs. Treat each as DEFINITIVE. Resolve the ENTIRE report around these anchors, cross-link every finding to them, and aggressively exclude same-name people/profiles that do not connect to them (mark such look-alikes "Likely false positive").\n${anchors.map((p) => `- confirmed ${p.platform}: ${p.url}`).join("\n")}`
-    : "";
+  const linkedinAnchor = anchors.find(
+    (p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url),
+  );
+  const genericAnchorsBlock = (list: typeof anchors, heading: string, intro: string) =>
+    list.length
+      ? `\n\n${heading}\n${intro}\n${list.map((p) => `- confirmed ${p.platform}: ${p.url}`).join("\n")}`
+      : "";
+
+  let anchorsBlock = "";
+  if (linkedinAnchor) {
+    const others = anchors.filter((p) => p !== linkedinAnchor);
+    anchorsBlock =
+      `\n\nPRIMARY ANCHOR — LinkedIn (subject-confirmed; the SPINE of the entire report):\n${linkedinAnchor.url}\n` +
+      `The subject personally confirmed this LinkedIn profile is theirs. Treat it as DEFINITIVE ground truth and build the whole investigation outward from it:\n` +
+      `- Fully mine this profile FIRST: exact full name + name variants, headline/tagline, EVERY current and past employer (with dates), education + degrees + graduation years, current and past locations, the profile's vanity handle/slug, listed skills, certifications, languages, and recent public activity.\n` +
+      `- DERIVE the entire search plan from it: seed every subsequent query with the LinkedIn-derived employers, schools, job titles, and city/region (e.g. "<name> <employer>", "<name> <school>", "<name> <city>"). Treat the LinkedIn vanity handle as a candidate username and hunt for the SAME handle on GitHub, X/Twitter, Instagram, Medium, Substack, Stack Overflow, personal sites, and elsewhere.\n` +
+      `- Cross-link EVERY other finding back to this anchor and confidence-rank it by how strongly it connects (shared employer / school / location / handle / timeline ⇒ higher confidence). Anything that conflicts with this LinkedIn identity (different career, location, or life timeline) is a same-name look-alike ⇒ demote it and mark "Likely false positive".\n` +
+      `- This anchor resolves same-name ambiguity: when two candidates share the name, the one consistent with this LinkedIn profile is the subject.` +
+      genericAnchorsBlock(
+        others,
+        "ADDITIONAL VERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):",
+        'The subject also confirmed the profiles below are theirs. Treat each as DEFINITIVE, cross-link findings to them, and exclude same-name profiles that do not connect (mark "Likely false positive").',
+      );
+  } else {
+    anchorsBlock = genericAnchorsBlock(
+      anchors,
+      "VERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):",
+      'The subject personally confirmed the profiles below are theirs. Treat each as DEFINITIVE. Resolve the ENTIRE report around these anchors, cross-link every finding to them, and aggressively exclude same-name people/profiles that do not connect to them (mark such look-alikes "Likely false positive").',
+    );
+  }
 
   return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1: PUBLIC INTERNET INTELLIGENCE DISCOVERY & REPORT GENERATION
 

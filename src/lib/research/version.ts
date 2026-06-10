@@ -6,4 +6,4 @@
    the user is routed back to the "Send One" screen to re-run on the new
    intelligence (so an improved layer always reaches users — they can't be stuck
    on a cached old report). See .claude/skills/intelligence-release. */
-export const INTELLIGENCE_VERSION = "2026-06-10-pivots";
+export const INTELLIGENCE_VERSION = "2026-06-10-linkedin-pivot";
