@@ -84,7 +84,17 @@ function Markdown({ children }: { children: string }) {
   );
 }
 
-export default function DossierReport({ report }: { report: string }) {
+/** Subtle "more sections on the way" affordance shown while the background deep tier runs. */
+function DeepeningChip() {
+  return (
+    <div className="dossier-deepening" aria-live="polite">
+      <i className="scan-live-dot" aria-hidden="true" />
+      <span>One is digging deeper — more sections arriving…</span>
+    </div>
+  );
+}
+
+export default function DossierReport({ report, deepening }: { report: string; deepening?: boolean }) {
   const { intro, sections } = useMemo(() => splitDossier(report), [report]);
   const [active, setActive] = useState<string>(sections[0]?.id ?? "");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -120,6 +130,7 @@ export default function DossierReport({ report }: { report: string }) {
     return (
       <div className="dossier-fallback screen-enter">
         <Markdown>{report}</Markdown>
+        {deepening ? <DeepeningChip /> : null}
       </div>
     );
   }
@@ -183,6 +194,7 @@ export default function DossierReport({ report }: { report: string }) {
             <Markdown>{s.body}</Markdown>
           </section>
         ))}
+        {deepening ? <DeepeningChip /> : null}
       </div>
     </div>
   );

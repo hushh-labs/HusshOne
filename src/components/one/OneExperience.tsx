@@ -37,7 +37,7 @@ import type {
   PersonAuditStatus,
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
-import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
+import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, isStaleRunning, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { INTELLIGENCE_VERSION } from "@/lib/research/version";
 import { track, getSessionId } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
@@ -891,7 +891,10 @@ function Dashboard({
               </div>
             ) : null}
           </div>
-          <DossierReport report={result.report} />
+          <DossierReport
+            report={result.report + (result.deepReport ? `\n\n${result.deepReport}` : "")}
+            deepening={result.deepStatus === "running"}
+          />
           <div className="dash-foot">
             <div className="privacy-row">
               <span className="p">{Icons.shield(14)} Private by default</span>
@@ -1892,6 +1895,50 @@ export default function OneExperience() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [stage, authUser]);
 
+  // Progressive Tier-2: once the deep-research dashboard is showing and the deep tier isn't
+  // done, quietly pull the remaining sections in the background and merge them in live. This
+  // is the ONLY poller that runs after reveal — it both kicks off the first deep batch and
+  // polls /deep until completion, calling setDashboard(merged) so DossierReport re-renders
+  // with the new sections + TOC entries. Resumes automatically on refresh (deep state lives
+  // in the restored result). Re-runs only when the scan id changes; the inner loop keeps
+  // polling across batch appends (deepStatus stays "running") and exits when it's done.
+  useEffect(() => {
+    if (!RESEARCH_MODE || stage !== "dashboard" || !authUser) return;
+    const id = dashboard?.scanRunId || scanRunIdRef.current;
+    if (!id || !dashboard?.report) return; // deep-research dossier path only
+    if (dashboard.deepStatus === "completed" || dashboard.deepStatus === "failed") return;
+
+    let stopped = false;
+    const startedAt = performance.now();
+    const DEEP_POLL_CAP_MS = 40 * 60 * 1000;
+    const run = async () => {
+      while (!stopped && performance.now() - startedAt < DEEP_POLL_CAP_MS) {
+        try {
+          const authorization = await getFirebaseBearer(authUser as User);
+          const res = await fetch(`/api/one/research/${encodeURIComponent(id)}/deep`, {
+            headers: { Authorization: authorization },
+          });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => null)) as {
+              deepStatus?: string;
+              result?: OneDashboardResult | null;
+            } | null;
+            if (payload?.result) setDashboard(payload.result);
+            if (payload?.deepStatus === "completed" || payload?.deepStatus === "failed") return;
+          }
+        } catch {
+          /* transient — keep polling */
+        }
+        await new Promise((r) => setTimeout(r, 12_000));
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, dashboard?.scanRunId, authUser]);
+
   // Map a (restored or freshly signed-in) user → identity → the right screen,
   // honoring a mid-scan recovery, an email deep-link, or a last-scan dashboard.
   const hydrateFromUser = async (user: ClientUser) => {
@@ -1957,11 +2004,23 @@ export default function OneExperience() {
             emailDelivery?: ScanEmailDeliverySummary | null;
           } | null;
           if (payload?.scanRunId && payload.status === "running") {
+            const createdMs = payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now();
+            // Defense in depth (the server also auto-fails these): never resume the progress
+            // screen for a scan that's been "running" past the staleness ceiling. Without this
+            // a cold reopen re-seeds the elapsed timer from a day-old createdAt and shows the
+            // eternal "composing your report" screen (observed: 1358:09 / 92%).
+            if (isStaleRunning("running", createdMs)) {
+              safeDel("local", LS_ACTIVE_SCAN);
+              safeDel("local", LS_ACTIVE_STARTED_AT);
+              safeDel("local", LS_LAST_SCAN);
+              setError("That scan didn't finish. Start a new one when you're ready.");
+              setStage("error");
+              return;
+            }
             scanRunIdRef.current = payload.scanRunId;
             safeSet("local", LS_ACTIVE_SCAN, payload.scanRunId);
             // Seed the timer from the server's scan createdAt so a cold reopen (no local
             // state) still shows the true elapsed, then persist it for subsequent refreshes.
-            const createdMs = payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now();
             scanStartedAtRef.current = Number.isFinite(createdMs) ? createdMs : Date.now();
             safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
             collectStart.current = performance.now();

@@ -71,6 +71,83 @@ DELIVER a tight, evidence-backed markdown report with ONLY these sections:
 RULES: lawful public sources only; never expose secrets, credentials, leaked/breach data, exact home address, or private family/minor details; label uncertain items "possible / weak / unknown" and prefer "unknown" over guessing; back every non-obvious claim with a source URL. Keep it pointed and strictly about THIS person.`;
 }
 
+/* ── Progressive Tier-2 ("deep") batches ───────────────────────────────────
+   Tier-1 ships the fast 6-section core. The remaining sections are produced in
+   the BACKGROUND as bounded, priority-ordered batches — each its own small DR
+   job (~8min, same lean budget) seeded with the Tier-1 findings so it does NOT
+   re-discover identity. The /deep endpoint runs them one-by-one and appends each
+   to deepReport. One giant deep job = the old 54-min runaway, so we batch. */
+export interface DeepSection {
+  heading: string;
+  guidance: string;
+}
+export interface DeepBatch {
+  key: string;
+  label: string;
+  sections: DeepSection[];
+}
+
+export const DEEP_BATCHES: DeepBatch[] = [
+  {
+    key: "professional-footprint",
+    label: "Professional depth & footprint",
+    sections: [
+      { heading: "Technical & Domain Intelligence", guidance: "languages, frameworks, tools, notable repos/projects, and the quality + recency of their public work." },
+      { heading: "Public Reputation & Credibility", guidance: "endorsements, recognition, media mentions, source consistency; give a Low/Medium/High read with evidence." },
+      { heading: "Digital Footprint & Discoverability", guidance: "how visible/searchable they are, cross-linking across profiles, plus concrete cleanup/consolidation recommendations." },
+      { heading: "Public Contact & Location Context", guidance: "only public/consented info — city/region, public email/handles. Never the exact home address or precise geolocation." },
+    ],
+  },
+  {
+    key: "safety-exposure",
+    label: "Safety & exposure",
+    sections: [
+      { heading: "Breach & Exposure Awareness", guidance: "lawful breach-notification signals for the consented identifiers: affected platform, exposure category, date if known, risk level, and a revoke/reset action map. NEVER reveal a secret value." },
+      { heading: "Security Hygiene Recommendations", guidance: "prioritized actions — password reset/MFA/passkeys, OAuth + session cleanup, old-account deletion, alias strategy." },
+    ],
+  },
+  {
+    key: "personal-signals",
+    label: "Personal signals & context",
+    sections: [
+      { heading: "Preferences & Interests", guidance: "evidence-backed public interests, communities, content; confidence-labelled. No sensitive-trait inference." },
+      { heading: "Lifestyle & Context Signals", guidance: "broad, non-invasive public signals only; confidence + caveats." },
+      { heading: "Approximate Age & Life Stage", guidance: "only from public evidence (education/work timeline); output a RANGE with confidence. Never from photos." },
+      { heading: "Relationship / Marital Status Signal", guidance: "only if self-declared publicly or in a public record; otherwise Unknown." },
+      { heading: "Net-Worth Signal (speculative)", guidance: "a rough public-signal proxy as a RANGE, clearly labelled NOT actual net worth; evidence-based only." },
+    ],
+  },
+];
+
+/** Build a Tier-2 deep-batch prompt: identity is already CONFIRMED (no re-discovery), the
+    Tier-1 report is provided as context, and the agent is asked for ONLY this batch's
+    sections under a bounded search budget. */
+export function buildDeepBatchQuestion(input: OneSubjectInput, tier1Report: string, batch: DeepBatch): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const anchors = (input.confirmedProfiles ?? []).filter((p) => p && p.url);
+  const linkedin = anchors.find((p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url));
+  const anchorLine = linkedin ? ` Confirmed LinkedIn: ${linkedin.url}.` : "";
+  const context = (tier1Report || "").slice(0, 6000); // resolved identity as context, not to re-derive
+
+  return `CONSENT-BASED PUBLIC INTELLIGENCE — DEEP PASS: ${batch.label}. Today is ${today}.
+The subject consented to a self-audit of their OWN public footprint. Use only lawful, publicly accessible information.
+
+IDENTITY IS ALREADY CONFIRMED — do NOT re-investigate who this is, and do NOT disambiguate same-name people.${anchorLine}
+Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.phone}.` : ""}
+
+ALREADY-ESTABLISHED FINDINGS about THIS person (context — build on these, do not repeat them):
+"""
+${context}
+"""
+
+SEARCH BUDGET — be fast and focused: run roughly 8–12 targeted searches, then synthesize and STOP.
+
+DELIVER ONLY these markdown "##" sections — use these exact headings, in this order, and output NOTHING else (no intro, no extra sections):
+${batch.sections.map((s) => `## ${s.heading}\n→ ${s.guidance}`).join("\n\n")}
+
+RULES: lawful public sources only; never expose secrets, credentials, leaked/breach values, exact home address, or private family/minor details; label uncertain items "possible / weak / unknown" and prefer "unknown" over guessing; back non-obvious claims with a source URL. Strictly about THIS person.`;
+}
+
 /** Pull a short plain-text summary from the markdown report for the dashboard header. */
 function deriveSummary(report: string, name: string): string {
   const lines = report.split("\n");

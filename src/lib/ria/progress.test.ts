@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { oneVoiceProgress, oneVoiceScanningAt } from "./progress";
+import { STALE_RUNNING_MS, isStaleRunning, oneVoiceProgress, oneVoiceScanningAt } from "./progress";
 
 describe("oneVoiceProgress", () => {
   it("maps real DR progress signals to One-voiced lines", () => {
@@ -36,5 +36,26 @@ describe("oneVoiceScanningAt", () => {
     const out = oneVoiceScanningAt(0);
     expect(out.startsWith("One is checking ")).toBe(true);
     expect(out.endsWith("…")).toBe(true);
+  });
+});
+
+describe("isStaleRunning", () => {
+  const now = 1_000_000_000_000;
+  it("flags a 'running' scan older than the staleness ceiling", () => {
+    expect(isStaleRunning("running", now - STALE_RUNNING_MS - 1, now)).toBe(true);
+    // Roopmann's case: ~22.6h old, still 'running' → must be treated as failed
+    expect(isStaleRunning("running", now - 22.6 * 60 * 60 * 1000, now)).toBe(true);
+  });
+  it("does NOT flag a fresh running scan (legit long Phase-1 within the grace)", () => {
+    expect(isStaleRunning("running", now - STALE_RUNNING_MS + 1, now)).toBe(false);
+    expect(isStaleRunning("running", now - 5 * 60 * 1000, now)).toBe(false);
+  });
+  it("ignores non-running statuses regardless of age", () => {
+    expect(isStaleRunning("completed", now - 10 * STALE_RUNNING_MS, now)).toBe(false);
+    expect(isStaleRunning("failed", now - 10 * STALE_RUNNING_MS, now)).toBe(false);
+  });
+  it("is safe against missing/invalid createdAt", () => {
+    expect(isStaleRunning("running", 0, now)).toBe(false);
+    expect(isStaleRunning("running", Number.NaN, now)).toBe(false);
   });
 });

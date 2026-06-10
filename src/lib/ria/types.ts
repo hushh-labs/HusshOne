@@ -281,6 +281,24 @@ export interface OneDashboardResult {
   /** Intelligence-layer version (INTELLIGENCE_VERSION) that produced this result.
       On load, a recovered scan whose version !== current is treated as stale → re-scan. */
   intelligenceVersion?: string;
+
+  /* ── Progressive Tier-2 ("deep") sections ─────────────────────────────────
+     Filled in the background AFTER the fast 6-section Tier-1 lands, by the
+     /api/one/research/[id]/deep batch endpoint. Stored inside this same blob
+     (ScanRun.normalizedResult is schemaless jsonb — no migration). The UI renders
+     report + deepReport and auto-appends as batches complete. */
+  /** Deep-tier lifecycle. undefined = not started yet. */
+  deepStatus?: "running" | "completed" | "failed";
+  /** Accumulated markdown of completed deep batches, rendered below `report`. */
+  deepReport?: string;
+  /** Index of the next DEEP_BATCHES entry to run (0-based). */
+  deepCursor?: number;
+  /** Upstream DR job id for the batch currently in flight (null between batches). */
+  deepJobId?: string | null;
+  /** Epoch ms the current batch job started (deep-side staleness guard). */
+  deepStartedAt?: number;
+  /** Citations gathered across deep batches. */
+  deepCitations?: unknown[];
 }
 
 export interface PersonAuditStatus {

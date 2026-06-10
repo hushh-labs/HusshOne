@@ -6,7 +6,10 @@ import { pollResearch } from "@/lib/research/client";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
+import { isStaleRunning } from "@/lib/ria/progress";
 import type { LocationMode, OneSubjectInput } from "@/lib/ria/types";
+
+const STALE_MESSAGE = "This scan ran past its time limit and didn't finish.";
 
 export const runtime = "nodejs";
 
@@ -57,6 +60,28 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // Still running → resume the upstream Deep Research poll.
     const stored = (scan.input ?? {}) as Partial<OneSubjectInput> & { deepResearchJobId?: string };
     const jobId = stored.deepResearchJobId;
+
+    // ...unless it's been "running" far past the hard wall + recovery grace: the upstream
+    // job is dead/abandoned and resuming the poll would never terminate (it would just keep
+    // returning "running", which the client resumes as the eternal progress screen). Fail it
+    // and self-heal the row. This also caps the cross-instance re-finalize storm that a very
+    // old row triggers when the upstream finally answers hours later.
+    if (isStaleRunning(scan.status, new Date(scan.createdAt).getTime())) {
+      console.error(
+        JSON.stringify({
+          event: "one.research.failed",
+          severity: "ERROR",
+          scanRunId: id,
+          email: stored.email || null,
+          jobId: jobId ?? null,
+          outcome: "failed",
+          via: "stale_timeout",
+          message: STALE_MESSAGE,
+        }),
+      );
+      await failScanRun(id, STALE_MESSAGE, jobId ? { deepResearchJobId: jobId } : undefined).catch(() => undefined);
+      return NextResponse.json({ ok: false, status: "failed", error: STALE_MESSAGE, result: null });
+    }
     if (!jobId) {
       return NextResponse.json({ ok: false, status: "running", result: null });
     }

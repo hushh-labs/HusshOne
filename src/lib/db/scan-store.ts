@@ -215,6 +215,38 @@ export async function getResearchJob(firebaseUid: string, scanRunId: string) {
   }
 }
 
+/* Progressive Tier-2: merge "deep" fields into a COMPLETED scan's normalizedResult
+   (schemaless jsonb — no migration). Read-modify-write; the /deep endpoint serializes
+   batch advances per scan id, so there's no concurrent writer for a given scan. Returns
+   the merged result (so the route can echo it to the client) or null on any miss. */
+export async function updateDeepTier(
+  firebaseUid: string,
+  scanRunId: string,
+  fields: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const scan = await prisma.scanRun.findFirst({
+      where: { id: scanRunId, userId: user.id },
+      select: { normalizedResult: true },
+    });
+    if (!scan || !scan.normalizedResult || typeof scan.normalizedResult !== "object" || Array.isArray(scan.normalizedResult)) {
+      return null;
+    }
+    const merged = { ...(scan.normalizedResult as Record<string, unknown>), ...fields };
+    await prisma.scanRun.update({
+      where: { id: scanRunId },
+      data: { normalizedResult: merged as Prisma.InputJsonValue },
+    });
+    return merged;
+  } catch {
+    return null;
+  }
+}
+
 /* Full account deletion. Removing the OneUser cascades (per schema) to its
    consent events, scan runs — and through them audit jobs and notifications —
    and data requests. Returns false when the DB is unset or the user was already
