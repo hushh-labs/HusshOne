@@ -13,15 +13,17 @@ import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 
 export const runtime = "nodejs";
 // Deep Research is a multi-minute job; allow the route to run long where honored.
-export const maxDuration = 900;
+export const maxDuration = 1800;
 
 const NAME_MAX = 80;
 const SUBJECT_PLACEHOLDER = "00000000-0000-0000-0000-000000000000";
 const POLL_INTERVAL_MS = 8000;
-// Soft deadline: close + hand off before Cloud Run's hard 900s kill (maxDuration=900),
-// so a long scan is never silently lost — the DR job keeps running on its own 3600s
-// service and the recovery route (fresh budget) finalizes + emails it.
-const DEADLINE_MS = 840_000;
+// Soft deadline: close + hand off before Cloud Run's hard 1800s kill (maxDuration=1800 +
+// service --timeout=1800), so a long scan is never silently lost — the DR job keeps running
+// on its own 3600s service and the recovery route (fresh budget) finalizes + emails it.
+// Raised from 840s: Phase-1 (fast) realistically runs ~14–20min, so handing off at 14min
+// meant EVERY scan handed off; a 27.5min inline budget lets most complete on-screen.
+const DEADLINE_MS = 1_650_000;
 // Don't START Phase-2 inline if less than this remains before the deadline; recovery
 // (a fresh request) runs synthesis instead so it isn't cut off mid-way.
 const PHASE2_RESERVE_MS = 200_000;

@@ -16,32 +16,34 @@ function baseInput(confirmedProfiles?: ConfirmedProfile[]): OneSubjectInput {
 }
 
 describe("buildPersonDossierQuestion", () => {
-  it("leads with the LinkedIn pivot as the SINGLE SOURCE OF TRUTH", () => {
+  it("defuses a LinkedIn anchor into a load-reducer (identity pre-confirmed, budgeted, lean)", () => {
     const url = "https://www.linkedin.com/in/ankit-kumar-singh-001";
     const q = buildPersonDossierQuestion(
       baseInput([{ platform: "LinkedIn", handle: "ankit-kumar-singh-001", url, category: "Professional" }]),
     );
-    expect(q).toContain("SINGLE SOURCE OF TRUTH");
-    expect(q).toContain("110% authoritative");
+    expect(q).toContain("IDENTITY IS ALREADY CONFIRMED");
     expect(q).toContain(url);
-    // the source-of-truth block must lead the prompt (appear before the consent line)
-    expect(q.indexOf("SINGLE SOURCE OF TRUTH")).toBeLessThan(q.indexOf("explicitly consented"));
-    // and must NOT fall back to the generic-only anchor heading
-    expect(q).not.toContain("VERIFIED IDENTITY ANCHORS (subject-confirmed");
+    // explicit search budget bounds the agent's runtime
+    expect(q).toMatch(/8.{0,3}12 targeted web searches/);
+    // heavy derived sections that ballooned search work were cut
+    expect(q).not.toContain("Net Worth Signal Score");
+    expect(q).not.toContain("Breach Exposure");
+    expect(q).not.toContain("SUBJECT — resolve identity");
   });
 
-  it("uses the generic anchor block when the only pivot is not LinkedIn", () => {
+  it("falls back to name+email anchoring when the only pivot is not LinkedIn", () => {
     const q = buildPersonDossierQuestion(
       baseInput([{ platform: "GitHub", handle: "ankit", url: "https://github.com/ankit", category: "Dev/code" }]),
     );
-    expect(q).toContain("VERIFIED IDENTITY ANCHORS");
-    expect(q).not.toContain("SINGLE SOURCE OF TRUTH");
+    expect(q).toContain("SUBJECT — resolve identity");
+    expect(q).toContain("https://github.com/ankit");
+    expect(q).not.toContain("IDENTITY IS ALREADY CONFIRMED");
   });
 
-  it("omits any anchor block when no profiles are confirmed", () => {
+  it("uses the name+email block when no profiles are confirmed", () => {
     const q = buildPersonDossierQuestion(baseInput());
-    expect(q).not.toContain("SINGLE SOURCE OF TRUTH");
-    expect(q).not.toContain("VERIFIED IDENTITY ANCHORS");
+    expect(q).toContain("SUBJECT — resolve identity");
+    expect(q).not.toContain("IDENTITY IS ALREADY CONFIRMED");
   });
 });
 

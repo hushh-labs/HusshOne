@@ -13,10 +13,10 @@ export const SHADOW_PHASES = [
 ] as const;
 
 /** Estimated typical run used only to pace the UI; the real result governs completion.
-   Tuned to the real Deep Research distribution (time-to-result p50 ≈ 9 min, long tail
-   to ~24 min) so the eased bar advances across the whole wait instead of pegging at
-   ~92% after ~3 min. The honest signal remains the mm:ss elapsed shown alongside. */
-export const SHADOW_ESTIMATED_MS = 540_000;
+   Tuned to the real Deep Research distribution (Phase-1 fast realistically ~14–20 min,
+   long tail higher) so the eased bar advances across the whole wait instead of pegging at
+   ~92% after a few min. The honest signal remains the mm:ss elapsed shown alongside. */
+export const SHADOW_ESTIMATED_MS = 1_080_000;
 
 export function shadowPhaseIndex(elapsedMs: number) {
   const frac = Math.min(0.999, Math.max(0, elapsedMs) / SHADOW_ESTIMATED_MS);

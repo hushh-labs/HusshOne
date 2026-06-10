@@ -2143,7 +2143,7 @@ export default function OneExperience() {
     collectStart.current = performance.now();
 
     const controller = new AbortController();
-    const abortTimer = setTimeout(() => controller.abort(), 900_000);
+    const abortTimer = setTimeout(() => controller.abort(), 1_800_000); // match server cap (30min)
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);

@@ -10,6 +10,12 @@ import type { LocationMode, OneSubjectInput } from "@/lib/ria/types";
 
 export const runtime = "nodejs";
 
+// In-flight finalize guard (per instance). A client in recovery fires several concurrent GETs
+// (poll loop + visibility re-checks + refreshes); without this they'd all finalize the SAME job,
+// re-running Opus synthesis 5× per scan. Check-then-add is synchronous (no await between), so only
+// the first request per scan id proceeds on a given instance.
+const finalizingNow = new Set<string>();
+
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
@@ -64,75 +70,91 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: false, status: "running", result: null });
     }
     if (dr.status === "completed" && dr.report) {
-      const mode: LocationMode =
-        typeof stored.latitude === "number" && typeof stored.longitude === "number" ? "precise" : "limited";
-      const { result, phase2Ms } = await finalizeResearch(
-        dr.report,
-        dr.citations,
-        {
-          name: stored.name || "",
-          email: stored.email || "",
-          latitude: stored.latitude,
-          longitude: stored.longitude,
-          zipCode: stored.zipCode,
-          phone: stored.phone,
-          confirmedProfiles: stored.confirmedProfiles,
-          consentAttestation: true,
-          purpose: "self_audit",
-        },
-        mode,
-        id,
-      );
-      // Recovery completes a scan whose original stream was cut (deadline/disconnect).
-      // We can't see the exact Phase-1 boundary from here, so approximate from the scan's
-      // creation time: total = now − createdAt, phase1 ≈ total − phase2.
-      const totalMs = Date.now() - new Date(scan.createdAt).getTime();
-      const phase1Ms = Math.max(0, totalMs - phase2Ms);
-      await completeScanRun(id, toJsonValue(result), result.summary, {
-        phase1Ms,
-        phase2Ms,
-        totalMs,
-        outcome: "completed_via_recovery",
-        deepResearchJobId: jobId,
-      });
-      console.info(
-        JSON.stringify({
-          event: "one.research.completed",
-          severity: "INFO",
-          scanRunId: id,
-          email: stored.email || null,
-          jobId,
+      // Only one finalize per scan id may run at a time on this instance (dedupes the
+      // concurrent-recovery race that ran Opus synthesis 5× per scan).
+      if (finalizingNow.has(id)) {
+        return NextResponse.json({ ok: false, status: "running", result: null });
+      }
+      finalizingNow.add(id);
+      try {
+        // A finalize on this instance may have completed between the poll and this claim.
+        const fresh = await getResearchJob(verified.uid, id);
+        if (fresh && fresh.status === "completed") {
+          const emailDelivery = await getScanEmailDelivery(verified.uid, id);
+          return NextResponse.json({ ok: true, status: "completed", result: fresh.normalizedResult ?? null, emailDelivery });
+        }
+        const mode: LocationMode =
+          typeof stored.latitude === "number" && typeof stored.longitude === "number" ? "precise" : "limited";
+        const { result, phase2Ms } = await finalizeResearch(
+          dr.report,
+          dr.citations,
+          {
+            name: stored.name || "",
+            email: stored.email || "",
+            latitude: stored.latitude,
+            longitude: stored.longitude,
+            zipCode: stored.zipCode,
+            phone: stored.phone,
+            confirmedProfiles: stored.confirmedProfiles,
+            consentAttestation: true,
+            purpose: "self_audit",
+          },
+          mode,
+          id,
+        );
+        // Recovery completes a scan whose original stream was cut (deadline/disconnect).
+        // We can't see the exact Phase-1 boundary from here, so approximate from the scan's
+        // creation time: total = now − createdAt, phase1 ≈ total − phase2.
+        const totalMs = Date.now() - new Date(scan.createdAt).getTime();
+        const phase1Ms = Math.max(0, totalMs - phase2Ms);
+        await completeScanRun(id, toJsonValue(result), result.summary, {
           phase1Ms,
           phase2Ms,
           totalMs,
           outcome: "completed_via_recovery",
-          source: result.source,
-        }),
-      );
-      // The streaming POST normally sends the result emails, but when it was interrupted
-      // (client disconnect / route timeout) THIS resume path is what completes the scan —
-      // so send here too. The OneNotification unique constraint dedupes if both ever run.
-      let emailDelivery: ScanEmailDeliverySummary | null = null;
-      try {
-        emailDelivery = await sendScanResultEmails({
-          userId: scan.userId,
-          scanRunId: id,
-          result,
-          audit: null,
-          siteUrl: requestOrigin(request),
+          deepResearchJobId: jobId,
         });
-      } catch (notificationError) {
-        console.error(
+        console.info(
           JSON.stringify({
-            event: "one.research_email.failed",
-            severity: "ERROR",
+            event: "one.research.completed",
+            severity: "INFO",
             scanRunId: id,
-            message: notificationError instanceof Error ? notificationError.message : "unknown",
+            email: stored.email || null,
+            jobId,
+            phase1Ms,
+            phase2Ms,
+            totalMs,
+            outcome: "completed_via_recovery",
+            source: result.source,
           }),
         );
-        emailDelivery = await getScanEmailDelivery(verified.uid, id);
+        // The streaming POST normally sends the result emails, but when it was interrupted
+        // (client disconnect / route timeout) THIS resume path is what completes the scan —
+        // so send here too. The OneNotification unique constraint dedupes if both ever run.
+        let emailDelivery: ScanEmailDeliverySummary | null = null;
+        try {
+          emailDelivery = await sendScanResultEmails({
+            userId: scan.userId,
+            scanRunId: id,
+            result,
+            audit: null,
+            siteUrl: requestOrigin(request),
+          });
+        } catch (notificationError) {
+          console.error(
+            JSON.stringify({
+              event: "one.research_email.failed",
+              severity: "ERROR",
+              scanRunId: id,
+              message: notificationError instanceof Error ? notificationError.message : "unknown",
+            }),
+          );
+          emailDelivery = await getScanEmailDelivery(verified.uid, id);
+        }
+        return NextResponse.json({ ok: true, status: "completed", result, emailDelivery });
+      } finally {
+        finalizingNow.delete(id);
       }
-      return NextResponse.json({ ok: true, status: "completed", result, emailDelivery });
     }
     if (dr.status === "failed") {
       const failMs = Date.now() - new Date(scan.createdAt).getTime();
