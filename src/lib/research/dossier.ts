@@ -35,52 +35,46 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
         ? `location: ZIP/postal ${input.zipCode}`
         : "location: not provided";
 
-  // Phase-0 subject-confirmed profiles ("this is me") → DEFINITIVE identity anchors.
-  // Injected so the agent resolves the whole report around the real person and discards
-  // same-name look-alikes — this is what collapses the same-name noise. The user's pasted
-  // LinkedIn URL (when present) is promoted to the PRIMARY anchor: the spine the entire
-  // search plan is derived from, which is what makes Phase 1 sharp.
+  // The subject's pasted LinkedIn URL is the 110% SOURCE OF TRUTH. When present it LEADS the
+  // whole prompt (top of the question, where the Deep Research agent weights most) so the agent
+  // locks identity to it FIRST and stays pointed — no same-name drift. Other confirmed profiles
+  // are cross-linked to that spine. Tuned for the fast agent: anchor-first, pointed, no bloat.
   const anchors = (input.confirmedProfiles ?? []).filter((p) => p && p.url);
   const linkedinAnchor = anchors.find(
     (p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url),
   );
-  const genericAnchorsBlock = (list: typeof anchors, heading: string, intro: string) =>
-    list.length
-      ? `\n\n${heading}\n${intro}\n${list.map((p) => `- confirmed ${p.platform}: ${p.url}`).join("\n")}`
-      : "";
+  const otherAnchors = anchors.filter((p) => p !== linkedinAnchor);
+  const otherAnchorsLine = otherAnchors.length
+    ? `\nAlso subject-verified (definitive — cross-link these to the LinkedIn spine):\n${otherAnchors.map((p) => `- ${p.platform}: ${p.url}`).join("\n")}`
+    : "";
 
-  let anchorsBlock = "";
-  if (linkedinAnchor) {
-    const others = anchors.filter((p) => p !== linkedinAnchor);
-    anchorsBlock =
-      `\n\nPRIMARY ANCHOR — LinkedIn (subject-confirmed; the SPINE of the entire report):\n${linkedinAnchor.url}\n` +
-      `The subject personally confirmed this LinkedIn profile is theirs. Treat it as DEFINITIVE ground truth and build the whole investigation outward from it:\n` +
-      `- Fully mine this profile FIRST: exact full name + name variants, headline/tagline, EVERY current and past employer (with dates), education + degrees + graduation years, current and past locations, the profile's vanity handle/slug, listed skills, certifications, languages, and recent public activity.\n` +
-      `- DERIVE the entire search plan from it: seed every subsequent query with the LinkedIn-derived employers, schools, job titles, and city/region (e.g. "<name> <employer>", "<name> <school>", "<name> <city>"). Treat the LinkedIn vanity handle as a candidate username and hunt for the SAME handle on GitHub, X/Twitter, Instagram, Medium, Substack, Stack Overflow, personal sites, and elsewhere.\n` +
-      `- Cross-link EVERY other finding back to this anchor and confidence-rank it by how strongly it connects (shared employer / school / location / handle / timeline ⇒ higher confidence). Anything that conflicts with this LinkedIn identity (different career, location, or life timeline) is a same-name look-alike ⇒ demote it and mark "Likely false positive".\n` +
-      `- This anchor resolves same-name ambiguity: when two candidates share the name, the one consistent with this LinkedIn profile is the subject.` +
-      genericAnchorsBlock(
-        others,
-        "ADDITIONAL VERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):",
-        'The subject also confirmed the profiles below are theirs. Treat each as DEFINITIVE, cross-link findings to them, and exclude same-name profiles that do not connect (mark "Likely false positive").',
-      );
-  } else {
-    anchorsBlock = genericAnchorsBlock(
-      anchors,
-      "VERIFIED IDENTITY ANCHORS (subject-confirmed — treat as ground truth):",
-      'The subject personally confirmed the profiles below are theirs. Treat each as DEFINITIVE. Resolve the ENTIRE report around these anchors, cross-link every finding to them, and aggressively exclude same-name people/profiles that do not connect to them (mark such look-alikes "Likely false positive").',
-    );
-  }
+  const sourceOfTruth = linkedinAnchor
+    ? `SINGLE SOURCE OF TRUTH — START HERE.
+The subject personally verified that THIS LinkedIn profile is them. Treat it as 110% authoritative ground truth — the spine of the entire report:
+${linkedinAnchor.url}
+
+1) RESOLVE IDENTITY FROM THIS PROFILE FIRST. Look up this exact LinkedIn profile and lock the subject's ground-truth spine: full name + variants, headline, current employer + title, full role history with dates, education + degrees + years, current city/region, the profile's vanity handle/slug, and listed skills.
+2) MAKE EVERYTHING POINTED TO THIS PERSON. Use that spine as your search seeds — query the name with each employer, school, title and city, and search the LinkedIn vanity handle as a username across GitHub, X/Twitter, Instagram, Medium, Substack, Stack Overflow, YouTube, and personal sites. Cross-link every finding back to this profile and rate confidence by how tightly it connects (shared employer / school / location / handle / timeline ⇒ higher).
+3) EXCLUDE SAME-NAME NOISE. Anyone who shares the name but does NOT line up with this LinkedIn profile (different career, location, or timeline) is a DIFFERENT person — mark "Likely false positive" and keep them out of the main findings.
+The entire report must be about THIS exact person, anchored to this profile.${otherAnchorsLine}
+
+`
+    : anchors.length
+      ? `VERIFIED IDENTITY ANCHORS (subject-confirmed — definitive ground truth; resolve the whole report around these and exclude same-name profiles that don't connect, marking them "Likely false positive"):
+${anchors.map((p) => `- ${p.platform}: ${p.url}`).join("\n")}
+
+`
+      : "";
 
   return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1: PUBLIC INTERNET INTELLIGENCE DISCOVERY & REPORT GENERATION
 
-The subject has explicitly consented to lawful public internet identity/context research, public profile enrichment, breach-exposure awareness, safety review, and consent-based personalization, for a self-audit of their own public footprint.
+${sourceOfTruth}The subject has explicitly consented to lawful public internet identity/context research, public profile enrichment, breach-exposure awareness, safety review, and consent-based personalization, for a self-audit of their own public footprint.
 
-INPUT PARAMETERS:
+INPUT PARAMETERS (identity confirmation — the LinkedIn profile above is the primary key when provided):
 - name: ${input.name}
 - email: ${input.email}
 - contact: ${input.phone || "not provided"}
-- ${location}${anchorsBlock}
+- ${location}
 
 ROLE:
 You are a consent-based public intelligence analyst. Use only lawful publicly accessible information; build a rigorous public intelligence report; never expose secrets, stolen data, private credentials, or non-public information; clearly separate confirmed facts, probable matches, weak signals, inferred insights, unknowns, contradictions, and false-positive risks; and prefer "unknown" over guessing.
@@ -109,7 +103,7 @@ SEARCH SCOPE (only where publicly visible):
 General public web and search engines; LinkedIn; GitHub, GitLab, Stack Overflow, Kaggle, npm, PyPI, Hugging Face; X/Twitter, Instagram, Facebook, YouTube, Reddit, Medium, Substack, Dev.to; personal websites/portfolios/blogs/docs; startup/company pages; university/school/college pages; event/hackathon/speaker/award/conference pages; Product Hunt, Crunchbase, Wellfound/AngelList, app stores, product pages; news articles, interviews, press releases; lawful public government/business-registry mentions; public court/legal mentions only if clearly relevant and public (never imply wrongdoing without evidence); public SEO/AEO pages; public association signals (company, school, co-founder, collaborator, team, advisor, mentor, investor, event); and lawful breach-notification/exposure-monitoring sources for the subject's consented identifiers.
 
 SEARCH METHODOLOGY:
-Use many query variations: exact name; exact email; exact contact (if provided and lawful); name + email/contact/location/company/school/college/university; name with LinkedIn/GitHub/GitLab/Stack Overflow/portfolio/resume/CV/PDF/founder/co-founder/engineer/developer/student/startup/news/award/hackathon/event/speaker/interview/blog/article/product; site-scoped queries (site:linkedin.com/in, site:github.com, site:gitlab.com, site:stackoverflow.com, site:medium.com, site:dev.to, site:substack.com, site:crunchbase.com, site:wellfound.com, site:producthunt.com, site:x.com OR site:twitter.com); email exact + email-prefix-as-username + username derivations; discovered aliases/handles; phone/contact exact only if provided and lawful.
+When a LinkedIn SOURCE OF TRUTH is provided above, derive your FIRST queries from its spine (the name with each employer / school / title / city, and the vanity handle as a cross-platform username) before broadening — this keeps the result pointed to the real person. Then use many query variations: exact name; exact email; exact contact (if provided and lawful); name + email/contact/location/company/school/college/university; name with LinkedIn/GitHub/GitLab/Stack Overflow/portfolio/resume/CV/PDF/founder/co-founder/engineer/developer/student/startup/news/award/hackathon/event/speaker/interview/blog/article/product; site-scoped queries (site:linkedin.com/in, site:github.com, site:gitlab.com, site:stackoverflow.com, site:medium.com, site:dev.to, site:substack.com, site:crunchbase.com, site:wellfound.com, site:producthunt.com, site:x.com OR site:twitter.com); email exact + email-prefix-as-username + username derivations; discovered aliases/handles; phone/contact exact only if provided and lawful.
 
 IDENTITY RESOLUTION STANDARD — classify every potential match as one of: Confirmed (exact email/phone, official/self-linked profiles, or multiple high-quality independent sources); Probable (name + location/company/education/username/career overlap, no direct email/phone confirmation); Possible (partial overlap, needs verification); Weak/Unverified (low confidence, mark clearly); Likely false positive (similar name/username but conflicting details). For each matched profile explain why it may be the same person, supporting signals, weakening signals, confidence, false-positive risk, and verification needed.
 

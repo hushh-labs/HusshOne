@@ -16,15 +16,16 @@ function baseInput(confirmedProfiles?: ConfirmedProfile[]): OneSubjectInput {
 }
 
 describe("buildPersonDossierQuestion", () => {
-  it("promotes a LinkedIn pivot to the PRIMARY ANCHOR spine", () => {
+  it("leads with the LinkedIn pivot as the SINGLE SOURCE OF TRUTH", () => {
     const url = "https://www.linkedin.com/in/ankit-kumar-singh-001";
     const q = buildPersonDossierQuestion(
       baseInput([{ platform: "LinkedIn", handle: "ankit-kumar-singh-001", url, category: "Professional" }]),
     );
-    expect(q).toContain("PRIMARY ANCHOR — LinkedIn");
+    expect(q).toContain("SINGLE SOURCE OF TRUTH");
+    expect(q).toContain("110% authoritative");
     expect(q).toContain(url);
-    // it must instruct deriving the search plan from the profile (the "strong Phase-1" bit)
-    expect(q).toMatch(/DERIVE the entire search plan/i);
+    // the source-of-truth block must lead the prompt (appear before the consent line)
+    expect(q.indexOf("SINGLE SOURCE OF TRUTH")).toBeLessThan(q.indexOf("explicitly consented"));
     // and must NOT fall back to the generic-only anchor heading
     expect(q).not.toContain("VERIFIED IDENTITY ANCHORS (subject-confirmed");
   });
@@ -34,12 +35,12 @@ describe("buildPersonDossierQuestion", () => {
       baseInput([{ platform: "GitHub", handle: "ankit", url: "https://github.com/ankit", category: "Dev/code" }]),
     );
     expect(q).toContain("VERIFIED IDENTITY ANCHORS");
-    expect(q).not.toContain("PRIMARY ANCHOR — LinkedIn");
+    expect(q).not.toContain("SINGLE SOURCE OF TRUTH");
   });
 
   it("omits any anchor block when no profiles are confirmed", () => {
     const q = buildPersonDossierQuestion(baseInput());
-    expect(q).not.toContain("PRIMARY ANCHOR");
+    expect(q).not.toContain("SINGLE SOURCE OF TRUTH");
     expect(q).not.toContain("VERIFIED IDENTITY ANCHORS");
   });
 });

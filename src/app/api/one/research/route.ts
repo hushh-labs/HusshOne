@@ -137,7 +137,7 @@ export async function POST(request: Request) {
   let scanRunId: string | null;
   let jobId: string;
   let sessionId: string | null = null;
-  let depth: ResearchDepth = "max";
+  let depth: ResearchDepth = "fast";
   try {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
     const body = await parseBody(request);
@@ -146,7 +146,9 @@ export async function POST(request: Request) {
     // user's UI funnel events for end-to-end tracing.
     sessionId = typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : null;
     mode = typeof input.latitude === "number" && typeof input.longitude === "number" ? "precise" : "limited";
-    depth = process.env.DEEP_RESEARCH_DEPTH === "fast" ? "fast" : "max";
+    // Default = fast (deep-research-preview): pointed, LinkedIn-anchored, stays under the
+    // 900s wall. `max` only when explicitly forced via env. (Phase-1 max routinely ran 14–19min.)
+    depth = process.env.DEEP_RESEARCH_DEPTH === "max" ? "max" : "fast";
 
     ({ jobId } = await startResearch(buildPersonDossierQuestion(input), depth));
 
