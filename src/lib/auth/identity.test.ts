@@ -27,12 +27,17 @@ describe("LinkedIn pivot helpers", () => {
     const canonical = "https://www.linkedin.com/in/ankit-singh";
     expect(normalizeLinkedInUrl("https://www.linkedin.com/in/ankit-singh")).toBe(canonical);
     expect(normalizeLinkedInUrl("linkedin.com/in/ankit-singh")).toBe(canonical);
+    expect(normalizeLinkedInUrl("linkedin.com/in/anilsachdev")).toBe("https://www.linkedin.com/in/anilsachdev");
+    expect(normalizeLinkedInUrl("https://www.linkedin.com/in/ankit-kumar-886428288/")).toBe("https://www.linkedin.com/in/ankit-kumar-886428288");
     expect(normalizeLinkedInUrl("  HTTP://IN.LinkedIn.com/in/ankit-singh/  ")).toBe(canonical);
     expect(normalizeLinkedInUrl("https://www.linkedin.com/in/ankit-singh?trk=abc#section")).toBe(canonical);
   });
 
   it("rejects non-profile and non-LinkedIn URLs", () => {
     expect(normalizeLinkedInUrl("https://www.linkedin.com/company/hushh")).toBe("");
+    expect(normalizeLinkedInUrl("https://www.linkedin.com/jobs/view/123")).toBe("");
+    expect(normalizeLinkedInUrl("https://www.linkedin.com/feed/")).toBe("");
+    expect(normalizeLinkedInUrl("https://www.linkedin.com/search/results/people/?keywords=ankit")).toBe("");
     expect(normalizeLinkedInUrl("https://linkedin.com")).toBe("");
     expect(normalizeLinkedInUrl("https://notlinkedin.com/in/ankit")).toBe("");
     expect(normalizeLinkedInUrl("https://example.com/in/ankit")).toBe("");

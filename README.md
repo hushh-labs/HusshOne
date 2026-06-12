@@ -30,3 +30,17 @@ The Prisma schema and initial PostgreSQL migration are in `prisma/`. Set `DATABA
 npm run db:generate
 npm run db:migrate
 ```
+
+## LinkedIn URL Enrichment
+
+The app asks users for a personal LinkedIn profile URL and calls the standalone cloud enrichment worker server-side.
+
+Required production env:
+
+```bash
+LINKEDIN_SCRAPER_URL=http://136.114.82.27:8080
+LINKEDIN_SCRAPER_API_KEY=<Secret Manager: linkedin-scraper-api-key>
+LINKEDIN_SCRAPER_TIMEOUT_MS=180000
+```
+
+Never expose `LINKEDIN_SCRAPER_API_KEY` to the browser. The API route is `POST /api/linkedin/enrich-url`.

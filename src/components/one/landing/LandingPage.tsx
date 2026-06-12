@@ -24,7 +24,7 @@ export default function LandingPage({ onStart, error }: { onStart: () => void; e
           </h2>
           <p className="l-lead">Your personal intelligence agent.</p>
           <div className="l-hero-cta">
-            <button className="l-cta" onClick={onStart}>
+            <button className="l-cta l-cta-google" onClick={onStart}>
               {Icons.google()}
               <span>Continue with Google</span>
             </button>

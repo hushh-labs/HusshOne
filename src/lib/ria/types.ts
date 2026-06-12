@@ -1,3 +1,5 @@
+import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
+
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
 export type ResultSource = "shadow" | "person_intelligence" | "temporary" | "deep_research";
@@ -45,6 +47,11 @@ export interface OneSubjectInput {
   /** Phase-0 subject-confirmed profiles ("this is me"). Ground-truth anchors that seed
       the Phase-1 research prompt AND the Phase-2 synthesis (disambiguation). */
   confirmedProfiles?: ConfirmedProfile[];
+  /** The FULL verified LinkedIn profile pulled via the MCP "Connect LinkedIn" step
+      (structured experience/education/skills/certs on top of name/photo/headline). When
+      present, Phase-1 treats identity as SOLVED and seeds its search budget from the real
+      career spine instead of re-discovering who the subject is. */
+  linkedinProfile?: LinkedInProfileFull;
   consentAttestation: boolean;
   purpose: "self_audit";
 }
@@ -299,6 +306,24 @@ export interface OneDashboardResult {
   deepStartedAt?: number;
   /** Citations gathered across deep batches. */
   deepCitations?: unknown[];
+
+  /* ── Background image-intelligence pipeline ───────────────────────────────
+     Filled in the background AFTER Tier-1 lands, by /api/one/research/[id]/image:
+     reverse-image search (Cloud Vision WEB_DETECTION) on the LinkedIn photo +
+     synthesis. Stored in this same schemaless blob (no migration). Mirrors the
+     deep-tier fields above. */
+  /** Image-pipeline lifecycle. undefined = not started. */
+  imageStatus?: "running" | "completed" | "failed";
+  /** Markdown "Image intelligence" section, rendered below `report`/`deepReport`. */
+  imageReport?: string;
+  /** Index of the next image stage to run (0-based). */
+  imageCursor?: number;
+  /** Upstream DR job id for the in-flight image synthesis batch (null between stages). */
+  imageJobId?: string | null;
+  /** Epoch ms the current image stage started (staleness guard). */
+  imageStartedAt?: number;
+  /** Citations gathered by the image pipeline. */
+  imageCitations?: unknown[];
 }
 
 export interface PersonAuditStatus {

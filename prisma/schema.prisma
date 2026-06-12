@@ -20,8 +20,26 @@ model OneUser {
   scanRuns    ScanRun[]
   dataRequests DataRequest[]
   notifications OneNotification[]
+  linkedInConnection LinkedInConnection?
 
   @@index([email])
+}
+
+// The user's connected LinkedIn (full profile) from the MCP "Connect LinkedIn" step.
+// 1:1 with OneUser so a returning session re-scans with the ground truth without
+// re-logging into LinkedIn. sessionValid flips false when the server session expires
+// (→ the app routes the user back to re-connect).
+model LinkedInConnection {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @db.Uuid
+  profile      Json
+  publicId     String?
+  sessionValid Boolean  @default(true)
+  connectedAt  DateTime @default(now())
+  refreshedAt  DateTime @updatedAt
+  user         OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model ConsentEvent {

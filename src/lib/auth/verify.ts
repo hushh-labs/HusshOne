@@ -31,7 +31,7 @@ export async function verifyOneRequest(authHeader: string | null): Promise<Verif
     const decoded = await verifyFirebaseIdToken(token);
     const email = typeof decoded.email === "string" ? decoded.email.toLowerCase() : "";
     if (!email) {
-      throw Object.assign(new Error("Google account did not return an email"), { statusCode: 400 });
+      throw Object.assign(new Error("Account did not return an email"), { statusCode: 400 });
     }
     return {
       uid: decoded.uid,

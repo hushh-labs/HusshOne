@@ -121,6 +121,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
             zipCode: stored.zipCode,
             phone: stored.phone,
             confirmedProfiles: stored.confirmedProfiles,
+            linkedinProfile: stored.linkedinProfile,
             consentAttestation: true,
             purpose: "self_audit",
           },

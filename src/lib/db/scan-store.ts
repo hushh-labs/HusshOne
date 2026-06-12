@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/notifications/types";
+import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { getPrismaClient } from "./prisma";
 
 const USER_NOTIFICATION_TYPE = "scan_user_full_result";
@@ -11,6 +12,8 @@ interface UpsertUserInput {
   email: string;
   name: string | null;
   photoUrl: string | null;
+  /** Identity provider — "linkedin" for the LinkedIn-first flow, else defaults to "google". */
+  provider?: string;
 }
 
 interface CreateScanInput {
@@ -71,13 +74,73 @@ export async function upsertOneUser(input: UpsertUserInput) {
       email: input.email,
       name: input.name,
       photoUrl: input.photoUrl,
+      ...(input.provider ? { provider: input.provider } : {}),
     },
     update: {
       email: input.email,
       name: input.name,
       photoUrl: input.photoUrl,
+      ...(input.provider ? { provider: input.provider } : {}),
     },
   });
+}
+
+/* ── LinkedIn connection (the MCP "Connect LinkedIn" step) ──────────────────
+   Persist the user's FULL LinkedIn profile (1:1 with OneUser) so a returning
+   session re-scans with the ground truth without re-logging into LinkedIn. The
+   LinkedInConnection table is added by a migration the deploy does NOT auto-run,
+   so EVERY call here is fully defensive: a missing table/column (P2021/P2022) or
+   any other error returns null and NEVER breaks the connect/sign-in flow (the
+   client localStorage cache covers connected-state until the table lands). */
+export async function upsertLinkedInConnection(firebaseUid: string, profile: LinkedInProfileFull) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const data = {
+      profile: JSON.parse(JSON.stringify(profile)) as Prisma.InputJsonValue,
+      publicId: profile.sub || null,
+      sessionValid: true,
+    };
+    return await prisma.linkedInConnection.upsert({
+      where: { userId: user.id },
+      create: { userId: user.id, ...data },
+      update: data,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getLinkedInConnection(firebaseUid: string): Promise<LinkedInProfileFull | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const row = await prisma.linkedInConnection.findUnique({
+      where: { userId: user.id },
+      select: { profile: true, sessionValid: true },
+    });
+    if (!row || row.sessionValid === false) return null;
+    return (row.profile ?? null) as unknown as LinkedInProfileFull | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteLinkedInConnection(firebaseUid: string): Promise<boolean> {
+  const prisma = getPrismaClient();
+  if (!prisma) return false;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return false;
+    await prisma.linkedInConnection.deleteMany({ where: { userId: user.id } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function createConsentAndScan(input: CreateScanInput) {
@@ -89,7 +152,7 @@ export async function createConsentAndScan(input: CreateScanInput) {
       data: {
         userId: input.userId,
         purpose: input.purpose,
-        consentVersion: process.env.ONE_CONSENT_VERSION || "2026-06-05",
+        consentVersion: process.env.ONE_CONSENT_VERSION || "2026-06-12-mcp-linkedin",
         locationMode: input.mode,
         latitude: input.latitude,
         longitude: input.longitude,
@@ -215,10 +278,11 @@ export async function getResearchJob(firebaseUid: string, scanRunId: string) {
   }
 }
 
-/* Progressive Tier-2: merge "deep" fields into a COMPLETED scan's normalizedResult
-   (schemaless jsonb — no migration). Read-modify-write; the /deep endpoint serializes
-   batch advances per scan id, so there's no concurrent writer for a given scan. Returns
-   the merged result (so the route can echo it to the client) or null on any miss. */
+/* Progressive Tier-2 / image tier: merge fields into a COMPLETED scan's normalizedResult
+   (schemaless jsonb — no migration). ATOMIC top-level merge via the Postgres `||` operator
+   in a single statement (NOT read-modify-write), so the /deep and /image pollers — which
+   write concurrently to the SAME blob — can't clobber each other's keys (lost-update race).
+   Returns the merged result (so the route can echo it to the client) or null on any miss. */
 export async function updateDeepTier(
   firebaseUid: string,
   scanRunId: string,
@@ -227,21 +291,19 @@ export async function updateDeepTier(
   const prisma = getPrismaClient();
   if (!prisma) return null;
   try {
-    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
-    if (!user) return null;
-    const scan = await prisma.scanRun.findFirst({
-      where: { id: scanRunId, userId: user.id },
-      select: { normalizedResult: true },
-    });
-    if (!scan || !scan.normalizedResult || typeof scan.normalizedResult !== "object" || Array.isArray(scan.normalizedResult)) {
-      return null;
-    }
-    const merged = { ...(scan.normalizedResult as Record<string, unknown>), ...fields };
-    await prisma.scanRun.update({
-      where: { id: scanRunId },
-      data: { normalizedResult: merged as Prisma.InputJsonValue },
-    });
-    return merged;
+    const patch = JSON.stringify(fields);
+    const rows = await prisma.$queryRaw<Array<{ normalizedResult: Record<string, unknown> | null }>>`
+      UPDATE "ScanRun" sr
+      SET "normalizedResult" = sr."normalizedResult" || ${patch}::jsonb
+      FROM "OneUser" u
+      WHERE sr."id" = ${scanRunId}::uuid
+        AND sr."userId" = u."id"
+        AND u."firebaseUid" = ${firebaseUid}
+        AND sr."normalizedResult" IS NOT NULL
+        AND jsonb_typeof(sr."normalizedResult") = 'object'
+      RETURNING sr."normalizedResult" AS "normalizedResult"
+    `;
+    return rows[0]?.normalizedResult ?? null;
   } catch {
     return null;
   }
