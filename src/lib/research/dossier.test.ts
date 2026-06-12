@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPersonDossierQuestion, mapResearchResult, parseHeadlineSpine, structuredSpine } from "./dossier";
+import { buildDeepBatchQuestion, buildPersonDossierQuestion, DEEP_BATCHES, mapResearchResult, parseHeadlineSpine, structuredSpine } from "./dossier";
 import { INTELLIGENCE_VERSION } from "./version";
 import type { ConfirmedProfile, OneSubjectInput } from "@/lib/ria/types";
 
@@ -29,8 +29,8 @@ describe("buildPersonDossierQuestion", () => {
     );
     expect(q).toContain("IDENTITY IS ALREADY CONFIRMED");
     expect(q).toContain(url);
-    // explicit search budget bounds the agent's runtime
-    expect(q).toMatch(/8.{0,3}12 targeted web searches/);
+    // adaptive fast-mode strategy bounds the agent without a brittle hard cap
+    expect(q).toContain("FAST-MODE ADAPTIVE SEARCH STRATEGY");
     // heavy derived sections that ballooned search work were cut
     expect(q).not.toContain("Net Worth Signal Score");
     expect(q).not.toContain("Breach Exposure");
@@ -85,8 +85,9 @@ describe("buildPersonDossierQuestion", () => {
     // the unfetchable redirect URL must NOT be "read", and the old broken instruction is gone
     expect(q).toMatch(/do NOT open, fetch/i);
     expect(q).not.toContain("Read this ONE LinkedIn profile");
-    // bounded budget
-    expect(q).toContain("HARD CAP 12");
+    // adaptive budget, no hard cap
+    expect(q).toContain("FAST-MODE ADAPTIVE SEARCH STRATEGY");
+    expect(q).not.toContain("HARD CAP 12");
   });
 });
 
@@ -124,7 +125,8 @@ describe("structured spine (MCP full profile)", () => {
     // education + skills anchors injected
     expect(q).toContain("Stanford University");
     expect(q).toContain("Distributed Systems");
-    expect(q).toContain("HARD CAP 12");
+    expect(q).toContain("FAST-MODE ADAPTIVE SEARCH STRATEGY");
+    expect(q).not.toContain("HARD CAP 12");
   });
 
   it("returns null with no experience so callers fall back to the headline parser", () => {
@@ -270,9 +272,73 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
     expect(certifications).toEqual([{ name: "Certified AML Specialist", authority: "ACAMS", date: "2022" }]);
 
     expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");
-    expect(q).toContain("distinguish LinkedIn-provided ground truth from public web evidence and inference");
+    expect(q).toContain("Source hierarchy");
+    expect(q).toContain("LinkedIn/user-provided JSON = locked ground truth");
+    expect(q).toContain("SUBJECT_INTELLIGENCE_CONTEXT_JSON");
+    expect(q).toContain("ONE INTELLIGENCE OPERATING PROTOCOL");
+    expect(q).toContain("LinkedIn ground truth");
+    expect(q).toContain("public web evidence");
+    expect(q).toContain("Unknown beats guessing");
     expect(q).not.toContain("linkedinProfileScraper");
     expect(q).not.toContain("staffSpyStyle");
     expect(q).not.toContain("templates");
+    expect(q).not.toContain("li_at");
+    expect(JSON.stringify(json)).not.toContain("cookie");
+    expect(q).toContain("tokens, cookies");
+    expect(q).not.toContain("session.pkl");
+  });
+});
+
+describe("deep batch prompts", () => {
+  function deepInput(): OneSubjectInput {
+    const input = baseInput([
+      { platform: "LinkedIn", handle: "anilsachdev", url: "https://www.linkedin.com/in/anilsachdev", category: "Professional" },
+      { platform: "GitHub", handle: "anil", url: "https://github.com/anil", category: "Dev/code" },
+    ]);
+    input.name = "Anil Sachdev";
+    input.email = "anil@example.com";
+    input.linkedinProfile = {
+      sub: "anilsachdev",
+      name: "Anil Sachdev",
+      givenName: "Anil",
+      familyName: "Sachdev",
+      email: "anil@example.com",
+      emailVerified: false,
+      locale: null,
+      pictureUrl: null,
+      profileUrl: "https://www.linkedin.com/in/anilsachdev",
+      headline: null,
+      verifications: ["WORKPLACE"],
+      grantedScopes: ["scraper:linkedin-profile-url"],
+      source: "scraper",
+      location: "Dubai, United Arab Emirates",
+      about: "Strategic operations executive building regulated fund operations.",
+      experience: [
+        { title: "Chief Operating Officer", company: "OTS Capital", current: true },
+        { title: "Head of Fund Operations", company: "VINKEFUND", endDate: "Dec 2023" },
+      ],
+      education: [{ school: "University of Wales, UK", degree: "MBA, Finance" }],
+      skills: ["Financial Markets", "Fund Operations", "Compliance"],
+    };
+    return input;
+  }
+
+  it("carries the full subject context and intelligence protocol into deep batches", () => {
+    const q = buildDeepBatchQuestion(deepInput(), "Tier-1 finding: Anil is COO at OTS Capital.", DEEP_BATCHES[0]);
+    expect(q).toContain("SUBJECT_INTELLIGENCE_CONTEXT_JSON");
+    expect(q).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
+    expect(q).toContain('"profileUrl": "https://www.linkedin.com/in/anilsachdev"');
+    expect(q).toContain('"skills": [');
+    expect(q).toContain("Fund Operations");
+    expect(q).toContain("Tier-1 finding: Anil is COO at OTS Capital.");
+    expect(q).toContain("IDENTITY IS ALREADY CONFIRMED");
+    expect(q).toContain("do NOT re-investigate");
+    expect(q).toContain("FAST-MODE ADAPTIVE SEARCH STRATEGY");
+    expect(q).toContain("LinkedIn ground truth");
+    expect(q).toContain("public web evidence");
+    expect(q).toContain("inference");
+    expect(q).not.toContain("linkedinProfileScraper");
+    expect(q).not.toContain("li_at");
+    expect(q).not.toContain("session.pkl");
   });
 });

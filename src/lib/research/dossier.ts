@@ -84,6 +84,48 @@ function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
   return JSON.stringify(normalized, null, 2);
 }
 
+function subjectInputPromptJson(input: OneSubjectInput): string {
+  const payload = {
+    subject: {
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? null,
+      purpose: input.purpose,
+      consentAttestation: input.consentAttestation === true,
+      location: {
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+        zipCode: input.zipCode ?? null,
+      },
+    },
+    confirmedProfiles: input.confirmedProfiles ?? [],
+    linkedinProfile: input.linkedinProfile ? JSON.parse(linkedInProfilePromptJson(input.linkedinProfile)) : null,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+function renderSubjectIntelligenceContext(input: OneSubjectInput): string {
+  const li = input.linkedinProfile;
+  const linkedInBlock = li
+    ? `\n\nLINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${linkedInProfilePromptJson(li)}\n\`\`\`\nTreat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About.`
+    : "";
+
+  return `SUBJECT_INTELLIGENCE_CONTEXT_JSON (all currently consented inputs available to One; secret/session/raw-scraper fields intentionally excluded):
+\`\`\`json
+${subjectInputPromptJson(input)}
+\`\`\`${linkedInBlock}`;
+}
+
+function intelligenceOperatingProtocol(): string {
+  return `ONE INTELLIGENCE OPERATING PROTOCOL:
+- Source hierarchy: (1) LinkedIn/user-provided JSON = locked ground truth for identity and self-declared career/profile facts; (2) public web evidence = citations and enrichment; (3) inference = clearly labelled, low/medium/high confidence, never stated as fact.
+- Do not re-open, fetch, reverse-search, or cite signed LinkedIn/media URLs. LinkedIn is already provided as data. Spend search effort on public corroboration, adjacent footprint, contradictions, and useful new findings.
+- Reject same-name people unless they connect to the LinkedIn JSON, confirmed profiles, email local-part, employer/school timeline, or another strong anchor.
+- For every important claim, include source type label: LinkedIn ground truth, public web evidence, or inference. Prefer "unknown" over guessing.
+- If public results conflict with LinkedIn ground truth, report the contradiction and confidence instead of silently overwriting the ground truth.
+- Privacy/safety boundary: use lawful public web and consented inputs only. Never expose secrets, leaked values, private messages, exact home address, private family/minor details, tokens, cookies, or non-consented private account data.`;
+}
+
 /**
  * Phase-1 prompt for the Deep Research agent. Engineered to keep the agent's WORKLOAD low
  * (its runtime scales with how much it searches), which is what makes Phase-1 fast:
@@ -146,13 +188,7 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
     ? `PROFESSIONAL SPINE — from ${spineSource} (the authoritative career graph; do NOT re-derive it from the profile URL):
 ${spine.current ? `  • CURRENT (who they are today): ${spine.current}\n` : ""}${spine.past.length ? `  • FORMER (newest→oldest; NEVER write any of these up as the present job): ${spine.past.join(", ")}\n` : ""}For each entry the search seed is the ORGANISATION in it (ignore role words like "Intern"/"Mentee"). Use ONLY these organisations as seeds — never invent or add employers, schools, or handles not listed here.`
     : "";
-  const profileJsonBlock = li
-    ? `LINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):
-\`\`\`json
-${linkedInProfilePromptJson(li)}
-\`\`\`
-Treat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About. Use web search only to enrich with public citations and adjacent public footprint. In the final report, distinguish LinkedIn-provided ground truth from public web evidence and inference.`
-    : "";
+  const contextBlock = renderSubjectIntelligenceContext(input);
   const statedLocation = li?.location ? `- Stated location (from their LinkedIn): ${li.location}` : "";
   const liSpine = fetchableLinkedIn
     ? "Read that ONE public /in/ profile once to confirm the spine, then STOP confirming identity and spend the ENTIRE remaining budget ENRICHING the sections below for THIS person."
@@ -168,7 +204,7 @@ Treat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, 
         `- Profile photo (reference only — do NOT fetch, reverse-search, or cite this signed URL): ${li.pictureUrl || "(not provided)"}`,
         `- ${location}.${otherAnchorsLine}`,
         statedLocation,
-        profileJsonBlock,
+        contextBlock,
         spineBlock,
         liSpine,
       ].filter(Boolean).join("\n")
@@ -182,33 +218,35 @@ Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.ph
 
   // When we have a parsed LinkedIn spine, the budget becomes a MECHANICAL, capped seed plan
   // (name × one org per query) so the agent spends — not discovers — its searches. Otherwise
-  // keep the generic lean budget. Hard cap 12 keeps Phase-1 fast.
+  // keep the generic lean budget. Fast mode stays bounded by stopping when signal drops.
   const searchBudget =
     li && haveSpine
-      ? `SEARCH BUDGET — be fast and focused (HARD CAP 12 searches), built MECHANICALLY from the parsed spine: pair the quoted full name with exactly ONE organisation per query (never two) so grounding stays locked to this person.
-- 1 identity lock-on: "${li.name || input.name}"${spine.current ? ` with ${spine.current}` : ""}.
-- up to 2 on the CURRENT organisation (role/title; plus github OR x.com OR personal site OR press/talks).
-- 1 each on the FORMER organisations listed above, newest→oldest (at most 4).
-- up to 2 handle / owned-profile: "${li.name || input.name}" with (github.com OR x.com)${emailLocalPart ? `, and "${li.name || input.name}" ${emailLocalPart}` : ""} — only REPORT a handle a result actually returns.
-Then synthesize and STOP at or before 12 searches. Discard any same-name stranger; never chase or disambiguate.`
-      : `SEARCH BUDGET — be fast and focused. Run roughly 8–12 targeted web searches total, seeded from the spine (the name with their employer / school / city, and their handle), then synthesize and STOP. Favor depth on this one confirmed person over breadth; do not exhaustively enumerate platforms — surface only what real, current search results show.`;
+      ? `FAST-MODE ADAPTIVE SEARCH STRATEGY — prioritize accuracy, intelligence, and pace. Build searches mechanically from the parsed spine: pair the quoted full name with exactly ONE organisation/profile seed per query so grounding stays locked to this person.
+- Start with 1 identity lock-on: "${li.name || input.name}"${spine.current ? ` with ${spine.current}` : ""}.
+- Search the CURRENT organisation for role/title plus one high-signal owned footprint axis (GitHub, X, personal site, press, talks, product pages, or articles).
+- Search FORMER organisations newest→oldest only while they add signal; stop when marginal value drops.
+- Search handle/owned-profile candidates from the email local-part and LinkedIn data, but only report handles a result actually returns.
+Use as many targeted searches as needed within fast-depth constraints, then synthesize. Discard same-name strangers; never chase broad disambiguation.`
+      : `FAST-MODE ADAPTIVE SEARCH STRATEGY — prioritize accuracy, intelligence, and pace. Use enough targeted web searches to resolve the high-confidence public footprint, seeded from name, email local-part, confirmed profiles, employer/school/city context, then stop when marginal signal drops. Favor depth on this one confirmed person over breadth; surface only real, current results.`;
 
   return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1. Today is ${today}.
 The subject consented to a self-audit of their OWN public online footprint. Use only lawful, publicly accessible information.
+
+${intelligenceOperatingProtocol()}
 
 ${identityBlock}
 
 ${searchBudget}
 
-DELIVER a tight, evidence-backed markdown report with ONLY these sections:
-1. Who they are — 1–2 lines anchored to the LinkedIn profile, with overall confidence (High / Medium / Low).
-2. Public profiles & handles — the clearly-theirs profiles (LinkedIn, GitHub, X, etc.): platform · URL · confidence. Obvious matches only.
-3. Career, education & notable projects — current and past roles, companies, education, and key public work.
-4. News, media & public mentions — articles, press, interviews, talks, public-record mentions: title · URL · date · one-line context.
-5. Public network & associations — notable public collaborators, companies, communities (public only).
-6. Evidence — a short table: claim · source URL · date · confidence.
+DELIVER a premium, evidence-backed markdown report with ONLY these sections:
+1. Who they are / Executive Snapshot — 2–4 lines anchored to LinkedIn ground truth, public corroboration, and overall confidence.
+2. Public Profiles & Handles — clearly-theirs profiles only: platform · URL · source label · confidence · why it matches.
+3. Career, Education & Notable Projects — LinkedIn career graph + public corroboration + notable public work/projects.
+4. News, Media & Public Mentions — articles, press, interviews, talks, public-record mentions: title · URL · date · context · confidence.
+5. Public Network & Associations — notable public companies, schools, collaborators, communities, investors/advisors/mentors if public; confidence-labelled.
+6. Evidence Ledger — table with claim · source label (LinkedIn ground truth / public web evidence / inference) · source URL if public · date/accessed context · confidence · contradiction/verification note.
 
-RULES: lawful public sources only; never expose secrets, credentials, leaked/breach data, exact home address, or private family/minor details; label uncertain items "possible / weak / unknown" and prefer "unknown" over guessing; back every non-obvious claim with a source URL. Keep it pointed and strictly about THIS person.`;
+FINAL QUALITY BAR: this is the first thing the user sees. Be precise, high-confidence, useful, and calm. Unknown beats guessing. Every non-obvious claim needs evidence or a clear LinkedIn-ground-truth/inference label. Keep it strictly about THIS person.`;
 }
 
 /* ── Progressive Tier-2 ("deep") batches ───────────────────────────────────
@@ -268,9 +306,14 @@ export function buildDeepBatchQuestion(input: OneSubjectInput, tier1Report: stri
   const linkedin = anchors.find((p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url));
   const anchorLine = linkedin ? ` Confirmed LinkedIn: ${linkedin.url}.` : "";
   const context = (tier1Report || "").slice(0, 6000); // resolved identity as context, not to re-derive
+  const subjectContext = renderSubjectIntelligenceContext(input);
 
   return `CONSENT-BASED PUBLIC INTELLIGENCE — DEEP PASS: ${batch.label}. Today is ${today}.
 The subject consented to a self-audit of their OWN public footprint. Use only lawful, publicly accessible information.
+
+${intelligenceOperatingProtocol()}
+
+${subjectContext}
 
 IDENTITY IS ALREADY CONFIRMED — do NOT re-investigate who this is, and do NOT disambiguate same-name people.${anchorLine}
 Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.phone}.` : ""}
@@ -280,12 +323,12 @@ ALREADY-ESTABLISHED FINDINGS about THIS person (context — build on these, do n
 ${context}
 """
 
-SEARCH BUDGET — be fast and focused: run roughly 8–12 targeted searches, then synthesize and STOP.
+FAST-MODE ADAPTIVE SEARCH STRATEGY — be focused and high-confidence. Use targeted searches only for this batch's sections, seeded from the subject context + Tier-1 findings. Search as much as needed within fast-depth constraints, then stop when marginal signal drops.
 
-DELIVER ONLY these markdown "##" sections — use these exact headings, in this order, and output NOTHING else (no intro, no extra sections):
+DELIVER ONLY these markdown "##" sections — use these exact headings, in this order, and output NOTHING else (no intro, no extra sections). Each section must label important claims as LinkedIn ground truth, public web evidence, or inference; include confidence and public source URLs where available:
 ${batch.sections.map((s) => `## ${s.heading}\n→ ${s.guidance}`).join("\n\n")}
 
-RULES: lawful public sources only; never expose secrets, credentials, leaked/breach values, exact home address, or private family/minor details; label uncertain items "possible / weak / unknown" and prefer "unknown" over guessing; back non-obvious claims with a source URL. Strictly about THIS person.`;
+RULES: lawful public sources + consented inputs only; never expose secrets, credentials, leaked values, exact home address, private messages, private family/minor details, tokens, cookies, or non-consented account data. Prefer "unknown" over guessing; back non-obvious claims with source URLs or mark them as LinkedIn ground truth/inference. Strictly about THIS person.`;
 }
 
 /** Pull a short plain-text summary from the markdown report for the dashboard header. */
