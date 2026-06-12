@@ -1,6 +1,6 @@
 {
-  "description": "End-to-end One scan duration (ms), from request start to done. Source: one.scan.completed structured log (jsonPayload.totalMs).",
-  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event=\"one.scan.completed\"",
+  "description": "End-to-end One scan duration (ms), from request start to done. Sources: one.scan.completed and one.research.completed structured logs (jsonPayload.totalMs).",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" (jsonPayload.event=\"one.scan.completed\" OR jsonPayload.event=\"one.research.completed\")",
   "metricDescriptor": {
     "metricKind": "DELTA",
     "valueType": "DISTRIBUTION",

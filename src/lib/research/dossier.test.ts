@@ -15,6 +15,12 @@ function baseInput(confirmedProfiles?: ConfirmedProfile[]): OneSubjectInput {
   };
 }
 
+function extractLinkedInPromptJson(question: string): Record<string, unknown> {
+  const match = question.match(/LINKEDIN_ENRICHED_PROFILE_JSON[\s\S]*?```json\n([\s\S]*?)\n```/);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]) as Record<string, unknown>;
+}
+
 describe("buildPersonDossierQuestion", () => {
   it("defuses a LinkedIn anchor into a load-reducer (identity pre-confirmed, budgeted, lean)", () => {
     const url = "https://www.linkedin.com/in/ankit-kumar-singh-001";
@@ -191,9 +197,32 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
       experience: [
         { title: "Chief Operating Officer", company: "OTS Capital", startDate: "Jan 2024", current: true },
         { title: "Head of Fund Operations", company: "VINKEFUND", endDate: "Dec 2023" },
+        { title: "Managing Director", company: "SkyBridge", endDate: "2020" },
+        { title: "Director", company: "Redwood Capital", endDate: "2017" },
+        { title: "Analyst", company: "Atlas Bank", endDate: "2012" },
+        { title: "Associate", company: "Delta Markets", endDate: "2009" },
       ],
-      education: [{ school: "University of Wales, UK", degree: "MBA, Finance" }],
-      skills: ["Financial Markets", "FX Options"],
+      education: [
+        { school: "University of Wales, UK", degree: "MBA, Finance" },
+        { school: "Delhi University", degree: "BCom" },
+        { school: "Executive Institute", degree: "Risk Leadership Certificate" },
+      ],
+      skills: [
+        "Financial Markets",
+        "FX Options",
+        "Fund Operations",
+        "AML",
+        "KYC",
+        "Risk Management",
+        "Capital Markets",
+        "Operations",
+        "Leadership",
+        "Compliance",
+        "Derivatives",
+        "Trading",
+        "Investor Relations",
+      ],
+      certifications: [{ name: "Certified AML Specialist", authority: "ACAMS", date: "2022" }],
     };
     return input;
   }
@@ -201,8 +230,8 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
   it("injects the About + stated location and builds the spine from structured roles", () => {
     const q = buildPersonDossierQuestion(scraperInput());
     expect(q).toContain("IDENTITY IS SOLVED");
-    // rich About is injected verbatim and is searchable context
-    expect(q).toContain("SELF-SUMMARY");
+    // rich About is injected via the complete normalized LinkedIn JSON block
+    expect(q).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
     expect(q).toContain("CSSF");
     // stated location surfaces alongside the coordinates
     expect(q).toContain("Stated location (from their LinkedIn): Dubai, United Arab Emirates");
@@ -215,5 +244,35 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
     const q = buildPersonDossierQuestion(scraperInput());
     expect(q).toMatch(/do NOT open, fetch/i);
     expect(q).not.toContain("Read that ONE public /in/ profile");
+  });
+
+  it("sends the complete normalized LinkedIn profile JSON to Phase-1 without raw scraper internals", () => {
+    const q = buildPersonDossierQuestion(scraperInput());
+    const json = extractLinkedInPromptJson(q);
+    expect(json.name).toBe("Anil Sachdev");
+    expect(json.profileUrl).toBe("https://www.linkedin.com/in/anilsachdev");
+    expect(json.source).toBe("scraper");
+    expect(json.about).toContain("CSSF- and FSCA-compliant AML/KYC frameworks");
+
+    const skills = json.skills as string[];
+    expect(skills).toHaveLength(13);
+    expect(skills).toContain("Investor Relations");
+
+    const experience = json.experience as Array<Record<string, unknown>>;
+    expect(experience).toHaveLength(6);
+    expect(experience.at(-1)?.company).toBe("Delta Markets");
+
+    const education = json.education as Array<Record<string, unknown>>;
+    expect(education).toHaveLength(3);
+    expect(education.at(-1)?.school).toBe("Executive Institute");
+
+    const certifications = json.certifications as Array<Record<string, unknown>>;
+    expect(certifications).toEqual([{ name: "Certified AML Specialist", authority: "ACAMS", date: "2022" }]);
+
+    expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");
+    expect(q).toContain("distinguish LinkedIn-provided ground truth from public web evidence and inference");
+    expect(q).not.toContain("linkedinProfileScraper");
+    expect(q).not.toContain("staffSpyStyle");
+    expect(q).not.toContain("templates");
   });
 });

@@ -59,6 +59,31 @@ export function structuredSpine(li?: LinkedInProfileFull): { current: string; pa
   return { current, past };
 }
 
+function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
+  const normalized = {
+    sub: li.sub,
+    name: li.name,
+    givenName: li.givenName,
+    familyName: li.familyName,
+    email: li.email,
+    emailVerified: li.emailVerified,
+    locale: li.locale,
+    pictureUrl: li.pictureUrl,
+    profileUrl: li.profileUrl,
+    headline: li.headline,
+    location: li.location ?? null,
+    about: li.about ?? null,
+    experience: li.experience ?? [],
+    education: li.education ?? [],
+    skills: li.skills ?? [],
+    certifications: li.certifications ?? [],
+    verifications: li.verifications ?? [],
+    grantedScopes: li.grantedScopes ?? [],
+    source: li.source ?? "oauth",
+  };
+  return JSON.stringify(normalized, null, 2);
+}
+
 /**
  * Phase-1 prompt for the Deep Research agent. Engineered to keep the agent's WORKLOAD low
  * (its runtime scales with how much it searches), which is what makes Phase-1 fast:
@@ -121,16 +146,12 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
     ? `PROFESSIONAL SPINE — from ${spineSource} (the authoritative career graph; do NOT re-derive it from the profile URL):
 ${spine.current ? `  • CURRENT (who they are today): ${spine.current}\n` : ""}${spine.past.length ? `  • FORMER (newest→oldest; NEVER write any of these up as the present job): ${spine.past.join(", ")}\n` : ""}For each entry the search seed is the ORGANISATION in it (ignore role words like "Intern"/"Mentee"). Use ONLY these organisations as seeds — never invent or add employers, schools, or handles not listed here.`
     : "";
-  // Compact education / skills anchors (MCP full profile) — reference facts that help the agent
-  // recognise the right person; kept short so they don't eat the bounded search budget.
-  const eduLine = li?.education?.length
-    ? `- Education: ${li.education.slice(0, 2).map((e) => [e.degree, e.field, e.school].filter(Boolean).join(" ")).filter(Boolean).join("; ")}`
-    : "";
-  const skillsLine = li?.skills?.length ? `- Skills (self-listed, for recognition only): ${li.skills.slice(0, 8).join(", ")}` : "";
-  // The "About" is the richest single signal — the subject's own summary of who they are. Inject
-  // it verbatim (bounded) so the agent seeds searches off the orgs / domains / specialities it names.
-  const aboutBlock = li?.about
-    ? `SELF-SUMMARY (verbatim from the subject's own LinkedIn "About" — the strongest context; seed searches off the organisations, domains, and specialities named here):\n"""\n${li.about}\n"""`
+  const profileJsonBlock = li
+    ? `LINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):
+\`\`\`json
+${linkedInProfilePromptJson(li)}
+\`\`\`
+Treat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About. Use web search only to enrich with public citations and adjacent public footprint. In the final report, distinguish LinkedIn-provided ground truth from public web evidence and inference.`
     : "";
   const statedLocation = li?.location ? `- Stated location (from their LinkedIn): ${li.location}` : "";
   const liSpine = fetchableLinkedIn
@@ -147,9 +168,7 @@ ${spine.current ? `  • CURRENT (who they are today): ${spine.current}\n` : ""}
         `- Profile photo (reference only — do NOT fetch, reverse-search, or cite this signed URL): ${li.pictureUrl || "(not provided)"}`,
         `- ${location}.${otherAnchorsLine}`,
         statedLocation,
-        eduLine,
-        skillsLine,
-        aboutBlock,
+        profileJsonBlock,
         spineBlock,
         liSpine,
       ].filter(Boolean).join("\n")
