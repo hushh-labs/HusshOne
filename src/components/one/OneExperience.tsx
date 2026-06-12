@@ -2105,6 +2105,22 @@ export default function OneExperience() {
           ? "connect"
           : "precollect";
 
+      // The URL-enriched LinkedIn profile is now mandatory before normal scan
+      // recovery. Old users may still have one_active_scan/one_last_scan from the
+      // previous flow; resuming those would bypass the LinkedIn URL gate and show
+      // "One is composing your report" before we have the new ground-truth JSON.
+      // Keep ?scan= email deep-links as explicit report-open requests.
+      const pending = safeGet("session", SS_PENDING);
+      if (baseStage === "connect") {
+        safeDel("local", LS_ACTIVE_SCAN);
+        safeDel("local", LS_ACTIVE_STARTED_AT);
+        if (!pending) safeDel("local", LS_LAST_SCAN);
+        if (!pending) {
+          setStage("connect");
+          return;
+        }
+      }
+
       // (a) a scan was in flight (localStorage → survives refresh AND app close)
       const inFlight = safeGet("local", LS_ACTIVE_SCAN);
       if (inFlight) {
@@ -2126,7 +2142,6 @@ export default function OneExperience() {
       }
 
       // (b) an email deep-link (?scan=) or last completed scan → completed-only fetch
-      const pending = safeGet("session", SS_PENDING);
       const restoreId = pending || safeGet("local", LS_LAST_SCAN);
       if (restoreId) {
         scanRunIdRef.current = restoreId;
@@ -2145,6 +2160,11 @@ export default function OneExperience() {
           return;
         }
         if (!pending) safeDel("local", LS_LAST_SCAN); // stale/expired id
+      }
+
+      if (baseStage === "connect") {
+        setStage("connect");
+        return;
       }
 
       // (c) nothing local — ask the server for this user's most recent scan, so a
