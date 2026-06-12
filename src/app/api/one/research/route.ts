@@ -7,7 +7,7 @@ import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
-import type { LinkedInProfileFull, LinkedInExperience, LinkedInEducation, LinkedInCertification } from "@/lib/linkedin/profile";
+import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull, type LinkedInExperience, type LinkedInEducation, type LinkedInCertification } from "@/lib/linkedin/profile";
 import type { ConfirmedProfile, LocationMode, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -192,10 +192,16 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Browser coordinates or zip code are required"), { statusCode: 400 });
   }
 
-  // LinkedIn-first flow: the verified OAuth profile is the identity anchor. Also fold its
-  // profile URL into confirmedProfiles so the existing LinkedIn-anchor logic + Phase-2
-  // passthrough keep working even if linkedinProfile is ever absent.
+  // LinkedIn URL-first flow: the scraper-enriched profile is the identity/career anchor.
+  // Fold its profile URL into confirmedProfiles so the existing LinkedIn-anchor logic +
+  // Phase-2 passthrough keep working.
   const linkedinProfile = parseLinkedInProfile(body.linkedinProfile);
+  if (!hasUrlEnrichedLinkedInProfile(linkedinProfile)) {
+    throw Object.assign(
+      new Error("Paste your LinkedIn profile URL before Send One so One can use your full LinkedIn profile."),
+      { statusCode: 400 },
+    );
+  }
   let confirmedProfiles = parseConfirmedProfiles(body.confirmedProfiles);
   if (linkedinProfile?.profileUrl) {
     const url = normalizeLinkedInUrl(linkedinProfile.profileUrl) || linkedinProfile.profileUrl;

@@ -93,6 +93,37 @@ describe("POST /api/linkedin/enrich-url", () => {
     expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
   });
 
+  it("does not persist sparse scraper output as a connected profile", async () => {
+    global.fetch = vi.fn(async () =>
+      Response.json(
+        scraperResponse({
+          templates: {
+            linkedinProfileScraper: {
+              userProfile: {
+                fullName: "Sparse User",
+                title: "· 3rd",
+                url: "https://www.linkedin.com/in/sparse-user/",
+              },
+              experiences: [],
+              education: [],
+              skills: [],
+              certifications: [],
+            },
+            staffSpyStyle: { full_name: "Sparse User" },
+          },
+        }),
+      ),
+    ) as never;
+
+    const res = await POST(makeRequest({ url: "https://www.linkedin.com/in/sparse-user" }));
+    const json = (await res.json()) as { ok?: boolean; error?: string };
+
+    expect(res.status).toBe(422);
+    expect(json.ok).toBe(false);
+    expect(json.error).toContain("enough LinkedIn profile detail");
+    expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
+  });
+
   it("returns controlled errors for scraper authwall responses and does not persist", async () => {
     global.fetch = vi.fn(async () =>
       Response.json({

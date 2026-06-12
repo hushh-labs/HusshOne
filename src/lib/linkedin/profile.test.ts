@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLinkedInProfile } from "./profile";
+import { buildLinkedInProfile, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
 import type { ProbeResult, RawApiResult } from "./oauth";
 
 function probe(key: string, ok: boolean, data: unknown): ProbeResult {
@@ -85,5 +85,34 @@ describe("buildLinkedInProfile", () => {
     const p = buildLinkedInProfile({ userinfo, probes, idTokenClaims: null, grantedScopes: [] });
     expect(p.profileUrl).toBeNull();
     expect(p.name).toBe("N");
+  });
+});
+
+describe("hasUrlEnrichedLinkedInProfile", () => {
+  const base: LinkedInProfileFull = {
+    sub: "anilsachdev",
+    name: "Anil Sachdev",
+    givenName: "Anil",
+    familyName: "Sachdev",
+    email: "anil@example.com",
+    emailVerified: false,
+    locale: null,
+    pictureUrl: null,
+    profileUrl: "https://www.linkedin.com/in/anilsachdev",
+    headline: "Chief Operating Officer",
+    verifications: [],
+    grantedScopes: ["scraper:linkedin-profile-url"],
+    source: "scraper",
+  };
+
+  it("accepts URL-scraper profiles with rich LinkedIn sections", () => {
+    expect(hasUrlEnrichedLinkedInProfile({ ...base, skills: ["Fund Operations"] })).toBe(true);
+    expect(hasUrlEnrichedLinkedInProfile({ ...base, experience: [{ title: "COO", company: "OTS Capital" }] })).toBe(true);
+  });
+
+  it("rejects OAuth-lite, non-/in/, and sparse scraper profiles", () => {
+    expect(hasUrlEnrichedLinkedInProfile({ ...base, source: "oauth", skills: ["Fund Operations"] })).toBe(false);
+    expect(hasUrlEnrichedLinkedInProfile({ ...base, profileUrl: "https://www.linkedin.com/company/hushh", skills: ["AI"] })).toBe(false);
+    expect(hasUrlEnrichedLinkedInProfile(base)).toBe(false);
   });
 });

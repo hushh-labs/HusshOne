@@ -26,7 +26,7 @@ import {
   signInWithGoogle,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
-import type { LinkedInProfile, LinkedInProfileFull } from "@/lib/linkedin/profile";
+import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type {
   ConfirmedProfile,
   DashboardCategoryMap,
@@ -116,7 +116,7 @@ const LS_ACTIVE_SCAN = "one_active_scan"; // in-flight scan id → resume after 
 const LS_ACTIVE_STARTED_AT = "one_active_started_at"; // epoch ms the active scan began → resume the elapsed/progress correctly across refresh/background/close
 const LS_DISCOVERY = "one_discovery"; // in-progress Phase-0 disambiguation (confirmed + shown + location)
 const LS_LI_FULL = "one_li_full"; // enriched LinkedIn profile → survives refresh so a returning session's re-scan still carries the ground truth
-const LS_LI_CONNECTED = "one_li_connected"; // "1" once LinkedIn URL enrichment succeeds → drives the mandatory gate on return
+const LS_LI_CONNECTED = "one_li_connected"; // legacy marker; the profile payload itself now drives the mandatory gate
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
@@ -1580,6 +1580,7 @@ function ConnectLinkedIn({
       return;
     }
     setPhase("fetching");
+    track("linkedin_connect_started");
     try {
       const authorization = await getFirebaseBearer(authUser as User);
       const res = await fetch("/api/linkedin/enrich-url", {
@@ -1596,7 +1597,9 @@ function ConnectLinkedIn({
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.");
+      const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
+      track("linkedin_connect_failed", { reason: message.slice(0, 120) });
+      setErr(message);
       setPhase("error");
     }
   };
@@ -1795,7 +1798,7 @@ export default function OneExperience() {
     setIdentity(u);
     // Mandatory connect gate: a user must connect LinkedIn before Send One. If they're
     // already connected (returning session), go straight to precollect.
-    setStage(liProfile ? "precollect" : "connect");
+    setStage(hasUrlEnrichedLinkedInProfile(liProfile) ? "precollect" : "connect");
   };
 
   // LinkedIn connected via the MCP step → capture the full profile, persist it so a refresh
@@ -2059,8 +2062,15 @@ export default function OneExperience() {
       if (savedLi) {
         try {
           profile = JSON.parse(savedLi) as LinkedInProfileFull;
+          if (!hasUrlEnrichedLinkedInProfile(profile)) {
+            profile = null;
+            safeDel("local", LS_LI_FULL);
+            safeDel("local", LS_LI_CONNECTED);
+          }
         } catch {
           /* corrupt cache — rebuild from the network below */
+          safeDel("local", LS_LI_FULL);
+          safeDel("local", LS_LI_CONNECTED);
         }
       }
       if (!profile) {
@@ -2069,10 +2079,13 @@ export default function OneExperience() {
           const res = await fetch("/api/linkedin/profile", { headers: { Authorization: authorization } });
           if (res.ok) {
             const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profile?: LinkedInProfileFull };
-            if (payload.ok && payload.profile) {
+            if (payload.ok && hasUrlEnrichedLinkedInProfile(payload.profile)) {
               profile = payload.profile;
               safeSet("local", LS_LI_FULL, JSON.stringify(profile));
               safeSet("local", LS_LI_CONNECTED, "1");
+            } else {
+              safeDel("local", LS_LI_FULL);
+              safeDel("local", LS_LI_CONNECTED);
             }
           }
         } catch {
@@ -2080,7 +2093,8 @@ export default function OneExperience() {
         }
       }
       if (profile) setLiProfile(profile);
-      const linkedInConnected = !!profile;
+      else setLiProfile(null);
+      const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
 
       // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
       // "connect"; else "precollect". (Recovery branches below override this for returning
@@ -2547,6 +2561,14 @@ export default function OneExperience() {
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
+    if (!hasUrlEnrichedLinkedInProfile(liProfile)) {
+      safeDel("local", LS_LI_FULL);
+      safeDel("local", LS_LI_CONNECTED);
+      setLiProfile(null);
+      setError("");
+      setStage("connect");
+      return;
+    }
     // A scan is already running (e.g. user landed back on precollect after a recovery
     // timeout) → RESUME it instead of POSTing a duplicate. "Scan again"/"Start over"
     // clear LS_ACTIVE_SCAN first, so an intentional fresh scan still starts cleanly.
@@ -2621,7 +2643,7 @@ export default function OneExperience() {
     setConfirmed([]);
     setDismissed([]);
     setDiscoverError("");
-    setStage("precollect");
+    setStage(hasUrlEnrichedLinkedInProfile(liProfile) ? "precollect" : "connect");
   };
 
   // From the calm "pending" (deadline-handoff) screen → re-check whether the scan finished.

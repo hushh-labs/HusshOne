@@ -147,4 +147,55 @@ describe("POST /api/one/research", () => {
     expect(question).toContain('"Generative AI for Leadership"');
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
   });
+
+  it("requires LinkedIn URL enrichment before starting Phase-1", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Ankit Kumar Singh",
+        email: "ankit@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+      }),
+    );
+    const json = (await response.json()) as { error?: string };
+
+    expect(response.status).toBe(400);
+    expect(json.error).toContain("Paste your LinkedIn profile URL");
+
+    const research = await import("@/lib/research/client");
+    expect(research.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("rejects OAuth-lite LinkedIn profiles so existing users return to URL capture", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Ankit Kumar Singh",
+        email: "ankit@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+        linkedinProfile: {
+          ...linkedinProfile,
+          source: "oauth",
+          about: null,
+          experience: [],
+          education: [],
+          skills: [],
+          certifications: [],
+        },
+      }),
+    );
+    const json = (await response.json()) as { error?: string };
+
+    expect(response.status).toBe(400);
+    expect(json.error).toContain("full LinkedIn profile");
+
+    const research = await import("@/lib/research/client");
+    expect(research.startResearch).not.toHaveBeenCalled();
+  });
 });

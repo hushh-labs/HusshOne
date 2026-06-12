@@ -17,6 +17,7 @@ export const runtime = "nodejs";
 const ALLOWED_EVENTS = new Set([
   "stage_landing",
   "stage_manual",
+  "stage_connect",
   "stage_precollect",
   "stage_disambiguate",
   "stage_collect",
@@ -29,6 +30,9 @@ const ALLOWED_EVENTS = new Set([
   "signed_in",
   "phone_entered",
   "scan_started",
+  "linkedin_connect_started",
+  "linkedin_connected",
+  "linkedin_connect_failed",
   "geo_denied",
   "started_over",
   "account_deleted",

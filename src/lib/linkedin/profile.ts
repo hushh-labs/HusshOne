@@ -10,6 +10,7 @@
  * companies — the strongest disambiguator); verificationReport adds `verifications`.
  */
 import type { ProbeResult, RawApiResult } from "./oauth";
+import { normalizeLinkedInUrl } from "@/lib/auth/identity";
 
 export interface LinkedInProfile {
   sub: string;
@@ -62,6 +63,21 @@ export interface LinkedInProfileFull extends LinkedInProfile {
   certifications?: LinkedInCertification[];
   /** Where this profile came from: "oauth" (limited), "mcp" (user live-login), or "scraper" (URL enrichment). */
   source?: "oauth" | "mcp" | "scraper";
+}
+
+/** True only for the URL-paste enrichment profile that is rich enough to anchor
+    Phase-1 with complete normalized LinkedIn JSON. OAuth-lite profiles are not
+    enough for the current One intelligence contract. */
+export function hasUrlEnrichedLinkedInProfile(profile: LinkedInProfileFull | null | undefined): profile is LinkedInProfileFull {
+  if (!profile || profile.source !== "scraper") return false;
+  if (!normalizeLinkedInUrl(profile.profileUrl ?? "")) return false;
+  return Boolean(
+    (profile.about && profile.about.trim()) ||
+      (profile.experience ?? []).some((item) => item && (item.title || item.company)) ||
+      (profile.education ?? []).some((item) => item && item.school) ||
+      (profile.skills ?? []).some((skill) => typeof skill === "string" && skill.trim()) ||
+      (profile.certifications ?? []).some((item) => item && item.name),
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

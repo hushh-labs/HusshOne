@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
 import { persistConnectedProfile } from "@/lib/linkedin/connection";
+import { hasUrlEnrichedLinkedInProfile } from "@/lib/linkedin/profile";
 import { LinkedInScraperError, scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
 
 export const runtime = "nodejs";
@@ -21,6 +22,12 @@ export async function POST(request: Request) {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
     const body = (await request.json().catch(() => ({}))) as { url?: unknown };
     const { profile, normalizedUrl } = await scrapeLinkedInProfileUrl(body.url, verified.email);
+    if (!hasUrlEnrichedLinkedInProfile(profile)) {
+      throw Object.assign(
+        new Error("We could not read enough LinkedIn profile detail. Check that the profile is public/visible and try again."),
+        { statusCode: 422 },
+      );
+    }
     await persistConnectedProfile(verified, profile);
     return NextResponse.json({ ok: true, profile, normalizedUrl });
   } catch (error) {
