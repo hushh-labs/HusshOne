@@ -1468,6 +1468,23 @@ button { font-family: inherit; cursor: pointer; }
   scroll-margin-top: calc(74px + env(safe-area-inset-top));
 }
 .dossier-section:last-child { margin-bottom: 0; }
+
+/* Progressive Tier-2: subtle "more sections arriving" chip under the dossier. */
+.dossier-deepening {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 9px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink-soft, #6b6b70);
+  font-size: 13px;
+  font-family: var(--font-body);
+}
+.dossier-deepening .scan-live-dot { flex: 0 0 auto; }
+.dossier-fallback .dossier-deepening { display: flex; width: fit-content; }
 .dossier-section-title {
   font-family: var(--font-heading);
   font-weight: 600;

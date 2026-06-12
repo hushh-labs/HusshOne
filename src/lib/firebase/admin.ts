@@ -29,6 +29,22 @@ export async function verifyFirebaseIdToken(idToken: string) {
   return getAuth(app).verifyIdToken(idToken, true);
 }
 
+/**
+ * Mint a Firebase custom token so a LinkedIn-OAuth'd member becomes a normal
+ * Firebase session — the rest of the app (verifyOneRequest, the 6 authed routes,
+ * the firebaseUid DB key, recovery) keeps working unchanged. `uid` is "linkedin:<sub>".
+ * The `email` is attached as a CUSTOM CLAIM because an ID token minted from a custom
+ * token has no `email` by default, and the research route checks email === verifiedEmail.
+ * Requires the service account to have the "Service Account Token Creator" role.
+ */
+export async function createOneCustomToken(uid: string, claims: { email?: string; name?: string }): Promise<string> {
+  const app = initializeFirebaseAdmin();
+  const developerClaims: Record<string, string> = {};
+  if (claims.email) developerClaims.email = claims.email;
+  if (claims.name) developerClaims.name = claims.name;
+  return getAuth(app).createCustomToken(uid, developerClaims);
+}
+
 // Invalidate every existing session for this user (so a deleted account can't
 // keep acting on an already-issued ID token). Best-effort: a missing user is fine.
 export async function revokeFirebaseTokens(uid: string): Promise<void> {

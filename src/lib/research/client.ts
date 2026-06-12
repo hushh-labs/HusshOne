@@ -225,7 +225,7 @@ function mockDiscoverCandidates(cycle: number): DiscoverCandidate[] {
       handle,
       displayName: `Mock User ${n}`,
       url: `https://${host}/${handle}`,
-      context: strong ? "Strong match — name + email prefix align." : "Possible same-name match — confirm if it's you.",
+      context: strong ? "Active developer profile under your name." : "Listed under your name; different focus area.",
       confidenceHint: strong ? "strong" : "possible",
     };
   });

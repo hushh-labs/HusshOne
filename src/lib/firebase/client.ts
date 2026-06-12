@@ -6,6 +6,7 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   setPersistence,
+  signInWithCustomToken,
   signInWithPopup,
   signInWithRedirect,
   signOut,
@@ -129,6 +130,18 @@ export async function completeGoogleRedirect(): Promise<User | null> {
 export async function signOutOfGoogle() {
   if (!isFirebaseClientConfigured()) return;
   await signOut(getAuth(getFirebaseApp()));
+}
+
+/**
+ * Complete the LinkedIn-first sign-in: exchange the server-minted Firebase custom
+ * token for a real Firebase session. From here on the app uses the normal Firebase
+ * ID token (getFirebaseBearer) for every authed call — LinkedIn is just the front door.
+ */
+export async function signInWithLinkedInCustomToken(customToken: string): Promise<User> {
+  const auth = getAuth(getFirebaseApp());
+  await ensurePersistence(auth);
+  const result = await signInWithCustomToken(auth, customToken);
+  return result.user;
 }
 
 export async function getFirebaseBearer(user: User | null) {

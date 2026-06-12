@@ -9,7 +9,14 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "react";
 import type { User } from "firebase/auth";
-import { isValidEmail, normalizeEmail, normalizeName, initialsForName } from "@/lib/auth/identity";
+import {
+  isValidEmail,
+  normalizeEmail,
+  normalizeName,
+  initialsForName,
+  normalizeLinkedInUrl,
+  linkedinHandleFromUrl,
+} from "@/lib/auth/identity";
 import {
   completeGoogleRedirect,
   getFirebaseBearer,
@@ -19,6 +26,7 @@ import {
   signInWithGoogle,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
+import type { LinkedInProfile, LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type {
   ConfirmedProfile,
   DashboardCategoryMap,
@@ -29,7 +37,7 @@ import type {
   PersonAuditStatus,
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
-import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
+import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, isStaleRunning, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { INTELLIGENCE_VERSION } from "@/lib/research/version";
 import { track, getSessionId } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
@@ -39,7 +47,7 @@ import LandingPage from "./landing/LandingPage";
 import DossierReport from "./DossierReport";
 import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
-type Stage = "hydrating" | "landing" | "manual" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
+type Stage = "hydrating" | "landing" | "manual" | "connect" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
@@ -65,6 +73,10 @@ const ACCENT = "#111113";
    dossier) instead of the Shadow structured scan. Server routes mirror the
    /dashboard + /scans recovery protocol, so the rest of the flow is unchanged. */
 const RESEARCH_MODE = process.env.NEXT_PUBLIC_ONE_RESEARCH_MODE === "true";
+/* Phase-0 candidate discovery (the "is this you?" pivot cards + 4-✓ gate) is now
+   DORMANT — Phase-0 identity is anchored by the user's pasted LinkedIn URL instead.
+   Flip this on to revive the old discover/disambiguation flow (kept intact behind it). */
+const DISCOVER_MODE = process.env.NEXT_PUBLIC_ONE_DISCOVER_MODE === "true";
 
 function hexA(hex: string, a: number) {
   const h = hex.replace("#", "");
@@ -99,11 +111,12 @@ function extractIdentity(user: ClientUser): Identity {
 /* ── persisted state (namespaced like the analytics `one_sid`) ─────────────
    localStorage survives a browser restart; sessionStorage is per-tab. We never
    store the PII result blob — only ids that are re-fetched from the server. */
-const LS_PHONE = "one_phone"; // typed phone, restored across refresh
 const LS_LAST_SCAN = "one_last_scan"; // last completed scan id → dashboard restore
 const LS_ACTIVE_SCAN = "one_active_scan"; // in-flight scan id → resume after refresh OR app close
 const LS_ACTIVE_STARTED_AT = "one_active_started_at"; // epoch ms the active scan began → resume the elapsed/progress correctly across refresh/background/close
 const LS_DISCOVERY = "one_discovery"; // in-progress Phase-0 disambiguation (confirmed + shown + location)
+const LS_LI_FULL = "one_li_full"; // enriched LinkedIn profile → survives refresh so a returning session's re-scan still carries the ground truth
+const LS_LI_CONNECTED = "one_li_connected"; // "1" once LinkedIn URL enrichment succeeds → drives the mandatory gate on return
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
@@ -136,11 +149,12 @@ function safeDel(store: "local" | "session", key: string) {
   }
 }
 function clearPersisted() {
-  safeDel("local", LS_PHONE);
   safeDel("local", LS_LAST_SCAN);
   safeDel("local", LS_ACTIVE_SCAN);
   safeDel("local", LS_ACTIVE_STARTED_AT);
   safeDel("local", LS_DISCOVERY);
+  safeDel("local", LS_LI_FULL);
+  safeDel("local", LS_LI_CONNECTED);
   safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
@@ -151,14 +165,6 @@ function mmss(ms: number) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function phoneDigits(value: string) {
-  return value.replace(/\D/g, "");
-}
-function isValidPhone(value: string) {
-  const digits = phoneDigits(value);
-  return digits.length >= 7 && digits.length <= 15;
 }
 
 /* read the NDJSON result stream; forwards progress/start, returns the final done|error line */
@@ -284,58 +290,19 @@ function Manual({
 }
 
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
-const COUNTRY_CODES: { flag: string; dial: string; iso: string }[] = [
-  { flag: "🇮🇳", dial: "+91", iso: "IN" },
-  { flag: "🇺🇸", dial: "+1", iso: "US" },
-  { flag: "🇬🇧", dial: "+44", iso: "GB" },
-  { flag: "🇦🇪", dial: "+971", iso: "AE" },
-  { flag: "🇦🇺", dial: "+61", iso: "AU" },
-  { flag: "🇸🇬", dial: "+65", iso: "SG" },
-  { flag: "🇩🇪", dial: "+49", iso: "DE" },
-  { flag: "🇫🇷", dial: "+33", iso: "FR" },
-  { flag: "🇳🇱", dial: "+31", iso: "NL" },
-  { flag: "🇪🇸", dial: "+34", iso: "ES" },
-  { flag: "🇮🇹", dial: "+39", iso: "IT" },
-  { flag: "🇨🇭", dial: "+41", iso: "CH" },
-  { flag: "🇸🇪", dial: "+46", iso: "SE" },
-  { flag: "🇮🇪", dial: "+353", iso: "IE" },
-  { flag: "🇯🇵", dial: "+81", iso: "JP" },
-  { flag: "🇰🇷", dial: "+82", iso: "KR" },
-  { flag: "🇨🇳", dial: "+86", iso: "CN" },
-  { flag: "🇭🇰", dial: "+852", iso: "HK" },
-  { flag: "🇧🇷", dial: "+55", iso: "BR" },
-  { flag: "🇲🇽", dial: "+52", iso: "MX" },
-  { flag: "🇿🇦", dial: "+27", iso: "ZA" },
-  { flag: "🇳🇬", dial: "+234", iso: "NG" },
-  { flag: "🇸🇦", dial: "+966", iso: "SA" },
-  { flag: "🇮🇩", dial: "+62", iso: "ID" },
-  { flag: "🇵🇰", dial: "+92", iso: "PK" },
-  { flag: "🇧🇩", dial: "+880", iso: "BD" },
-  { flag: "🇨🇦", dial: "+1", iso: "CA" },
-  { flag: "🇳🇿", dial: "+64", iso: "NZ" },
-];
-
 function PreCollect({
   user,
-  phone,
-  setPhone,
+  profile,
   onCollect,
   busy,
 }: {
   user: Identity;
-  phone: string;
-  setPhone: (v: string) => void;
+  profile: LinkedInProfile | null;
   onCollect: () => void;
   busy: boolean;
 }) {
   const initials = initialsForName(user.name);
-  const [code, setCode] = useState(() => {
-    const m = phone.match(/^(\+\d{1,4})\s/);
-    return m ? m[1] : "+91";
-  });
-  const [national, setNational] = useState(() => phone.replace(/^\+\d{1,4}\s/, ""));
-  const combine = (c: string, n: string) => (n.trim() ? `${c} ${n.trim()}` : "");
-  const valid = isValidPhone(combine(code, national));
+  const verifications = profile?.verifications ?? [];
   const magnetRef = useRef<HTMLSpanElement | null>(null);
   const onMove = (e: React.MouseEvent) => {
     const el = magnetRef.current;
@@ -349,7 +316,7 @@ function PreCollect({
     if (magnetRef.current) magnetRef.current.style.transform = "";
   };
   const submit = () => {
-    if (valid && !busy) onCollect();
+    if (!busy) onCollect();
   };
   return (
     <div className="screen precollect screen-enter">
@@ -362,60 +329,41 @@ function PreCollect({
         <div className="pc-box">
           <div className="pc-id">
             <div className="pc-avatar">
-              <span>{initials}</span>
+              {profile?.pictureUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={profile.pictureUrl}
+                  alt=""
+                  style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ) : (
+                <span>{initials}</span>
+              )}
               <i className="scan" aria-hidden="true"></i>
             </div>
             <div className="pc-meta">
-              <div className="anchor">Identity locked</div>
+              <div className="anchor">Verified via LinkedIn</div>
               <div className="nm">{user.name}</div>
               <div className="em">{user.email}</div>
+              {profile?.headline ? <div className="em">{profile.headline}</div> : null}
             </div>
-            <div className="pc-verified" title="Verified identity">
+            <div className="pc-verified" title={verifications.length ? `LinkedIn-verified: ${verifications.join(", ")}` : "Verified identity"}>
               {Icons.check(13)}
             </div>
           </div>
 
           <div className="pc-phone">
-            <label htmlFor="ph">Your phone number</label>
-            <div className="phone-row">
-              <select
-                className="cc-select"
-                aria-label="Country code"
-                value={code}
-                onChange={(e) => {
-                  setCode(e.target.value);
-                  setPhone(combine(e.target.value, national));
-                }}
-              >
-                {COUNTRY_CODES.map((c) => (
-                  <option key={c.iso} value={c.dial}>
-                    {c.flag} {c.dial}
-                  </option>
-                ))}
-              </select>
-              <input
-                id="ph"
-                className="input phone-input"
-                type="tel"
-                inputMode="tel"
-                autoComplete="tel-national"
-                placeholder="98765 43210"
-                value={national}
-                onChange={(e) => {
-                  setNational(e.target.value);
-                  setPhone(combine(code, e.target.value));
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submit();
-                }}
-              />
-            </div>
-            <span className="field-hint">Required — used only to tell you apart from people with the same name. Your number isn&apos;t stored raw.</span>
+            <span className="field-hint">
+              One will research the real you from your verified LinkedIn{verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.
+            </span>
           </div>
         </div>
 
         <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
-          <button className="cta cta-xl" onClick={submit} disabled={!valid || busy}>
+          <button className="cta cta-xl" onClick={submit} disabled={busy}>
             {busy ? (
               <>
                 <span
@@ -848,7 +796,14 @@ function Dashboard({
               </div>
             ) : null}
           </div>
-          <DossierReport report={result.report} />
+          <DossierReport
+            report={
+              result.report +
+              (result.deepReport ? `\n\n${result.deepReport}` : "") +
+              (result.imageReport ? `\n\n${result.imageReport}` : "")
+            }
+            deepening={result.deepStatus === "running" || result.imageStatus === "running"}
+          />
           <div className="dash-foot">
             <div className="privacy-row">
               <span className="p">{Icons.shield(14)} Private by default</span>
@@ -1476,8 +1431,11 @@ function Disambiguate({
   }
 
   return (
-    <div className="screen disambiguate screen-enter">
-      <div className="content" style={{ gap: 18, maxWidth: 760, width: "100%" }}>
+    <div
+      className="screen disambiguate screen-enter"
+      style={{ overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", justifyContent: "flex-start", paddingBottom: 56 }}
+    >
+      <div className="content" style={{ gap: 18, maxWidth: 940, width: "100%" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "center" }}>
           <p className="eyebrow">Confirm it&apos;s you</p>
           <h1 className="display" style={{ fontSize: "clamp(24px,3.6vw,36px)" }}>Which of these are you?</h1>
@@ -1514,11 +1472,11 @@ function Disambiguate({
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18, width: "100%" }}>
             {groups.map((g) => (
-              <div key={g.category} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div key={g.category} style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
                 <div className="eyebrow" style={{ textAlign: "left" }}>{g.category}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 10, width: "100%" }}>
                   {g.items.map((c) => {
                     const selected = confirmedUrls.has(c.url);
                     return (
@@ -1590,14 +1548,147 @@ function Disambiguate({
   );
 }
 
+/* ── C.5 LinkedIn profile URL — mandatory step after Google sign-in ────────
+   URL-first enrichment: the user pastes their LinkedIn personal-profile URL, then
+   the server calls the standalone cloud enrichment worker. No secret or worker URL
+   is exposed to the browser. No "skip" — the gate is mandatory. */
+function ConnectLinkedIn({
+  user,
+  authUser,
+  onConnected,
+}: {
+  user: Identity;
+  authUser: ClientUser;
+  onConnected: (profile: LinkedInProfileFull) => void;
+}) {
+  type Phase = "idle" | "fetching" | "connected" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [err, setErr] = useState("");
+
+  const normalized = normalizeLinkedInUrl(url);
+  const invalid = touched && !normalized;
+
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setTouched(true);
+    setErr("");
+    if (!normalized) {
+      setErr("Paste a valid LinkedIn personal profile URL.");
+      setPhase("error");
+      return;
+    }
+    setPhase("fetching");
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/linkedin/enrich-url", {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; profile?: LinkedInProfileFull; error?: string;
+      };
+      if (!res.ok || !payload.ok || !payload.profile) {
+        throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
+      }
+      setPhase("connected");
+      onConnected(payload.profile);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.");
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "fetching";
+
+  return (
+    <div className="screen screen-enter">
+      <div className="content" style={{ gap: 22 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <p className="eyebrow">One more step</p>
+          <h1 className="display" style={{ fontSize: "clamp(26px,4vw,38px)" }}>Paste your LinkedIn profile URL.</h1>
+          <p className="sub" style={{ margin: "0 auto" }}>
+            One uses your profile as the career anchor so it researches the real you, not a stranger who shares your name.
+          </p>
+        </div>
+
+        <form className="card" onSubmit={submit}>
+          <div className="pc-id">
+            <div className="pc-avatar"><span>{initialsForName(user.name)}</span></div>
+            <div className="pc-meta">
+              <div className="nm">{user.name || "Signed in"}</div>
+              <div className="em">{user.email}</div>
+            </div>
+          </div>
+          <div className="field-group">
+            <label htmlFor="linkedin-url">LinkedIn profile URL</label>
+            <input
+              id="linkedin-url"
+              className="input"
+              placeholder="https://www.linkedin.com/in/your-profile"
+              value={url}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                if (err) setErr("");
+              }}
+              onBlur={() => setTouched(true)}
+              autoComplete="url"
+              inputMode="url"
+              aria-invalid={invalid}
+            />
+            <span className="field-hint">
+              Use your personal profile link, not a company, jobs, feed, or search page.
+            </span>
+          </div>
+          <div className="cta-block">
+            <button className="solid-cta" type="submit" disabled={busy || phase === "connected" || !normalized}>
+              {busy ? (
+                <>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: "50%",
+                      border: "2px solid rgba(255,255,255,0.35)",
+                      borderTopColor: "#fff",
+                      animation: "scanSpin 0.7s linear infinite",
+                      display: "inline-block",
+                      marginRight: 8,
+                    }}
+                  />
+                  Reading profile…
+                </>
+              ) : (
+                <>
+                  {Icons.linkedin()}
+                  <span style={{ marginLeft: 8 }}>Use LinkedIn profile</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+
+        {err ? (
+          <p className="l-hero-error" role="alert">
+            {err} <button className="ghost-btn" type="button" onClick={() => void submit()}>Try again</button>
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /* ── state machine ──────────────────────────────────────── */
 export default function OneExperience() {
   const [stage, setStage] = useState<Stage>("hydrating");
   const [authUser, setAuthUser] = useState<ClientUser | null>(null);
   const [identity, setIdentity] = useState<Identity>({ name: "", email: "" });
-  // lazy-read the saved phone so a refresh keeps it without a setState-in-effect
-  // (SSR-safe: safeGet returns null on the server, and phone isn't rendered while hydrating)
-  const [phone, setPhone] = useState(() => safeGet("local", LS_PHONE) ?? "");
+  // The enriched LinkedIn profile pulled from the user's pasted URL (structured
+  // experience/education/skills/certs) — fed into the scan as the authoritative ground truth.
+  const [liProfile, setLiProfile] = useState<LinkedInProfileFull | null>(null);
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
@@ -1702,6 +1793,18 @@ export default function OneExperience() {
 
   const onManualDone = (u: Identity) => {
     setIdentity(u);
+    // Mandatory connect gate: a user must connect LinkedIn before Send One. If they're
+    // already connected (returning session), go straight to precollect.
+    setStage(liProfile ? "precollect" : "connect");
+  };
+
+  // LinkedIn connected via the MCP step → capture the full profile, persist it so a refresh
+  // stays connected, and advance to Send One. This is the only way past the mandatory gate.
+  const onLinkedInConnected = (full: LinkedInProfileFull) => {
+    setLiProfile(full);
+    safeSet("local", LS_LI_FULL, JSON.stringify(full));
+    safeSet("local", LS_LI_CONNECTED, "1");
+    track("linkedin_connected");
     setStage("precollect");
   };
 
@@ -1844,14 +1947,149 @@ export default function OneExperience() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [stage, authUser]);
 
+  // Progressive Tier-2: once the deep-research dashboard is showing and the deep tier isn't
+  // done, quietly pull the remaining sections in the background and merge them in live. This
+  // is the ONLY poller that runs after reveal — it both kicks off the first deep batch and
+  // polls /deep until completion, calling setDashboard(merged) so DossierReport re-renders
+  // with the new sections + TOC entries. Resumes automatically on refresh (deep state lives
+  // in the restored result). Re-runs only when the scan id changes; the inner loop keeps
+  // polling across batch appends (deepStatus stays "running") and exits when it's done.
+  useEffect(() => {
+    if (!RESEARCH_MODE || stage !== "dashboard" || !authUser) return;
+    const id = dashboard?.scanRunId || scanRunIdRef.current;
+    if (!id || !dashboard?.report) return; // deep-research dossier path only
+    if (dashboard.deepStatus === "completed" || dashboard.deepStatus === "failed") return;
+
+    let stopped = false;
+    const startedAt = performance.now();
+    const DEEP_POLL_CAP_MS = 40 * 60 * 1000;
+    const run = async () => {
+      while (!stopped && performance.now() - startedAt < DEEP_POLL_CAP_MS) {
+        try {
+          const authorization = await getFirebaseBearer(authUser as User);
+          const res = await fetch(`/api/one/research/${encodeURIComponent(id)}/deep`, {
+            headers: { Authorization: authorization },
+          });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => null)) as {
+              deepStatus?: string;
+              result?: OneDashboardResult | null;
+            } | null;
+            // Functional merge: the deep + image pollers run in parallel and each returns the
+            // full blob — merge into latest client state so neither drops the other's fields.
+            if (payload?.result) {
+              const next = payload.result;
+              setDashboard((prev) => (prev ? { ...prev, ...next } : next));
+            }
+            if (payload?.deepStatus === "completed" || payload?.deepStatus === "failed") return;
+          }
+        } catch {
+          /* transient — keep polling */
+        }
+        await new Promise((r) => setTimeout(r, 12_000));
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, dashboard?.scanRunId, authUser]);
+
+  // Background image-intelligence: in parallel with the deep poller, once the dashboard is
+  // showing and the image tier isn't done, poll /image to reverse-image-search the LinkedIn
+  // photo and merge the "Image intelligence" section in live. Same polling shape as /deep.
+  useEffect(() => {
+    if (!RESEARCH_MODE || stage !== "dashboard" || !authUser) return;
+    const id = dashboard?.scanRunId || scanRunIdRef.current;
+    if (!id || !dashboard?.report) return;
+    if (dashboard.imageStatus === "completed" || dashboard.imageStatus === "failed") return;
+
+    let stopped = false;
+    const startedAt = performance.now();
+    const IMAGE_POLL_CAP_MS = 25 * 60 * 1000;
+    const run = async () => {
+      while (!stopped && performance.now() - startedAt < IMAGE_POLL_CAP_MS) {
+        try {
+          const authorization = await getFirebaseBearer(authUser as User);
+          const res = await fetch(`/api/one/research/${encodeURIComponent(id)}/image`, {
+            headers: { Authorization: authorization },
+          });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => null)) as {
+              imageStatus?: string;
+              result?: OneDashboardResult | null;
+            } | null;
+            // Functional merge: the deep + image pollers run in parallel and each returns the
+            // full blob — merge into latest client state so neither drops the other's fields.
+            if (payload?.result) {
+              const next = payload.result;
+              setDashboard((prev) => (prev ? { ...prev, ...next } : next));
+            }
+            if (payload?.imageStatus === "completed" || payload?.imageStatus === "failed") return;
+          }
+        } catch {
+          /* transient — keep polling */
+        }
+        await new Promise((r) => setTimeout(r, 12_000));
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, dashboard?.scanRunId, authUser]);
+
   // Map a (restored or freshly signed-in) user → identity → the right screen,
   // honoring a mid-scan recovery, an email deep-link, or a last-scan dashboard.
-  const hydrateFromUser = async (user: ClientUser) => {
+  const hydrateFromUser = async (user: ClientUser, identityOverride?: Identity) => {
     try {
       setAuthUser(user);
-      const id = extractIdentity(user);
+      // Google is the front door again: identity comes from the Google account.
+      const id = identityOverride ?? extractIdentity(user);
       setIdentity(id);
-      const baseStage: Stage = !id.name || !isValidEmail(id.email) ? "manual" : "precollect";
+
+      // Rehydrate the connected LinkedIn FULL profile (pulled via the MCP connect step) so a
+      // returning session re-scans WITH the LinkedIn ground truth instead of dropping to
+      // linkedinProfile:undefined. Prefer the localStorage cache (instant), else rebuild from the
+      // server (DB-backed). The presence of a profile IS the mandatory connect gate.
+      let profile: LinkedInProfileFull | null = null;
+      const savedLi = safeGet("local", LS_LI_FULL);
+      if (savedLi) {
+        try {
+          profile = JSON.parse(savedLi) as LinkedInProfileFull;
+        } catch {
+          /* corrupt cache — rebuild from the network below */
+        }
+      }
+      if (!profile) {
+        try {
+          const authorization = await getFirebaseBearer(user as User);
+          const res = await fetch("/api/linkedin/profile", { headers: { Authorization: authorization } });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profile?: LinkedInProfileFull };
+            if (payload.ok && payload.profile) {
+              profile = payload.profile;
+              safeSet("local", LS_LI_FULL, JSON.stringify(profile));
+              safeSet("local", LS_LI_CONNECTED, "1");
+            }
+          }
+        } catch {
+          /* offline / not connected — fall through; the connect gate catches it */
+        }
+      }
+      if (profile) setLiProfile(profile);
+      const linkedInConnected = !!profile;
+
+      // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
+      // "connect"; else "precollect". (Recovery branches below override this for returning
+      // users with an in-flight / completed scan.)
+      const baseStage: Stage = !id.name || !isValidEmail(id.email)
+        ? "manual"
+        : !linkedInConnected
+          ? "connect"
+          : "precollect";
 
       // (a) a scan was in flight (localStorage → survives refresh AND app close)
       const inFlight = safeGet("local", LS_ACTIVE_SCAN);
@@ -1909,11 +2147,23 @@ export default function OneExperience() {
             emailDelivery?: ScanEmailDeliverySummary | null;
           } | null;
           if (payload?.scanRunId && payload.status === "running") {
+            const createdMs = payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now();
+            // Defense in depth (the server also auto-fails these): never resume the progress
+            // screen for a scan that's been "running" past the staleness ceiling. Without this
+            // a cold reopen re-seeds the elapsed timer from a day-old createdAt and shows the
+            // eternal "composing your report" screen (observed: 1358:09 / 92%).
+            if (isStaleRunning("running", createdMs)) {
+              safeDel("local", LS_ACTIVE_SCAN);
+              safeDel("local", LS_ACTIVE_STARTED_AT);
+              safeDel("local", LS_LAST_SCAN);
+              setError("That scan didn't finish. Start a new one when you're ready.");
+              setStage("error");
+              return;
+            }
             scanRunIdRef.current = payload.scanRunId;
             safeSet("local", LS_ACTIVE_SCAN, payload.scanRunId);
             // Seed the timer from the server's scan createdAt so a cold reopen (no local
             // state) still shows the true elapsed, then persist it for subsequent refreshes.
-            const createdMs = payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now();
             scanStartedAtRef.current = Number.isFinite(createdMs) ? createdMs : Date.now();
             safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
             collectStart.current = performance.now();
@@ -1942,9 +2192,12 @@ export default function OneExperience() {
         /* probe failed — never block sign-in on it */
       }
 
-      // (d) default — signed in, nothing to restore. In Deep Research mode, resume an
-      // in-progress disambiguation (confirmed pivots + shown set) if one was saved.
-      if (RESEARCH_MODE && baseStage === "precollect") {
+      // (d) default — signed in, nothing to restore. With the dormant discover flow
+      // revived (DISCOVER_MODE), resume an in-progress disambiguation if one was saved.
+      // When it's off (the LinkedIn-pivot flow), drop any stale saved discovery so it
+      // can't resurrect the retired screen for a returning user.
+      if (!DISCOVER_MODE) safeDel("local", LS_DISCOVERY);
+      if (RESEARCH_MODE && DISCOVER_MODE && baseStage === "precollect") {
         const rawDisc = safeGet("local", LS_DISCOVERY);
         if (rawDisc) {
           try {
@@ -1978,7 +2231,7 @@ export default function OneExperience() {
 
   // ── Rehydrate auth + app state on load so a refresh never re-prompts ──────
   useEffect(() => {
-    // capture an email deep-link (?scan=<id>) for after sign-in, then clean the URL
+    // capture an email deep-link (?scan=<id>), then clean the URL so a refresh doesn't re-trigger it.
     try {
       const params = new URLSearchParams(window.location.search);
       const scanId = params.get("scan");
@@ -2005,8 +2258,7 @@ export default function OneExperience() {
       // Complete a pending mobile redirect sign-in first (and surface its errors). The
       // resulting signed-in user is routed by the observeAuth first emission below.
       try {
-        const redirectUser = await completeGoogleRedirect();
-        if (redirectUser) track("signed_in", { provider: "google" });
+        await completeGoogleRedirect();
       } catch (e) {
         if (!cancelled) setError(mapSignInError(e));
       }
@@ -2033,33 +2285,26 @@ export default function OneExperience() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // persist the typed phone so a precollect refresh keeps it (skip the splash)
-  useEffect(() => {
-    if (stage === "hydrating") return;
-    if (phone.trim()) safeSet("local", LS_PHONE, phone);
-    else safeDel("local", LS_PHONE);
-  }, [phone, stage]);
-
   const onAuth = async () => {
     setError("");
     setNotice("");
-    try {
-      let user: ClientUser | null;
-      if (isFirebaseClientConfigured()) user = await signInWithGoogle();
-      else if (shouldAllowDevAuth()) {
-        user = makeDevUser();
+    // Dev mode (no Firebase) keeps the fake-user path so local UI work doesn't need OAuth.
+    if (!isFirebaseClientConfigured()) {
+      if (shouldAllowDevAuth()) {
         safeSet("session", SS_DEV_AUTH, "1"); // so a refresh restores the dev user
-      } else throw new Error("Google sign-in is not configured for this build.");
-
-      // Mobile (or a popup fallback) started a full-page redirect → no user on this page;
-      // boot()'s completeGoogleRedirect finishes the sign-in when the browser returns.
-      if (!user) return;
-
-      track("signed_in", { provider: isFirebaseClientConfigured() ? "google" : "dev" });
-      await hydrateFromUser(user); // single routing path (also honors a ?scan deep-link)
+        await hydrateFromUser(makeDevUser());
+      } else {
+        setError("Sign-in is not configured for this build.");
+      }
+      return;
+    }
+    // Google is the front door. On desktop the popup resolves with the user (route now);
+    // on mobile a redirect starts and completeGoogleRedirect() finishes it on the next load.
+    try {
+      track("signed_in", { provider: "google", step: "popup" });
+      const user = await signInWithGoogle();
+      if (user) await hydrateFromUser(user);
     } catch (e) {
-      // LandingPage renders this error inline — no bounce to the error screen.
-      // mapSignInError returns "" for user cancellations (stay quiet).
       setError(mapSignInError(e));
     }
   };
@@ -2085,7 +2330,7 @@ export default function OneExperience() {
     collectStart.current = performance.now();
 
     const controller = new AbortController();
-    const abortTimer = setTimeout(() => controller.abort(), 900_000);
+    const abortTimer = setTimeout(() => controller.abort(), 1_800_000); // match server cap (30min)
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);
@@ -2099,8 +2344,8 @@ export default function OneExperience() {
           latitude: location.latitude,
           longitude: location.longitude,
           zipCode: location.zipCode,
-          phone: phone.trim() || undefined,
-          confirmedProfiles, // Phase-0 anchors → seed Phase 1 + 2
+          linkedinProfile: liProfile ?? undefined, // verified LinkedIn anchor → ground truth for Phase 1
+          confirmedProfiles, // derived LinkedIn pivot → seeds Phase 1 + 2
           consentAttestation: true,
           purpose: "self_audit",
           sessionId: getSessionId(), // links server scan events to this UI session
@@ -2213,7 +2458,6 @@ export default function OneExperience() {
           latitude: location.latitude,
           longitude: location.longitude,
           zipCode: location.zipCode,
-          phone: phone.trim() || undefined,
           excludeUrls,
           sessionId: getSessionId(),
         }),
@@ -2293,6 +2537,14 @@ export default function OneExperience() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restorePending, authUser]);
 
+  // The verified LinkedIn profile URL → the single anchor threaded into Phase 1 + 2.
+  // Empty array when there's no profile URL (the server also derives this from linkedinProfile).
+  const linkedinPivot = (): ConfirmedProfile[] => {
+    const url = normalizeLinkedInUrl(liProfile?.profileUrl ?? "");
+    if (!url) return [];
+    return [{ platform: "LinkedIn", handle: linkedinHandleFromUrl(url), url, category: "Professional" }];
+  };
+
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
     // A scan is already running (e.g. user landed back on precollect after a recovery
@@ -2330,8 +2582,10 @@ export default function OneExperience() {
           latitude: Number(pos.coords.latitude.toFixed(6)),
           longitude: Number(pos.coords.longitude.toFixed(6)),
         };
-        // Deep Research → confirm identity first (Phase 0); Shadow → scan directly.
-        if (RESEARCH_MODE) void runDiscover(loc);
+        // Deep Research → anchor on the pasted LinkedIn pivot and scan directly.
+        // (DISCOVER_MODE revives the old "confirm candidates" Phase-0 instead.) Shadow → scan directly.
+        if (RESEARCH_MODE && DISCOVER_MODE) void runDiscover(loc);
+        else if (RESEARCH_MODE) void runScan(loc, linkedinPivot());
         else void runScan(loc);
       },
       (err) => {
@@ -2396,7 +2650,7 @@ export default function OneExperience() {
     scanRunIdRef.current = null;
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
-    setPhone("");
+    setLiProfile(null);
     setDashboard(null);
     setAudit(null);
     setEmailDelivery(null);
@@ -2440,7 +2694,7 @@ export default function OneExperience() {
       scanRunIdRef.current = null;
       setAuthUser(null);
       setIdentity({ name: "", email: "" });
-      setPhone("");
+      setLiProfile(null);
       setDashboard(null);
       setAudit(null);
       setEmailDelivery(null);
@@ -2525,8 +2779,14 @@ export default function OneExperience() {
         onContinue={onManualDone}
       />
     );
+  else if (stage === "connect")
+    view = (
+      <ConnectLinkedIn key="conn" user={identity} authUser={authUser as ClientUser} onConnected={onLinkedInConnected} />
+    );
   else if (stage === "precollect")
-    view = <PreCollect key="p" user={identity} phone={phone} setPhone={setPhone} onCollect={startCollect} busy={geoBusy} />;
+    view = (
+      <PreCollect key="p" user={identity} profile={liProfile} onCollect={startCollect} busy={geoBusy} />
+    );
   else if (stage === "disambiguate")
     view = (
       <Disambiguate
@@ -2573,13 +2833,19 @@ export default function OneExperience() {
         reason={geoReason}
         busy={geoBusy}
         onRetry={startCollect}
-        onZip={(zip) => (RESEARCH_MODE ? void runDiscover({ zipCode: zip }) : void runScan({ zipCode: zip }))}
+        onZip={(zip) =>
+          RESEARCH_MODE && DISCOVER_MODE
+            ? void runDiscover({ zipCode: zip })
+            : RESEARCH_MODE
+              ? void runScan({ zipCode: zip }, linkedinPivot())
+              : void runScan({ zipCode: zip })
+        }
       />
     );
 
   return (
     <main className="stage">
-      {stage === "manual" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" || stage === "pending" ? (
+      {stage === "manual" || stage === "connect" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" || stage === "pending" ? (
         <ParticleMorph motion={MOTION} />
       ) : (
         <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />

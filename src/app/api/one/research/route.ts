@@ -1,27 +1,30 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { isValidEmail, normalizeEmail, normalizeName } from "@/lib/auth/identity";
+import { isValidEmail, normalizeEmail, normalizeName, normalizeLinkedInUrl, linkedinHandleFromUrl } from "@/lib/auth/identity";
 import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
+import type { LinkedInProfileFull, LinkedInExperience, LinkedInEducation, LinkedInCertification } from "@/lib/linkedin/profile";
 import type { ConfirmedProfile, LocationMode, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 
 export const runtime = "nodejs";
 // Deep Research is a multi-minute job; allow the route to run long where honored.
-export const maxDuration = 900;
+export const maxDuration = 1800;
 
 const NAME_MAX = 80;
 const SUBJECT_PLACEHOLDER = "00000000-0000-0000-0000-000000000000";
 const POLL_INTERVAL_MS = 8000;
-// Soft deadline: close + hand off before Cloud Run's hard 900s kill (maxDuration=900),
-// so a long scan is never silently lost — the DR job keeps running on its own 3600s
-// service and the recovery route (fresh budget) finalizes + emails it.
-const DEADLINE_MS = 840_000;
+// Soft deadline: close + hand off before Cloud Run's hard 1800s kill (maxDuration=1800 +
+// service --timeout=1800), so a long scan is never silently lost — the DR job keeps running
+// on its own 3600s service and the recovery route (fresh budget) finalizes + emails it.
+// Raised from 840s: Phase-1 (fast) realistically runs ~14–20min, so handing off at 14min
+// meant EVERY scan handed off; a 27.5min inline budget lets most complete on-screen.
+const DEADLINE_MS = 1_650_000;
 // Don't START Phase-2 inline if less than this remains before the deadline; recovery
 // (a fresh request) runs synthesis instead so it isn't cut off mid-way.
 const PHASE2_RESERVE_MS = 200_000;
@@ -61,8 +64,11 @@ function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] | undefined 
   for (const item of value) {
     if (!item || typeof item !== "object") continue;
     const p = item as Record<string, unknown>;
-    const url = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
-    if (!url) continue;
+    const rawUrl = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
+    if (!rawUrl) continue;
+    // Canonicalize the LinkedIn pivot so the anchor is clean ground truth for both phases
+    // (client already gates on a valid URL; fall back to the raw value if it doesn't normalize).
+    const url = /linkedin\.com/i.test(rawUrl) ? normalizeLinkedInUrl(rawUrl) || rawUrl : rawUrl;
     out.push({
       url,
       platform: typeof p.platform === "string" ? p.platform.trim().slice(0, 60) : "",
@@ -72,6 +78,79 @@ function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] | undefined 
     if (out.length >= 12) break;
   }
   return out.length ? out : undefined;
+}
+
+/** Sanitize the verified LinkedIn profile sent by the client (full MCP profile or legacy
+    OAuth profile) into a LinkedInProfileFull. The structured arrays must be sanitized here
+    too so they ride inside ScanRun.input — the recovery / image / deep routes read them
+    back from there. Everything is bounded so a hostile/huge body can't bloat the row. */
+function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const p = value as Record<string, unknown>;
+  const s = (v: unknown, max = 300) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const sub = s(p.sub, 120);
+  if (!sub) return undefined;
+  const rec = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const list = (v: unknown, max: number) =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map((x) => x.slice(0, 80)).slice(0, max) : [];
+
+  const experience: LinkedInExperience[] = (Array.isArray(p.experience) ? p.experience : [])
+    .slice(0, 25)
+    .map((it) => {
+      const e = rec(it);
+      return {
+        title: s(e.title, 160),
+        company: s(e.company, 160),
+        location: s(e.location, 120) || undefined,
+        startDate: s(e.startDate, 40) || undefined,
+        endDate: s(e.endDate, 40) || undefined,
+        current: e.current === true || undefined,
+      };
+    })
+    .filter((e) => e.title || e.company);
+  const education: LinkedInEducation[] = (Array.isArray(p.education) ? p.education : [])
+    .slice(0, 15)
+    .map((it) => {
+      const e = rec(it);
+      return {
+        school: s(e.school, 160),
+        degree: s(e.degree, 120) || undefined,
+        field: s(e.field, 120) || undefined,
+        startDate: s(e.startDate, 40) || undefined,
+        endDate: s(e.endDate, 40) || undefined,
+      };
+    })
+    .filter((e) => e.school);
+  const certifications: LinkedInCertification[] = (Array.isArray(p.certifications) ? p.certifications : [])
+    .slice(0, 25)
+    .map((it) => {
+      const e = rec(it);
+      return { name: s(e.name, 160), authority: s(e.authority, 120) || undefined, date: s(e.date, 40) || undefined };
+    })
+    .filter((c) => c.name);
+  const skills = list(p.skills, 50);
+
+  return {
+    sub,
+    name: s(p.name, 120),
+    givenName: s(p.givenName, 80),
+    familyName: s(p.familyName, 80),
+    email: s(p.email, 200) || null,
+    emailVerified: p.emailVerified === true,
+    locale: s(p.locale, 20) || null,
+    pictureUrl: s(p.pictureUrl, 1000) || null,
+    profileUrl: s(p.profileUrl, 400) || null,
+    headline: s(p.headline, 300) || null,
+    verifications: list(p.verifications, 10),
+    grantedScopes: list(p.grantedScopes, 20),
+    source: p.source === "mcp" ? "mcp" : p.source === "oauth" ? "oauth" : p.source === "scraper" ? "scraper" : undefined,
+    location: s(p.location, 160) || null,
+    about: s(p.about, 2000) || null,
+    ...(experience.length ? { experience } : {}),
+    ...(education.length ? { education } : {}),
+    ...(skills.length ? { skills } : {}),
+    ...(certifications.length ? { certifications } : {}),
+  };
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
@@ -101,7 +180,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
   if (!name) throw Object.assign(new Error("Name is required"), { statusCode: 400 });
   if (!isValidEmail(email)) throw Object.assign(new Error("Valid email is required"), { statusCode: 400 });
   if (email !== verifiedEmail) {
-    throw Object.assign(new Error("Signed-in Google email does not match the requested subject"), { statusCode: 403 });
+    throw Object.assign(new Error("Signed-in account email does not match the requested subject"), { statusCode: 403 });
   }
   if (body.consentAttestation !== true) {
     throw Object.assign(new Error("Consent attestation is required"), { statusCode: 400 });
@@ -113,6 +192,27 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Browser coordinates or zip code are required"), { statusCode: 400 });
   }
 
+  // LinkedIn-first flow: the verified OAuth profile is the identity anchor. Also fold its
+  // profile URL into confirmedProfiles so the existing LinkedIn-anchor logic + Phase-2
+  // passthrough keep working even if linkedinProfile is ever absent.
+  const linkedinProfile = parseLinkedInProfile(body.linkedinProfile);
+  let confirmedProfiles = parseConfirmedProfiles(body.confirmedProfiles);
+  if (linkedinProfile?.profileUrl) {
+    const url = normalizeLinkedInUrl(linkedinProfile.profileUrl) || linkedinProfile.profileUrl;
+    const hasLinkedIn = (confirmedProfiles ?? []).some(
+      (p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url),
+    );
+    if (!hasLinkedIn) {
+      const anchor: ConfirmedProfile = {
+        platform: "LinkedIn",
+        handle: linkedinHandleFromUrl(url) || "",
+        url,
+        category: "Professional",
+      };
+      confirmedProfiles = [anchor, ...(confirmedProfiles ?? [])];
+    }
+  }
+
   return {
     name,
     email,
@@ -120,7 +220,8 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     longitude,
     zipCode,
     phone: phone || undefined,
-    confirmedProfiles: parseConfirmedProfiles(body.confirmedProfiles),
+    confirmedProfiles,
+    linkedinProfile,
     consentAttestation: true,
     purpose: "self_audit",
   };
@@ -134,7 +235,7 @@ export async function POST(request: Request) {
   let scanRunId: string | null;
   let jobId: string;
   let sessionId: string | null = null;
-  let depth: ResearchDepth = "max";
+  let depth: ResearchDepth = "fast";
   try {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
     const body = await parseBody(request);
@@ -143,7 +244,9 @@ export async function POST(request: Request) {
     // user's UI funnel events for end-to-end tracing.
     sessionId = typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : null;
     mode = typeof input.latitude === "number" && typeof input.longitude === "number" ? "precise" : "limited";
-    depth = process.env.DEEP_RESEARCH_DEPTH === "fast" ? "fast" : "max";
+    // Default = fast (deep-research-preview): pointed, LinkedIn-anchored, stays under the
+    // 900s wall. `max` only when explicitly forced via env. (Phase-1 max routinely ran 14–19min.)
+    depth = process.env.DEEP_RESEARCH_DEPTH === "max" ? "max" : "fast";
 
     ({ jobId } = await startResearch(buildPersonDossierQuestion(input), depth));
 
@@ -151,7 +254,7 @@ export async function POST(request: Request) {
       firebaseUid: verified.uid,
       email: input.email,
       name: input.name || verified.name,
-      photoUrl: verified.picture,
+      photoUrl: input.linkedinProfile?.pictureUrl ?? verified.picture,
     });
     userId = user?.id ?? null;
     const scan = await createConsentAndScan({

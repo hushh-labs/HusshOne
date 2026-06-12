@@ -47,3 +47,5 @@ next-env.d.ts
 
 # research output dossiers — contain personal data (PII); never commit
 research-exports/
+# standalone experiment output (scripts/exp/*) — also PII; never commit
+exp-output/

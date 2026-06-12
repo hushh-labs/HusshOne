@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { getLatestScanForUser, getScanEmailDelivery } from "@/lib/db/scan-store";
+import { failScanRun, getLatestScanForUser, getScanEmailDelivery } from "@/lib/db/scan-store";
+import { isStaleRunning } from "@/lib/ria/progress";
+
+const STALE_MESSAGE = "This scan ran past its time limit and didn't finish.";
 
 export const runtime = "nodejs";
 
@@ -16,6 +19,21 @@ export async function GET(request: Request) {
     const scan = await getLatestScanForUser(verified.uid);
     if (!scan) {
       return NextResponse.json({ ok: false, status: "none", scanRunId: null, result: null });
+    }
+    // Self-heal: a row stuck "running" past the staleness ceiling is dead (upstream job
+    // abandoned). Fail it (best-effort) and report "failed" so the client stops resuming
+    // the eternal progress screen on every login instead of re-seeding the elapsed timer.
+    if (isStaleRunning(scan.status, scan.createdAt?.getTime() ?? 0)) {
+      await failScanRun(scan.id, STALE_MESSAGE).catch(() => undefined);
+      return NextResponse.json({
+        ok: false,
+        status: "failed",
+        scanRunId: scan.id,
+        createdAt: scan.createdAt?.toISOString() ?? null,
+        result: null,
+        error: STALE_MESSAGE,
+        emailDelivery: null,
+      });
     }
     const emailDelivery = scan.status === "completed" ? await getScanEmailDelivery(verified.uid, scan.id) : null;
     return NextResponse.json({

@@ -13,10 +13,28 @@ export const SHADOW_PHASES = [
 ] as const;
 
 /** Estimated typical run used only to pace the UI; the real result governs completion.
-   Tuned to the real Deep Research distribution (time-to-result p50 ≈ 9 min, long tail
-   to ~24 min) so the eased bar advances across the whole wait instead of pegging at
-   ~92% after ~3 min. The honest signal remains the mm:ss elapsed shown alongside. */
-export const SHADOW_ESTIMATED_MS = 540_000;
+   Tuned to the real Deep Research distribution (Phase-1 fast realistically ~14–20 min,
+   long tail higher) so the eased bar advances across the whole wait instead of pegging at
+   ~92% after a few min. The honest signal remains the mm:ss elapsed shown alongside. */
+export const SHADOW_ESTIMATED_MS = 1_080_000;
+
+/** A ScanRun that has been "running" longer than this is unrecoverable: it is well past
+   the 900s hard wall (Cloud Run + maxDuration) PLUS a generous recovery grace, and beyond
+   the client's own 30-min recovery poll. At that point the upstream Deep Research job is
+   dead/abandoned and the row will never finalize on its own. Read paths auto-fail such rows
+   (self-heal) and the client refuses to resume their progress screen — without this a row
+   can sit "running" for hours and the client re-seeds the elapsed timer from createdAt on
+   every login, producing the eternal "composing your report" screen (observed: 1358:09 / 92%). */
+export const STALE_RUNNING_MS = 60 * 60 * 1000; // 60 min
+
+/** True when a scan is "running" but older than the staleness ceiling → treat as failed. */
+export function isStaleRunning(
+  status: string | null | undefined,
+  createdAtMs: number,
+  now: number = Date.now(),
+): boolean {
+  return status === "running" && Number.isFinite(createdAtMs) && createdAtMs > 0 && now - createdAtMs > STALE_RUNNING_MS;
+}
 
 export function shadowPhaseIndex(elapsedMs: number) {
   const frac = Math.min(0.999, Math.max(0, elapsedMs) / SHADOW_ESTIMATED_MS);
