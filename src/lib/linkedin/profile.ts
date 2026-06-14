@@ -37,10 +37,12 @@ export interface LinkedInProfile {
 export interface LinkedInExperience {
   title: string;
   company: string;
+  employmentType?: string;
   location?: string;
   startDate?: string;
   endDate?: string;
   current?: boolean;
+  description?: string;
 }
 export interface LinkedInEducation {
   school: string;
@@ -48,11 +50,20 @@ export interface LinkedInEducation {
   field?: string;
   startDate?: string;
   endDate?: string;
+  grade?: string;
+  description?: string;
 }
 export interface LinkedInCertification {
   name: string;
   authority?: string;
   date?: string;
+}
+export interface LinkedInProfileStats {
+  followers?: string;
+  connections?: string;
+  isConnection?: boolean;
+  premium?: boolean;
+  creator?: boolean;
 }
 export interface LinkedInProfileFull extends LinkedInProfile {
   location?: string | null;
@@ -61,6 +72,7 @@ export interface LinkedInProfileFull extends LinkedInProfile {
   education?: LinkedInEducation[];
   skills?: string[];
   certifications?: LinkedInCertification[];
+  profileStats?: LinkedInProfileStats;
   /** Where this profile came from: "oauth" (limited), "mcp" (user live-login), or "scraper" (URL enrichment). */
   source?: "oauth" | "mcp" | "scraper";
 }

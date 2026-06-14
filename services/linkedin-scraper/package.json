@@ -1,0 +1,14 @@
+{
+  "name": "@husshone/linkedin-scraper-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/patch-linkedin-profile-scraper.mjs",
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "linkedin-profile-scraper": "^2.3.1"
+  }
+}

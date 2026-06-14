@@ -101,10 +101,12 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
       return {
         title: s(e.title, 160),
         company: s(e.company, 160),
+        employmentType: s(e.employmentType, 80) || undefined,
         location: s(e.location, 120) || undefined,
         startDate: s(e.startDate, 40) || undefined,
         endDate: s(e.endDate, 40) || undefined,
         current: e.current === true || undefined,
+        description: s(e.description, 1000) || undefined,
       };
     })
     .filter((e) => e.title || e.company);
@@ -118,6 +120,8 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
         field: s(e.field, 120) || undefined,
         startDate: s(e.startDate, 40) || undefined,
         endDate: s(e.endDate, 40) || undefined,
+        grade: s(e.grade, 80) || undefined,
+        description: s(e.description, 1000) || undefined,
       };
     })
     .filter((e) => e.school);
@@ -129,6 +133,15 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
     })
     .filter((c) => c.name);
   const skills = list(p.skills, 50);
+  const rawStats = rec(p.profileStats);
+  const profileStats = {
+    followers: s(rawStats.followers, 80) || undefined,
+    connections: s(rawStats.connections, 80) || undefined,
+    isConnection: rawStats.isConnection === true || undefined,
+    premium: rawStats.premium === true || undefined,
+    creator: rawStats.creator === true || undefined,
+  };
+  const hasProfileStats = Object.values(profileStats).some((v) => v !== undefined);
 
   return {
     sub,
@@ -150,6 +163,7 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
     ...(education.length ? { education } : {}),
     ...(skills.length ? { skills } : {}),
     ...(certifications.length ? { certifications } : {}),
+    ...(hasProfileStats ? { profileStats } : {}),
   };
 }
 

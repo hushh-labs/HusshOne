@@ -73,7 +73,7 @@ describe("mapScraperResponseToLinkedInProfile", () => {
       profileUrl: "https://www.linkedin.com/in/anilsachdev",
       pictureUrl: "https://media.licdn.com/photo.jpg",
       location: "Dubai, United Arab Emirates",
-      headline: null,
+      headline: "Chief Operating Officer at OTS Capital",
       source: "scraper",
     });
     expect(profile.about).toContain("Strategic operations executive");
@@ -81,6 +81,7 @@ describe("mapScraperResponseToLinkedInProfile", () => {
     expect(profile.experience?.[0]).toMatchObject({
       title: "Chief Operating Officer",
       company: "OTS Capital",
+      employmentType: "Full-time",
       startDate: "Jan 2024",
       current: true,
     });
@@ -112,6 +113,146 @@ describe("mapScraperResponseToLinkedInProfile", () => {
         "https://www.linkedin.com/in/anilsachdev",
       ),
     ).toThrow(LinkedInScraperError);
+  });
+});
+
+const kavyaResult = {
+  ok: true,
+  profileId: "kavya-chauhan-6290bb239",
+  profileUrl: "https://www.linkedin.com/in/kavya-chauhan-6290bb239/",
+  templates: {
+    linkedinProfileScraper: {
+      userProfile: {
+        fullName: "Kavya Chauhan",
+        title: "· 2nd",
+        location: "Pune District, Maharashtra, India",
+        description:
+          "Currently, I work at Oracle, where I contribute to real-world systems and collaborate across teams to deliver high-impact improvements.\nAlways open to learning.\n… more",
+        url: "https://www.linkedin.com/in/kavya-chauhan-6290bb239/",
+      },
+      experiences: [
+        {
+          title: "Developer",
+          company: "Oracle · Full-time",
+          dateRange: "Jul 2025 - Present · 1 yr",
+          location: "Pune District, Maharashtra, India · On-site",
+          description: "Front-End Development and Back-End Web Development",
+        },
+        {
+          title: "Mobile Engineer",
+          company: "Mercari, Inc. · Internship",
+          dateRange: "Mar 2025 - May 2025 · 3 mos",
+          location: "Minato, Tokyo, Japan · On-site",
+          description: "Android Development and iOS Development",
+        },
+        {
+          title: "Mentee",
+          company: "Codess.Cafe · Apprenticeship",
+          dateRange: "Jan 2023 - Apr 2025 · 2 yrs 4 mos",
+          description: "LinkedIn helped me get this job\nhelped me get this job",
+        },
+        {
+          title: "Software Engineer",
+          company: "hushh.ai · Apprenticeship",
+          dateRange: "Dec 2023 - May 2024 · 6 mos",
+          location: "Pune District, Maharashtra, India · Remote",
+          description: "LinkedIn helped me get this job\nhelped me get this job\nMobile Application Development",
+        },
+        {
+          title: "Event Coordinator",
+          company: "Techfest, IIT Bombay · Part-time",
+          dateRange: "Oct 2022 - Dec 2022 · 3 mos",
+          location: "Mumbai, Maharashtra, India",
+          description: "Event Production\nMore profiles for you",
+        },
+        { title: "Ankit Kumar Singh", company: "· 2nd", description: "Product Engineer hushh | Ex CRED | Ex Google Mentee\nFollow" },
+      ],
+      education: [
+        {
+          schoolName: "Army Institute of Technology, Pune",
+          degreeName: "Bachelor of Engineering - BE, Information Technology",
+          dateRange: "Oct 2021 – Jun 2025",
+          grade: "Grade: 9.24",
+          description: "More profiles for you\nAnkit Kumar Singh\n· 2nd",
+        },
+        { schoolName: "· 2nd", dateRange: "Associate @Oracle | Summer of Bitcoin 2024", description: "Connect" },
+      ],
+      skills: [
+        { skillName: "Back-End Web Development" },
+        { skillName: "Front-End Development" },
+        { skillName: "iOS Development" },
+        { skillName: "Android Development" },
+        { skillName: "Mobile Application Development" },
+        { skillName: "Event Production" },
+        { skillName: "More profiles for you" },
+        { skillName: "Ankit Kumar Singh" },
+        { skillName: "· 2nd" },
+      ],
+    },
+    staffSpyStyle: {
+      profile_id: "kavya-chauhan-6290bb239",
+      name: "Kavya Chauhan",
+      first_name: "Kavya",
+      last_name: "Chauhan",
+      position: "· 2nd",
+      company: "Oracle · Full-time",
+      profile_link: "https://www.linkedin.com/in/kavya-chauhan-6290bb239/",
+      skill1: "Back-End Web Development",
+      skill2: "Front-End Development",
+      skill3: "More profiles for you",
+      skill4: "Ankit Kumar Singh",
+    },
+  },
+};
+
+describe("Kavya-style connection-degree headline fallback", () => {
+  const { profile } = mapScraperResponseToLinkedInProfile(
+    { ok: true, count: 1, results: [kavyaResult] },
+    "https://www.linkedin.com/in/kavya-chauhan-6290bb239",
+    "signed-in@example.com",
+  );
+
+  it("does not keep connection degree as a headline, but derives one from the real current role", () => {
+    expect(profile.headline).toBe("Developer at Oracle");
+  });
+
+  it("keeps richer LinkedIn row details while cutting sidebar recommendations", () => {
+    expect(profile.experience).toHaveLength(5);
+    expect(profile.experience?.[0]).toMatchObject({
+      title: "Developer",
+      company: "Oracle",
+      employmentType: "Full-time",
+      startDate: "Jul 2025",
+      current: true,
+      description: "Front-End Development and Back-End Web Development",
+    });
+    expect(profile.experience?.[3]).toMatchObject({
+      title: "Software Engineer",
+      company: "hushh.ai",
+      employmentType: "Apprenticeship",
+      description: "Mobile Application Development",
+    });
+    expect(profile.experience?.map((e) => e.title)).not.toContain("Ankit Kumar Singh");
+  });
+
+  it("keeps education grade and real skills without recommended-profile leakage", () => {
+    expect(profile.education).toEqual([
+      {
+        school: "Army Institute of Technology, Pune",
+        degree: "Bachelor of Engineering - BE, Information Technology",
+        startDate: "Oct 2021",
+        endDate: "Jun 2025",
+        grade: "Grade: 9.24",
+      },
+    ]);
+    expect(profile.skills).toEqual([
+      "Back-End Web Development",
+      "Front-End Development",
+      "iOS Development",
+      "Android Development",
+      "Mobile Application Development",
+      "Event Production",
+    ]);
   });
 });
 

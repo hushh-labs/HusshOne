@@ -77,6 +77,7 @@ function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
     education: li.education ?? [],
     skills: li.skills ?? [],
     certifications: li.certifications ?? [],
+    profileStats: li.profileStats ?? null,
     verifications: li.verifications ?? [],
     grantedScopes: li.grantedScopes ?? [],
     source: li.source ?? "oauth",
