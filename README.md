@@ -22,6 +22,10 @@ npm test
 npm run build
 ```
 
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the end-to-end system map: production services, auth, LinkedIn enrichment, Prompt 1 handoff, scan lifecycle, data storage, secrets, deployment, observability, and troubleshooting.
+
 ## Database
 
 The Prisma schema and initial PostgreSQL migration are in `prisma/`. Set `DATABASE_URL` to a local Postgres or Cloud SQL connection string, then run:
@@ -38,9 +42,13 @@ The app asks users for a personal LinkedIn profile URL and calls the standalone 
 Required production env:
 
 ```bash
-LINKEDIN_SCRAPER_URL=http://136.114.82.27:8080
+LINKEDIN_SCRAPER_URL=https://linkedin-scraper.136.114.82.27.sslip.io
 LINKEDIN_SCRAPER_API_KEY=<Secret Manager: linkedin-scraper-api-key>
 LINKEDIN_SCRAPER_TIMEOUT_MS=180000
 ```
 
 Never expose `LINKEDIN_SCRAPER_API_KEY` to the browser. The API route is `POST /api/linkedin/enrich-url`.
+
+See [docs/linkedin-enrichment.md](docs/linkedin-enrichment.md) for the service contract, normalized payload shape, prompt handoff, and production verification commands.
+
+The standalone scraper worker now lives in [services/linkedin-scraper](services/linkedin-scraper). It contains the HTTP service, persistent-Chrome VM helpers, Dockerfile, and operator docs.

@@ -77,10 +77,16 @@ const linkedinProfile = {
   verifications: [],
   grantedScopes: ["scraper:linkedin-profile-url"],
   experience: [
-    { title: "Founding Engineer", company: "Hushh Technologies LLC", current: true },
+    {
+      title: "Founding Engineer",
+      company: "Hushh Technologies LLC",
+      employmentType: "Full-time",
+      current: true,
+      description: "Product, mobile, and AI systems.",
+    },
     { title: "Mobile Engineer Trainee", company: "CRED", endDate: "Dec 2023" },
   ],
-  education: [{ school: "Indian Institute of Technology, Kharagpur", degree: "Data Analytics AI - ML" }],
+  education: [{ school: "Indian Institute of Technology, Kharagpur", degree: "Data Analytics AI - ML", grade: "Grade: 9.24" }],
   skills: [
     "Interpersonal Skills",
     "Technical Support",
@@ -93,6 +99,7 @@ const linkedinProfile = {
     "Leadership",
   ],
   certifications: [{ name: "Generative AI for Leadership", authority: "LinkedIn Learning", date: "2026" }],
+  profileStats: { followers: "1,234", connections: "500+" },
 };
 
 function makeRequest(body: Record<string, unknown>) {
@@ -143,8 +150,13 @@ describe("POST /api/one/research", () => {
     expect(question).toContain('"Leadership"');
     expect(question).toContain('"experience": [');
     expect(question).toContain('"company": "CRED"');
+    expect(question).toContain('"employmentType": "Full-time"');
+    expect(question).toContain('"Product, mobile, and AI systems."');
+    expect(question).toContain('"grade": "Grade: 9.24"');
     expect(question).toContain('"certifications": [');
     expect(question).toContain('"Generative AI for Leadership"');
+    expect(question).toContain('"profileStats": {');
+    expect(question).toContain('"connections": "500+"');
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
   });
 
