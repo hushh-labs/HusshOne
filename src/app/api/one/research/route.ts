@@ -1,13 +1,22 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { verifyOneRequest } from "@/lib/auth/verify";
-import { isValidEmail, normalizeEmail, normalizeName, normalizeLinkedInUrl, linkedinHandleFromUrl } from "@/lib/auth/identity";
+import {
+  isValidEmail,
+  normalizeEmail,
+  normalizeName,
+  normalizeLinkedInUrl,
+  linkedinHandleFromUrl,
+  normalizeInstagramUrl,
+  instagramHandleFromUrl,
+} from "@/lib/auth/identity";
 import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull, type LinkedInExperience, type LinkedInEducation, type LinkedInCertification } from "@/lib/linkedin/profile";
+import type { InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "@/lib/instagram/profile";
 import type { ConfirmedProfile, LocationMode, OneSubjectInput } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -167,6 +176,94 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
   };
 }
 
+function parseSocialProfiles(value: unknown): InstagramProfileFull[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: InstagramProfileFull[] = [];
+  const s = (v: unknown, max = 300) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
+  const rec = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const strOrNull = (v: unknown, max = 300) => s(v, max) || null;
+  const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+  for (const item of value) {
+    const p = rec(item);
+    if (p.platform !== "Instagram" || p.source !== "scraper") continue;
+    const profileUrl = normalizeInstagramUrl(p.profileUrl);
+    const username = s(p.username, 60) || (profileUrl ? instagramHandleFromUrl(profileUrl) : "");
+    const url = profileUrl || normalizeInstagramUrl(`https://www.instagram.com/${username}/`);
+    if (!username || !url) continue;
+    const stats = rec(p.stats);
+    const profile: InstagramProfileFull = {
+      platform: "Instagram",
+      username: username.toLowerCase(),
+      displayName: strOrNull(p.displayName, 120),
+      bio: strOrNull(p.bio, 1000),
+      avatarUrl: strOrNull(p.avatarUrl, 1000),
+      externalUrl: strOrNull(p.externalUrl, 500),
+      profileUrl: url,
+      source: "scraper",
+      connectedAt: strOrNull(p.connectedAt, 80) || new Date().toISOString(),
+    };
+    const isVerified = bool(p.isVerified);
+    const isPrivate = bool(p.isPrivate);
+    if (typeof isVerified === "boolean") profile.isVerified = isVerified;
+    if (typeof isPrivate === "boolean") profile.isPrivate = isPrivate;
+    const cleanStats = {
+      posts: strOrNull(stats.posts, 40),
+      followers: strOrNull(stats.followers, 40),
+      following: strOrNull(stats.following, 40),
+    };
+    if (Object.values(cleanStats).some(Boolean)) profile.stats = cleanStats;
+    const highlights: InstagramHighlight[] = [];
+    for (const highlight of Array.isArray(p.highlights) ? p.highlights : []) {
+      const h = rec(highlight);
+      const title = s(h.title, 120);
+      if (!title) continue;
+      highlights.push({
+        title,
+        url: strOrNull(h.url, 500),
+        thumbnailUrl: strOrNull(h.thumbnailUrl, 1000),
+      });
+      if (highlights.length >= 24) break;
+    }
+    if (highlights.length) profile.highlights = highlights;
+    const posts: InstagramPublicPost[] = [];
+    for (const post of Array.isArray(p.recentPublicPosts) ? p.recentPublicPosts : []) {
+      const r = rec(post);
+      const postUrl = s(r.url, 500);
+      if (!/^https:\/\/www\.instagram\.com\/(?:p|reel)\//i.test(postUrl)) continue;
+      const position = Number(r.position);
+      posts.push({
+        url: postUrl,
+        kind: /\/reel\//i.test(postUrl) ? "reel" : "post",
+        ...(Number.isFinite(position) && position > 0 ? { position: Math.round(position) } : {}),
+        caption: strOrNull(r.caption, 500),
+        thumbnailUrl: strOrNull(r.thumbnailUrl, 1000),
+        cdnUrls: Array.isArray(r.cdnUrls)
+          ? r.cdnUrls.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 12)
+          : undefined,
+        alt: strOrNull(r.alt, 500),
+        ariaLabel: strOrNull(r.ariaLabel, 300),
+        isCarousel: r.isCarousel === true || undefined,
+        isVideo: r.isVideo === true || undefined,
+        timestamp: strOrNull(r.timestamp, 80),
+        likes: strOrNull(r.likes, 40),
+        comments: strOrNull(r.comments, 40),
+        visibleText: strOrNull(r.visibleText, 300),
+      });
+      if (posts.length >= 120) break;
+    }
+    if (posts.length) profile.recentPublicPosts = posts;
+    const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => s(item, 300))
+      .filter(Boolean)
+      .slice(0, 80);
+    if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
+    out.push(profile);
+    if (out.length >= 4) break;
+  }
+  return out.length ? out : undefined;
+}
+
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
@@ -216,6 +313,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
       { statusCode: 400 },
     );
   }
+  const socialProfiles = parseSocialProfiles(body.socialProfiles);
   let confirmedProfiles = parseConfirmedProfiles(body.confirmedProfiles);
   if (linkedinProfile?.profileUrl) {
     const url = normalizeLinkedInUrl(linkedinProfile.profileUrl) || linkedinProfile.profileUrl;
@@ -232,6 +330,17 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
       confirmedProfiles = [anchor, ...(confirmedProfiles ?? [])];
     }
   }
+  for (const profile of socialProfiles ?? []) {
+    const url = normalizeInstagramUrl(profile.profileUrl);
+    if (!url) continue;
+    const exists = (confirmedProfiles ?? []).some((p) => /instagram/i.test(p.platform || "") && p.url === url);
+    if (!exists) {
+      confirmedProfiles = [
+        ...(confirmedProfiles ?? []),
+        { platform: "Instagram", handle: instagramHandleFromUrl(url), url, category: "Social" },
+      ];
+    }
+  }
 
   return {
     name,
@@ -242,6 +351,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     phone: phone || undefined,
     confirmedProfiles,
     linkedinProfile,
+    socialProfiles,
     consentAttestation: true,
     purpose: "self_audit",
   };

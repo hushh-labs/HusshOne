@@ -68,3 +68,54 @@ export function linkedinHandleFromUrl(value: unknown): string {
     return handle;
   }
 }
+
+const INSTAGRAM_RESERVED_SEGMENTS = new Set([
+  "about",
+  "accounts",
+  "api",
+  "challenge",
+  "developer",
+  "direct",
+  "explore",
+  "oauth",
+  "p",
+  "reel",
+  "reels",
+  "stories",
+  "tv",
+]);
+
+/** Canonicalize a user-pasted Instagram profile URL.
+ *  Accepts instagram.com/www.instagram.com/m.instagram.com direct profile paths only.
+ *  Rejects posts, reels, stories, explore, login, and app-internal routes. */
+export function normalizeInstagramUrl(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const raw = value.trim();
+  if (!raw) return "";
+  const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let url: URL;
+  try {
+    url = new URL(withProto);
+  } catch {
+    return "";
+  }
+  const host = url.hostname.toLowerCase();
+  if (host !== "instagram.com" && host !== "www.instagram.com" && host !== "m.instagram.com") return "";
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 1) return "";
+  const username = parts[0].trim();
+  if (!username || INSTAGRAM_RESERVED_SEGMENTS.has(username.toLowerCase())) return "";
+  if (!/^[a-z0-9._]{1,30}$/i.test(username)) return "";
+  if (username.startsWith(".") || username.endsWith(".") || username.includes("..")) return "";
+  return `https://www.instagram.com/${username.toLowerCase()}/`;
+}
+
+export function isInstagramUrl(value: unknown): boolean {
+  return !!normalizeInstagramUrl(value);
+}
+
+export function instagramHandleFromUrl(value: unknown): string {
+  const normalized = normalizeInstagramUrl(value);
+  if (!normalized) return "";
+  return new URL(normalized).pathname.split("/").filter(Boolean)[0] || "";
+}

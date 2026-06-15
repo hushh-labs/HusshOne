@@ -160,6 +160,62 @@ describe("POST /api/one/research", () => {
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
   });
 
+  it("passes optional Instagram social context into Phase-1 without replacing LinkedIn ground truth", async () => {
+    const instagramProfile = {
+      platform: "Instagram",
+      username: "ankit_ya_i_am",
+      displayName: "Ankit Kumar Singh",
+      bio: "Builder at Hushh",
+      avatarUrl: "https://cdn.example.com/avatar.jpg",
+      externalUrl: "https://ankit.example.com/",
+      profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+      isVerified: false,
+      isPrivate: false,
+      stats: { posts: "42", followers: "1,234", following: "567" },
+      recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", caption: "Demo" }],
+      source: "scraper",
+    };
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Ankit Kumar Singh",
+        email: "ankit@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+        linkedinProfile,
+        socialProfiles: [instagramProfile],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await readStream(response);
+
+    const research = await import("@/lib/research/client");
+    const question = vi.mocked(research.startResearch).mock.calls[0]?.[0] as string;
+    expect(question).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
+    expect(question).toContain("SOCIAL_ENRICHED_PROFILES_JSON");
+    expect(question).toContain('"username": "ankit_ya_i_am"');
+    expect(question).toContain("supporting cross-platform context only");
+    expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
+
+    const db = await import("@/lib/db/scan-store");
+    const input = vi.mocked(db.createConsentAndScan).mock.calls[0]?.[0]?.input as {
+      socialProfiles?: Array<{ username?: string; profileUrl?: string }>;
+      confirmedProfiles?: Array<{ platform?: string; url?: string }>;
+    };
+    expect(input.socialProfiles?.[0]).toMatchObject({
+      username: "ankit_ya_i_am",
+      profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+    });
+    expect(input.confirmedProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ platform: "Instagram", url: "https://www.instagram.com/ankit_ya_i_am/" }),
+      ]),
+    );
+  });
+
   it("requires LinkedIn URL enrichment before starting Phase-1", async () => {
     const { POST } = await import("./route");
     const response = await POST(

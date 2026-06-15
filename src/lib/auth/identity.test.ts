@@ -7,6 +7,9 @@ import {
   normalizeLinkedInUrl,
   isLinkedInUrl,
   linkedinHandleFromUrl,
+  normalizeInstagramUrl,
+  isInstagramUrl,
+  instagramHandleFromUrl,
 } from "./identity";
 
 describe("identity helpers", () => {
@@ -19,6 +22,31 @@ describe("identity helpers", () => {
     expect(isValidEmail("ankit@example.com")).toBe(true);
     expect(isValidEmail("ankit")).toBe(false);
     expect(initialsForName("Ankit Kumar Singh")).toBe("AK");
+  });
+});
+
+describe("Instagram profile helpers", () => {
+  it("canonicalizes valid profile URLs", () => {
+    const canonical = "https://www.instagram.com/ankit_ya_i_am/";
+    expect(normalizeInstagramUrl("https://www.instagram.com/ankit_ya_i_am/")).toBe(canonical);
+    expect(normalizeInstagramUrl("instagram.com/ankit_ya_i_am")).toBe(canonical);
+    expect(normalizeInstagramUrl("  HTTP://m.instagram.com/Ankit.Ya.I.Am/?hl=en#x  ")).toBe("https://www.instagram.com/ankit.ya.i.am/");
+  });
+
+  it("rejects non-profile Instagram URLs", () => {
+    expect(normalizeInstagramUrl("https://www.instagram.com/p/abc/")).toBe("");
+    expect(normalizeInstagramUrl("https://www.instagram.com/reel/abc/")).toBe("");
+    expect(normalizeInstagramUrl("https://www.instagram.com/stories/ankit/123")).toBe("");
+    expect(normalizeInstagramUrl("https://www.instagram.com/explore/")).toBe("");
+    expect(normalizeInstagramUrl("https://www.instagram.com/accounts/login/")).toBe("");
+    expect(normalizeInstagramUrl("https://example.com/ankit_ya_i_am")).toBe("");
+    expect(normalizeInstagramUrl("ankit_ya_i_am")).toBe("");
+  });
+
+  it("derives the validity flag and handle", () => {
+    expect(isInstagramUrl("instagram.com/ankit_ya_i_am")).toBe(true);
+    expect(isInstagramUrl("https://www.instagram.com/p/abc/")).toBe(false);
+    expect(instagramHandleFromUrl("https://www.instagram.com/ankit_ya_i_am/")).toBe("ankit_ya_i_am");
   });
 });
 

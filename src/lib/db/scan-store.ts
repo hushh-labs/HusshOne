@@ -28,6 +28,20 @@ interface CreateScanInput {
   userAgent?: string | null;
 }
 
+interface UpsertSocialAccessRequestInput {
+  firebaseUid: string;
+  platform: string;
+  publicId: string;
+  profileUrl: string;
+  status: string;
+  profileSnapshot?: unknown;
+  requestedAt?: string | null;
+  approvedAt?: string | null;
+  lastCheckedAt?: string | null;
+  nextCheckAt?: string | null;
+  lastError?: string | null;
+}
+
 function hashValue(value?: string | null) {
   if (!value) return null;
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -140,6 +154,106 @@ export async function deleteLinkedInConnection(firebaseUid: string): Promise<boo
     return true;
   } catch {
     return false;
+  }
+}
+
+/* ── Optional social connections (Instagram first) ──────────────────────────
+   Defensive for the same reason as LinkedInConnection: migrations may lag deploys,
+   and optional social enrichment must never block the mandatory One scan flow. */
+export async function upsertSocialConnection(
+  firebaseUid: string,
+  platform: string,
+  publicId: string,
+  profile: unknown,
+) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const normalizedPlatform = platform.trim().toLowerCase();
+    const normalizedPublicId = publicId.trim().toLowerCase();
+    if (!normalizedPlatform || !normalizedPublicId) return null;
+    const data = {
+      platform: normalizedPlatform,
+      publicId: normalizedPublicId,
+      profile: JSON.parse(JSON.stringify(profile)) as Prisma.InputJsonValue,
+      sessionValid: true,
+    };
+    return await prisma.socialConnection.upsert({
+      where: { userId_platform_publicId: { userId: user.id, platform: normalizedPlatform, publicId: normalizedPublicId } },
+      create: { userId: user.id, ...data },
+      update: data,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getSocialConnections<TProfile = unknown>(firebaseUid: string, platform?: string): Promise<TProfile[]> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return [];
+    const rows = await prisma.socialConnection.findMany({
+      where: {
+        userId: user.id,
+        sessionValid: true,
+        ...(platform ? { platform: platform.trim().toLowerCase() } : {}),
+      },
+      select: { profile: true },
+      orderBy: { refreshedAt: "desc" },
+    });
+    return rows.map((row) => row.profile as unknown as TProfile).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertSocialAccessRequest(input: UpsertSocialAccessRequestInput) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const platform = input.platform.trim().toLowerCase();
+    const publicId = input.publicId.trim().toLowerCase();
+    const status = input.status.trim();
+    if (!platform || !publicId || !status) return null;
+    const now = new Date();
+    const id = crypto.randomUUID();
+    const profileSnapshot = JSON.stringify(input.profileSnapshot ?? null);
+    const requestedAt = input.requestedAt ? new Date(input.requestedAt) : null;
+    const approvedAt = input.approvedAt ? new Date(input.approvedAt) : null;
+    const lastCheckedAt = input.lastCheckedAt ? new Date(input.lastCheckedAt) : now;
+    const nextCheckAt = input.nextCheckAt ? new Date(input.nextCheckAt) : null;
+    return await prisma.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO "SocialAccessRequest" (
+        "id", "userId", "platform", "publicId", "profileUrl", "status", "profileSnapshot",
+        "requestedAt", "approvedAt", "lastCheckedAt", "nextCheckAt", "attemptCount",
+        "lastError", "createdAt", "updatedAt"
+      )
+      VALUES (
+        ${id}::uuid, ${user.id}::uuid, ${platform}, ${publicId}, ${input.profileUrl}, ${status},
+        ${profileSnapshot}::jsonb, ${requestedAt}, ${approvedAt}, ${lastCheckedAt}, ${nextCheckAt},
+        1, ${input.lastError || null}, ${now}, ${now}
+      )
+      ON CONFLICT ("userId", "platform", "publicId") DO UPDATE SET
+        "profileUrl" = EXCLUDED."profileUrl",
+        "status" = EXCLUDED."status",
+        "profileSnapshot" = EXCLUDED."profileSnapshot",
+        "requestedAt" = COALESCE("SocialAccessRequest"."requestedAt", EXCLUDED."requestedAt"),
+        "approvedAt" = COALESCE(EXCLUDED."approvedAt", "SocialAccessRequest"."approvedAt"),
+        "lastCheckedAt" = EXCLUDED."lastCheckedAt",
+        "nextCheckAt" = EXCLUDED."nextCheckAt",
+        "attemptCount" = "SocialAccessRequest"."attemptCount" + 1,
+        "lastError" = EXCLUDED."lastError",
+        "updatedAt" = EXCLUDED."updatedAt"
+      RETURNING "id"
+    `;
+  } catch {
+    return null;
   }
 }
 

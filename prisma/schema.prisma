@@ -21,8 +21,53 @@ model OneUser {
   dataRequests DataRequest[]
   notifications OneNotification[]
   linkedInConnection LinkedInConnection?
+  socialConnections SocialConnection[]
+  socialAccessRequests SocialAccessRequest[]
 
   @@index([email])
+}
+
+// Optional connected social profiles (Instagram first). These are supporting public
+// context anchors; LinkedIn remains the mandatory identity/career ground truth.
+model SocialConnection {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  platform     String
+  publicId     String
+  profile      Json
+  sessionValid Boolean  @default(true)
+  connectedAt  DateTime @default(now())
+  refreshedAt  DateTime @updatedAt
+  user         OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform, publicId])
+  @@index([userId, platform])
+}
+
+// Durable private-profile access lifecycle for optional social enrichment. The
+// worker may request access once; One stores pending/approved state without
+// blocking the mandatory LinkedIn-first scan path.
+model SocialAccessRequest {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @db.Uuid
+  platform        String
+  publicId        String
+  profileUrl      String
+  status          String
+  profileSnapshot Json?
+  requestedAt     DateTime?
+  approvedAt      DateTime?
+  lastCheckedAt   DateTime?
+  nextCheckAt     DateTime?
+  attemptCount    Int      @default(0)
+  lastError       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform, publicId])
+  @@index([userId, platform, status])
+  @@index([nextCheckAt])
 }
 
 // The user's connected LinkedIn (full profile) from the MCP "Connect LinkedIn" step.
