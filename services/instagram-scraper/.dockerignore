@@ -1,0 +1,6 @@
+node_modules
+.chrome-profile
+secrets
+outputs
+logs
+.DS_Store
