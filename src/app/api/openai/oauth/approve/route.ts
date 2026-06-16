@@ -8,7 +8,7 @@ function errorResponse(error: unknown) {
   const statusCode =
     typeof error === "object" && error && "statusCode" in error ? Number((error as { statusCode?: number }).statusCode) : 500;
   const status = Number.isFinite(statusCode) && statusCode >= 400 ? statusCode : 500;
-  const message = error instanceof Error ? error.message : "Could not authorize HushhOne connector.";
+  const message = error instanceof Error ? error.message : "Could not authorize one by hushh connector.";
   return NextResponse.json({ ok: false, error: message }, { status });
 }
 

@@ -1,12 +1,13 @@
-# HushhOne OpenAI Connector Service
+# one by hushh OpenAI Connector Service
 
-Standalone production MCP/OAuth service for the official ChatGPT/OpenAI connector.
+Standalone production MCP/OAuth service for the official **one by hushh** ChatGPT/OpenAI connector.
 
 This service is intentionally separate from the One Next.js app:
 
 - OpenAI talks to this service for MCP discovery, OAuth token exchange, and tool calls.
-- HushhOne (`one.hushh.ai`) remains the login and consent broker.
+- one.hushh.ai remains the login and consent broker.
 - Private account/social/scan data is fetched through a server-only One bridge route protected by `ONE_CONNECTOR_TOOL_API_KEY`.
+- User-approved ChatGPT context summaries can be saved into one.hushh.ai; raw ChatGPT chats, files, cookies, and memory exports are never fetched.
 
 ## Endpoints
 
@@ -49,7 +50,7 @@ flowchart LR
   ChatGPT --> OAuth["openai-connector token endpoint"]
   OAuth --> OneAuth["one.hushh.ai login + consent"]
   MCP --> Bridge["one.hushh.ai server-only bridge"]
-  Bridge --> DB["HushhOne DB + social workers"]
+  Bridge --> DB["one.hushh.ai DB + social workers"]
   DB --> MCP
 ```
 
@@ -61,3 +62,4 @@ flowchart LR
 - `one_connect_linkedin_url`
 - `one_connect_instagram_url`
 - `one_get_scan_status`
+- `one_save_chatgpt_context`

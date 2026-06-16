@@ -31,7 +31,7 @@ function connectorOriginForHeader(request?: Request) {
   }
 }
 
-export function oauthChallengeMeta(request?: Request, message = "Link your HushhOne account to continue.") {
+export function oauthChallengeMeta(request?: Request, message = "Link your one.hushh.ai account to continue.") {
   return {
     "mcp/www_authenticate": [
       `Bearer resource_metadata="${connectorOriginForHeader(request)}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="${message}"`,
@@ -63,7 +63,7 @@ export async function createAuthorizationCode(request: Request, verified: Verifi
   if (!clientId) throw Object.assign(new Error("Missing OAuth client_id"), { statusCode: 400 });
   if (!validRedirectUri(redirectUri)) throw Object.assign(new Error("Unsupported OAuth redirect_uri"), { statusCode: 400 });
   if (!codeChallenge || challengeMethod !== "S256") throw Object.assign(new Error("PKCE S256 is required"), { statusCode: 400 });
-  if (!scopes.length) throw Object.assign(new Error("No supported HushhOne connector scopes requested"), { statusCode: 400 });
+  if (!scopes.length) throw Object.assign(new Error("No supported one by hushh connector scopes requested"), { statusCode: 400 });
 
   await upsertOneUser({
     firebaseUid: verified.uid,

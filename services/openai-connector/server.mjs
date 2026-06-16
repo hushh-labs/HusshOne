@@ -11,9 +11,10 @@ const configuredResource = trimOrigin(process.env.CONNECTOR_RESOURCE || "");
 const configuredIssuer = trimOrigin(process.env.CONNECTOR_ISSUER || "");
 const appChallengeToken = String(process.env.OPENAI_APPS_CHALLENGE_TOKEN || "").trim();
 
-const CONNECTOR_SCOPES = ["one.profile.read", "one.social.read", "one.scan.read", "one.social.write"];
+const CONNECTOR_SCOPES = ["one.profile.read", "one.social.read", "one.scan.read", "one.context.write", "one.social.write"];
 
 const readSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.social.read", "one.scan.read"] }];
+const contextWriteSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.context.write"] }];
 const socialWriteSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.social.read", "one.social.write"] }];
 
 const searchOutputSchema = {
@@ -86,16 +87,28 @@ const scanStatusOutputSchema = {
   additionalProperties: false,
 };
 
+const chatGptContextOutputSchema = {
+  type: "object",
+  properties: {
+    ok: { type: "boolean" },
+    snapshotId: { type: "string" },
+    savedAt: { type: "string" },
+    source: { type: "string" },
+  },
+  required: ["ok", "snapshotId", "savedAt", "source"],
+  additionalProperties: false,
+};
+
 const connectorTools = [
   {
     name: "search",
-    title: "Search HushhOne",
-    description: "Use this when the user asks to search their HushhOne profile, connected social context, scan reports, or public-footprint findings.",
+    title: "Search one by hushh",
+    description: "Use this when the user asks to search their one.hushh.ai profile, approved ChatGPT context imports, connected social context, scan reports, or public-footprint findings.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query over the linked user's HushhOne records." },
-        type: { type: "string", enum: ["all", "account", "linkedin", "social", "social_access", "scan"], default: "all" },
+        query: { type: "string", description: "Search query over the linked user's one.hushh.ai records." },
+        type: { type: "string", enum: ["all", "account", "chatgpt_context", "linkedin", "social", "social_access", "scan"], default: "all" },
         limit: { type: "number", minimum: 1, maximum: 20, default: 10 },
       },
       required: ["query"],
@@ -107,8 +120,8 @@ const connectorTools = [
   },
   {
     name: "fetch",
-    title: "Fetch HushhOne record",
-    description: "Use this when the user needs the full contents of a HushhOne search result by id.",
+    title: "Fetch one by hushh record",
+    description: "Use this when the user needs the full contents of a one.hushh.ai search result by id.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string", description: "Opaque id returned by search." } },
@@ -121,8 +134,8 @@ const connectorTools = [
   },
   {
     name: "one_get_account_context",
-    title: "Get HushhOne account context",
-    description: "Use this when the user asks what HushhOne knows about their linked account, profile connections, or latest scan state.",
+    title: "Get one by hushh account context",
+    description: "Use this when the user asks what one.hushh.ai knows about their linked account, approved ChatGPT context imports, profile connections, or latest scan state.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     outputSchema: accountOutputSchema,
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
@@ -131,7 +144,7 @@ const connectorTools = [
   {
     name: "one_connect_linkedin_url",
     title: "Connect LinkedIn URL",
-    description: "Use this when the user explicitly asks to connect or refresh their LinkedIn profile URL in HushhOne.",
+    description: "Use this when the user explicitly asks to connect or refresh their LinkedIn profile URL in one.hushh.ai.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "LinkedIn personal profile URL, usually https://www.linkedin.com/in/<handle>/." } },
@@ -145,7 +158,7 @@ const connectorTools = [
   {
     name: "one_connect_instagram_url",
     title: "Connect Instagram URL",
-    description: "Use this when the user explicitly asks to connect or refresh an Instagram profile URL in HushhOne. This can request access for private profiles.",
+    description: "Use this when the user explicitly asks to connect or refresh an Instagram profile URL in one.hushh.ai. This can request access for private profiles.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "Instagram profile URL, usually https://www.instagram.com/<handle>/." } },
@@ -158,16 +171,43 @@ const connectorTools = [
   },
   {
     name: "one_get_scan_status",
-    title: "Get HushhOne scan status",
-    description: "Use this when the user asks for a specific HushhOne scan status by scanRunId, or asks for their latest saved scan state.",
+    title: "Get one by hushh scan status",
+    description: "Use this when the user asks for a specific one.hushh.ai scan status by scanRunId, or asks for their latest saved scan state.",
     inputSchema: {
       type: "object",
-      properties: { scanRunId: { type: "string", description: "Optional scan id returned by HushhOne. Omit to return the linked user's latest scan." } },
+      properties: { scanRunId: { type: "string", description: "Optional scan id returned by one.hushh.ai. Omit to return the linked user's latest scan." } },
       additionalProperties: false,
     },
     outputSchema: scanStatusOutputSchema,
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     securitySchemes: [{ type: "oauth2", scopes: ["one.scan.read"] }],
+  },
+  {
+    name: "one_save_chatgpt_context",
+    title: "Save ChatGPT context",
+    description:
+      "Use this when the user explicitly asks to import or save a ChatGPT-generated summary of their work style, goals, preferences, or other approved context into one.hushh.ai.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "User-approved ChatGPT context summary to save into one.hushh.ai. Do not include raw chat history or secrets.",
+        },
+        categories: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional context categories, such as work_style, goals, preferences, projects, or communication_style.",
+        },
+        userPrompt: { type: "string", description: "Optional exact user prompt that requested the save." },
+        consentText: { type: "string", description: "Optional consent wording confirming the user asked to save this summary." },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+    outputSchema: chatGptContextOutputSchema,
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+    securitySchemes: contextWriteSecurity,
   },
 ];
 
@@ -179,7 +219,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && requestUrl.pathname === "/health") {
       return sendJson(response, 200, {
         ok: true,
-        service: "hushhone-openai-connector",
+        service: "one-by-hushh-openai-connector",
         mode: "standalone",
         origin: connectorOrigin(request),
         authorizationOrigin,
@@ -217,11 +257,11 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/mcp") {
-      return sendJson(response, 200, { ok: true, service: "hushhone-openai-connector", mode: "standalone", endpoint: "/mcp" });
+      return sendJson(response, 200, { ok: true, service: "one-by-hushh-openai-connector", mode: "standalone", endpoint: "/mcp" });
     }
 
     if (request.method === "POST" && requestUrl.pathname === "/mcp") {
-      return sendJson(response, 200, await handleMcpRequest(request), { "Mcp-Session-Id": "hushhone-openai-connector" });
+      return sendJson(response, 200, await handleMcpRequest(request), { "Mcp-Session-Id": "one-by-hushh-openai-connector" });
     }
 
     return sendJson(response, 404, { ok: false, error: "Not found" });
@@ -235,7 +275,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
-  console.log(JSON.stringify({ event: "server.started", service: "hushhone-openai-connector", port }));
+  console.log(JSON.stringify({ event: "server.started", service: "one-by-hushh-openai-connector", port }));
 });
 
 async function handleMcpRequest(request) {
@@ -258,9 +298,9 @@ async function handleOne(request, rpc) {
       return rpcResult(rpc.id, {
         protocolVersion: typeof rpc.params?.protocolVersion === "string" ? rpc.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "hushhone-openai-connector", version: "0.1.0" },
+        serverInfo: { name: "one-by-hushh-openai-connector", version: "0.1.0" },
         instructions:
-          "Use this connector only for the linked user's HushhOne account, profiles, social context, and scan records. Never expose secrets or scraper session data.",
+          "Use this connector only for the linked user's one.hushh.ai account, approved ChatGPT context imports, profiles, social context, and scan records. Never expose secrets, raw ChatGPT chats, raw memories, or scraper session data.",
       });
     case "tools/list":
       return rpcResult(rpc.id, { tools: connectorTools });
@@ -280,7 +320,7 @@ async function callConnectorTool(request, name, args) {
   } catch {
     return {
       isError: true,
-      content: [{ type: "text", text: "Authentication required: link your HushhOne account to continue." }],
+      content: [{ type: "text", text: "Authentication required: link your one.hushh.ai account to continue." }],
       _meta: oauthChallengeMeta(request),
     };
   }
@@ -289,7 +329,7 @@ async function callConnectorTool(request, name, args) {
     return {
       isError: true,
       structuredContent: { ok: false, code: "bridge_not_configured" },
-      content: [{ type: "text", text: "The HushhOne connector data bridge is not configured." }],
+      content: [{ type: "text", text: "The one by hushh connector data bridge is not configured." }],
     };
   }
 
@@ -306,13 +346,13 @@ async function callConnectorTool(request, name, args) {
   try {
     payload = JSON.parse(text);
   } catch {
-    payload = { isError: true, content: [{ type: "text", text: text || "HushhOne bridge returned a non-JSON response." }] };
+    payload = { isError: true, content: [{ type: "text", text: text || "one.hushh.ai bridge returned a non-JSON response." }] };
   }
   if (!upstream.ok) {
     return {
       isError: true,
       structuredContent: { ok: false, code: "bridge_error", status: upstream.status, detail: payload },
-      content: [{ type: "text", text: payload?.error || "HushhOne bridge request failed." }],
+      content: [{ type: "text", text: payload?.error || "one.hushh.ai bridge request failed." }],
     };
   }
   return payload;
@@ -431,7 +471,7 @@ function validRedirectUri(value) {
   }
 }
 
-function oauthChallengeMeta(request, message = "Link your HushhOne account to continue.") {
+function oauthChallengeMeta(request, message = "Link your one.hushh.ai account to continue.") {
   const resourceUrl = `${connectorOrigin(request)}/.well-known/oauth-protected-resource`;
   return {
     "mcp/www_authenticate": [

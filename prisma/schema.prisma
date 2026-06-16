@@ -23,8 +23,30 @@ model OneUser {
   linkedInConnection LinkedInConnection?
   socialConnections SocialConnection[]
   socialAccessRequests SocialAccessRequest[]
+  chatGptContextSnapshots ChatGptContextSnapshot[]
 
   @@index([email])
+}
+
+// User-approved ChatGPT context imports. OpenAI does not give One raw chat
+// history or memory access; this stores only summaries the user explicitly asks
+// ChatGPT to save into one.hushh.ai.
+model ChatGptContextSnapshot {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  summary     String
+  categories  Json
+  source      String   @default("chatgpt_user_approved_summary")
+  capturedVia String   @default("openai_connector")
+  userPrompt  String?
+  consentText String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([source])
 }
 
 // Optional connected social profiles (Instagram first). These are supporting public

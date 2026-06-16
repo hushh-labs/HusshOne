@@ -9,7 +9,7 @@ type Status = "loading" | "signed_out" | "ready" | "approving" | "error";
 export default function AuthorizeClient() {
   const [user, setUser] = useState<User | null>(null);
   const [status, setStatus] = useState<Status>("loading");
-  const [message, setMessage] = useState("Preparing secure HushhOne connector link...");
+  const [message, setMessage] = useState("Preparing secure one by hushh connector link...");
   const params = useMemo(() => {
     if (typeof window === "undefined") return {};
     return Object.fromEntries(new URLSearchParams(window.location.search).entries());
@@ -30,7 +30,7 @@ export default function AuthorizeClient() {
           if (!active) return;
           setUser(next);
           setStatus(next ? "ready" : "signed_out");
-          setMessage(next ? `Continue as ${next.email || next.displayName || "your HushhOne account"}` : "Sign in to HushhOne to continue.");
+          setMessage(next ? `Continue as ${next.email || next.displayName || "your one.hushh.ai account"}` : "Sign in to one.hushh.ai to continue.");
         });
         cleanup = unsub;
       });
@@ -58,7 +58,7 @@ export default function AuthorizeClient() {
   async function approve() {
     if (!user) return signIn();
     setStatus("approving");
-    setMessage("Linking HushhOne to ChatGPT...");
+    setMessage("Linking one by hushh to ChatGPT...");
     try {
       const authorization = await getFirebaseBearer(user);
       const res = await fetch("/api/openai/oauth/approve", {
@@ -70,7 +70,7 @@ export default function AuthorizeClient() {
       if (!res.ok || !data.redirectTo) throw new Error(data.error || "Could not create connector authorization code.");
       window.location.href = data.redirectTo;
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not link HushhOne connector.");
+      setMessage(error instanceof Error ? error.message : "Could not link one by hushh connector.");
       setStatus("error");
     }
   }
@@ -78,8 +78,8 @@ export default function AuthorizeClient() {
   return (
     <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: "#f7f7f4", color: "#171717" }}>
       <section style={{ width: "min(480px, 100%)", border: "1px solid #dedbd2", background: "#fff", padding: 28, borderRadius: 8 }}>
-        <p style={{ margin: "0 0 8px", fontSize: 13, color: "#6b665d" }}>HushhOne connector</p>
-        <h1 style={{ margin: "0 0 12px", fontSize: 28, lineHeight: 1.15 }}>Link HushhOne with ChatGPT</h1>
+        <p style={{ margin: "0 0 8px", fontSize: 13, color: "#6b665d" }}>one by hushh connector</p>
+        <h1 style={{ margin: "0 0 12px", fontSize: 28, lineHeight: 1.15 }}>Link one by hushh with ChatGPT</h1>
         <p style={{ margin: "0 0 20px", color: "#46433d", lineHeight: 1.5 }}>{message}</p>
         <button
           type="button"
