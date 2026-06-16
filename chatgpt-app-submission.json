@@ -1,0 +1,160 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "HushhOne",
+    "subtitle": "Personal data context",
+    "description": "HushhOne lets users search their linked account context, connected LinkedIn and Instagram profile context, saved public-footprint scan records, and scan status from ChatGPT.",
+    "category": "PRODUCTIVITY"
+  },
+  "tools": {
+    "search": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves matching HushhOne account, social, access-state, and scan records for the linked user.",
+        "open_world_justification": "Does not write to public internet state or third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "fetch": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the full private HushhOne record for an id returned by search.",
+        "open_world_justification": "Does not write to public internet state or third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "one_get_account_context": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the linked user's HushhOne account summary and saved connection state.",
+        "open_world_justification": "Does not write to public internet state or third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "one_connect_linkedin_url": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Scrapes a user-provided LinkedIn profile URL and persists the normalized connected profile in the user's private HushhOne account.",
+        "open_world_justification": "Does not publish content or change publicly visible LinkedIn state.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "one_connect_instagram_url": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Scrapes a user-provided Instagram profile URL and may persist profile or access-state records in the user's private HushhOne account.",
+        "open_world_justification": "Can request access for a private Instagram profile through the configured Instagram worker session when needed.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "one_get_scan_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the linked user's requested or latest HushhOne scan state and saved result.",
+        "open_world_justification": "Does not write to public internet state or third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Summarize the linked HushhOne account and saved social connection state.",
+      "user_prompt": "Use HushhOne to summarize my account context and connected social profiles.",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_get_account_context",
+      "expected_output": "Returns the linked user's HushhOne account summary, connected LinkedIn state, optional Instagram/social profiles, pending access requests, and latest scan pointer if present.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Search and fetch saved HushhOne records.",
+      "user_prompt": "Use HushhOne to search my saved Instagram context, then fetch the most relevant result.",
+      "file_attachment_urls": null,
+      "tools_triggered": "search, fetch",
+      "expected_output": "Returns matching private HushhOne records and then fetches the selected record details without exposing secrets or scraper session data.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Connect or refresh a LinkedIn profile URL.",
+      "user_prompt": "Connect this LinkedIn profile in HushhOne: https://www.linkedin.com/in/example/",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_connect_linkedin_url",
+      "expected_output": "Validates the URL, enriches the profile through the LinkedIn worker, persists the normalized private HushhOne profile, or returns a controlled error if the profile is unavailable.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Connect or refresh an Instagram profile URL.",
+      "user_prompt": "Connect this Instagram profile in HushhOne: https://www.instagram.com/example/",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_connect_instagram_url",
+      "expected_output": "Returns normalized public profile/media data when visible, or returns a controlled access-pending state for private profiles without blocking the user.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve latest HushhOne scan status without a scan id.",
+      "user_prompt": "Use HushhOne to show my latest scan status.",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_get_scan_status",
+      "expected_output": "Returns the linked user's latest scan status, result if completed, any saved error, and email-delivery summary when available.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve a specific HushhOne scan by scan id.",
+      "user_prompt": "Use HushhOne to check scan status for scan id 00000000-0000-0000-0000-000000000000.",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_get_scan_status",
+      "expected_output": "Returns the requested scan only if it belongs to the linked user, otherwise returns a controlled not-found response.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for unrelated travel planning.",
+      "user_prompt": "Plan a three-day trip to Goa and find beach hotels.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the request is outside HushhOne account, social context, and scan-record workflows.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for messaging or email sending.",
+      "user_prompt": "Send an email to my team saying the scan is complete.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it does not send emails, messages, or notifications from ChatGPT.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not retrieve private messages or hidden social data.",
+      "user_prompt": "Use HushhOne to scrape Instagram DMs, stories, and private follower lists for this account.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should refuse or avoid invoking tools because HushhOne only supports linked account context and profile-page data that the configured session is allowed to access.",
+      "expected_output_url": null
+    }
+  ]
+}

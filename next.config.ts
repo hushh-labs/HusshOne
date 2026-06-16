@@ -13,6 +13,22 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        source: "/.well-known/oauth-protected-resource",
+        destination: "/api/openai/oauth/protected-resource",
+      },
+      {
+        source: "/.well-known/oauth-authorization-server",
+        destination: "/api/openai/oauth/authorization-server",
+      },
+      {
+        source: "/.well-known/openid-configuration",
+        destination: "/api/openai/oauth/authorization-server",
+      },
+      {
+        source: "/.well-known/openai-apps-challenge",
+        destination: "/api/openai/apps-challenge",
+      },
+      {
         source: "/__/auth/:path*",
         destination: "https://hushone-app.firebaseapp.com/__/auth/:path*",
       },
