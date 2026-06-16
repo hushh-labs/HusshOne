@@ -122,6 +122,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
             phone: stored.phone,
             confirmedProfiles: stored.confirmedProfiles,
             linkedinProfile: stored.linkedinProfile,
+            socialProfiles: stored.socialProfiles,
             consentAttestation: true,
             purpose: "self_audit",
           },

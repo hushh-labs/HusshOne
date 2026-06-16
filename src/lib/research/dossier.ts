@@ -85,6 +85,27 @@ function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
   return JSON.stringify(normalized, null, 2);
 }
 
+function socialProfilesPromptJson(input: OneSubjectInput): string {
+  const profiles = (input.socialProfiles ?? []).map((profile) => ({
+    platform: profile.platform,
+    username: profile.username,
+    displayName: profile.displayName,
+    bio: profile.bio,
+    avatarUrl: profile.avatarUrl,
+    externalUrl: profile.externalUrl,
+    profileUrl: profile.profileUrl,
+    isVerified: profile.isVerified ?? null,
+    isPrivate: profile.isPrivate ?? null,
+    stats: profile.stats ?? null,
+    highlights: profile.highlights ?? [],
+    recentPublicPosts: profile.recentPublicPosts ?? [],
+    visibleProfileText: profile.visibleProfileText ?? [],
+    source: profile.source,
+    connectedAt: profile.connectedAt ?? null,
+  }));
+  return JSON.stringify(profiles, null, 2);
+}
+
 function subjectInputPromptJson(input: OneSubjectInput): string {
   const payload = {
     subject: {
@@ -101,25 +122,31 @@ function subjectInputPromptJson(input: OneSubjectInput): string {
     },
     confirmedProfiles: input.confirmedProfiles ?? [],
     linkedinProfile: input.linkedinProfile ? JSON.parse(linkedInProfilePromptJson(input.linkedinProfile)) : null,
+    socialProfiles: input.socialProfiles ?? [],
   };
   return JSON.stringify(payload, null, 2);
 }
 
 function renderSubjectIntelligenceContext(input: OneSubjectInput): string {
   const li = input.linkedinProfile;
+  const socials = input.socialProfiles ?? [];
   const linkedInBlock = li
     ? `\n\nLINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${linkedInProfilePromptJson(li)}\n\`\`\`\nTreat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About.`
+    : "";
+  const socialBlock = socials.length
+    ? `\n\nSOCIAL_ENRICHED_PROFILES_JSON (optional public profile context; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${socialProfilesPromptJson(input)}\n\`\`\`\nTreat these profiles as supporting cross-platform context only. Do not treat social bios, avatars, follower counts, posts, or handles as identity/career ground truth unless public web evidence corroborates them.`
     : "";
 
   return `SUBJECT_INTELLIGENCE_CONTEXT_JSON (all currently consented inputs available to One; secret/session/raw-scraper fields intentionally excluded):
 \`\`\`json
 ${subjectInputPromptJson(input)}
-\`\`\`${linkedInBlock}`;
+\`\`\`${linkedInBlock}${socialBlock}`;
 }
 
 function intelligenceOperatingProtocol(): string {
   return `ONE INTELLIGENCE OPERATING PROTOCOL:
 - Source hierarchy: (1) LinkedIn/user-provided JSON = locked ground truth for identity and self-declared career/profile facts; (2) public web evidence = citations and enrichment; (3) inference = clearly labelled, low/medium/high confidence, never stated as fact.
+- Optional social-profile JSON is supporting context only. Use Instagram handles/bio/public post metadata as search seeds and corroboration clues, not as proof of identity, employment, education, or private activity.
 - Do not re-open, fetch, reverse-search, or cite signed LinkedIn/media URLs. LinkedIn is already provided as data. Spend search effort on public corroboration, adjacent footprint, contradictions, and useful new findings.
 - Reject same-name people unless they connect to the LinkedIn JSON, confirmed profiles, email local-part, employer/school timeline, or another strong anchor.
 - For every important claim, include source type label: LinkedIn ground truth, public web evidence, or inference. Prefer "unknown" over guessing.

@@ -28,6 +28,20 @@ interface CreateScanInput {
   userAgent?: string | null;
 }
 
+interface UpsertSocialAccessRequestInput {
+  firebaseUid: string;
+  platform: string;
+  publicId: string;
+  profileUrl: string;
+  status: string;
+  profileSnapshot?: unknown;
+  requestedAt?: string | null;
+  approvedAt?: string | null;
+  lastCheckedAt?: string | null;
+  nextCheckAt?: string | null;
+  lastError?: string | null;
+}
+
 function hashValue(value?: string | null) {
   if (!value) return null;
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -143,6 +157,106 @@ export async function deleteLinkedInConnection(firebaseUid: string): Promise<boo
   }
 }
 
+/* ── Optional social connections (Instagram first) ──────────────────────────
+   Defensive for the same reason as LinkedInConnection: migrations may lag deploys,
+   and optional social enrichment must never block the mandatory One scan flow. */
+export async function upsertSocialConnection(
+  firebaseUid: string,
+  platform: string,
+  publicId: string,
+  profile: unknown,
+) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const normalizedPlatform = platform.trim().toLowerCase();
+    const normalizedPublicId = publicId.trim().toLowerCase();
+    if (!normalizedPlatform || !normalizedPublicId) return null;
+    const data = {
+      platform: normalizedPlatform,
+      publicId: normalizedPublicId,
+      profile: JSON.parse(JSON.stringify(profile)) as Prisma.InputJsonValue,
+      sessionValid: true,
+    };
+    return await prisma.socialConnection.upsert({
+      where: { userId_platform_publicId: { userId: user.id, platform: normalizedPlatform, publicId: normalizedPublicId } },
+      create: { userId: user.id, ...data },
+      update: data,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getSocialConnections<TProfile = unknown>(firebaseUid: string, platform?: string): Promise<TProfile[]> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return [];
+    const rows = await prisma.socialConnection.findMany({
+      where: {
+        userId: user.id,
+        sessionValid: true,
+        ...(platform ? { platform: platform.trim().toLowerCase() } : {}),
+      },
+      select: { profile: true },
+      orderBy: { refreshedAt: "desc" },
+    });
+    return rows.map((row) => row.profile as unknown as TProfile).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertSocialAccessRequest(input: UpsertSocialAccessRequestInput) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const platform = input.platform.trim().toLowerCase();
+    const publicId = input.publicId.trim().toLowerCase();
+    const status = input.status.trim();
+    if (!platform || !publicId || !status) return null;
+    const now = new Date();
+    const id = crypto.randomUUID();
+    const profileSnapshot = JSON.stringify(input.profileSnapshot ?? null);
+    const requestedAt = input.requestedAt ? new Date(input.requestedAt) : null;
+    const approvedAt = input.approvedAt ? new Date(input.approvedAt) : null;
+    const lastCheckedAt = input.lastCheckedAt ? new Date(input.lastCheckedAt) : now;
+    const nextCheckAt = input.nextCheckAt ? new Date(input.nextCheckAt) : null;
+    return await prisma.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO "SocialAccessRequest" (
+        "id", "userId", "platform", "publicId", "profileUrl", "status", "profileSnapshot",
+        "requestedAt", "approvedAt", "lastCheckedAt", "nextCheckAt", "attemptCount",
+        "lastError", "createdAt", "updatedAt"
+      )
+      VALUES (
+        ${id}::uuid, ${user.id}::uuid, ${platform}, ${publicId}, ${input.profileUrl}, ${status},
+        ${profileSnapshot}::jsonb, ${requestedAt}, ${approvedAt}, ${lastCheckedAt}, ${nextCheckAt},
+        1, ${input.lastError || null}, ${now}, ${now}
+      )
+      ON CONFLICT ("userId", "platform", "publicId") DO UPDATE SET
+        "profileUrl" = EXCLUDED."profileUrl",
+        "status" = EXCLUDED."status",
+        "profileSnapshot" = EXCLUDED."profileSnapshot",
+        "requestedAt" = COALESCE("SocialAccessRequest"."requestedAt", EXCLUDED."requestedAt"),
+        "approvedAt" = COALESCE(EXCLUDED."approvedAt", "SocialAccessRequest"."approvedAt"),
+        "lastCheckedAt" = EXCLUDED."lastCheckedAt",
+        "nextCheckAt" = EXCLUDED."nextCheckAt",
+        "attemptCount" = "SocialAccessRequest"."attemptCount" + 1,
+        "lastError" = EXCLUDED."lastError",
+        "updatedAt" = EXCLUDED."updatedAt"
+      RETURNING "id"
+    `;
+  } catch {
+    return null;
+  }
+}
+
 export async function createConsentAndScan(input: CreateScanInput) {
   const prisma = getPrismaClient();
   if (!prisma) return { scanRunId: null };
@@ -248,7 +362,7 @@ export async function getOwnedScanRun(firebaseUid: string, scanRunId: string) {
     if (!user) return null;
     return await prisma.scanRun.findFirst({
       where: { id: scanRunId, userId: user.id },
-      select: { status: true, normalizedResult: true, error: true },
+      select: { id: true, status: true, normalizedResult: true, error: true },
     });
   } catch {
     return null;
@@ -392,6 +506,266 @@ export async function getScanEmailDelivery(
   } catch {
     return null;
   }
+}
+
+export interface ConnectorSearchResult {
+  id: string;
+  title: string;
+  url: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+}
+
+function compactJsonText(value: unknown, max = 4000): string {
+  try {
+    return JSON.stringify(value, null, 2).replace(/\s+/g, " ").trim().slice(0, max);
+  } catch {
+    return "";
+  }
+}
+
+function connectorRecordUrl(id: string) {
+  return `https://one.hushh.ai/connector/records/${encodeURIComponent(id)}`;
+}
+
+export async function getConnectorAccountBundle(firebaseUid: string) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    return await prisma.oneUser.findUnique({
+      where: { firebaseUid },
+      select: {
+        firebaseUid: true,
+        email: true,
+        name: true,
+        photoUrl: true,
+        linkedInConnection: { select: { publicId: true, profile: true, sessionValid: true, refreshedAt: true } },
+        socialConnections: {
+          where: { sessionValid: true },
+          select: { platform: true, publicId: true, profile: true, refreshedAt: true },
+          orderBy: { refreshedAt: "desc" },
+          take: 10,
+        },
+        socialAccessRequests: {
+          select: {
+            platform: true,
+            publicId: true,
+            profileUrl: true,
+            status: true,
+            profileSnapshot: true,
+            requestedAt: true,
+            approvedAt: true,
+            lastCheckedAt: true,
+            nextCheckAt: true,
+            attemptCount: true,
+            lastError: true,
+          },
+          orderBy: { updatedAt: "desc" },
+          take: 20,
+        },
+        scanRuns: {
+          select: {
+            id: true,
+            status: true,
+            mode: true,
+            purpose: true,
+            input: true,
+            normalizedResult: true,
+            summary: true,
+            error: true,
+            createdAt: true,
+            completedAt: true,
+            phase1Ms: true,
+            phase2Ms: true,
+            totalMs: true,
+            outcome: true,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        },
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function searchConnectorRecords(
+  firebaseUid: string,
+  query: string,
+  type?: string,
+  limit = 10,
+): Promise<ConnectorSearchResult[]> {
+  const bundle = await getConnectorAccountBundle(firebaseUid);
+  if (!bundle) return [];
+  const needle = query.trim().toLowerCase();
+  const max = Math.max(1, Math.min(Math.round(limit) || 10, 20));
+  const out: ConnectorSearchResult[] = [];
+  const push = (record: ConnectorSearchResult, searchable: unknown, recordType: string) => {
+    if (type && type !== "all" && type !== recordType) return;
+    const haystack = `${record.title} ${record.text} ${compactJsonText(searchable, 2000)}`.toLowerCase();
+    if (needle && !haystack.includes(needle)) return;
+    out.push(record);
+  };
+
+  push(
+    {
+      id: "account:me",
+      title: "HushhOne account context",
+      url: connectorRecordUrl("account:me"),
+      text: `${bundle.name || bundle.email} has ${bundle.linkedInConnection ? "a LinkedIn profile" : "no LinkedIn profile"} and ${bundle.socialConnections.length} social profile(s).`,
+      metadata: { type: "account", email: bundle.email },
+    },
+    bundle,
+    "account",
+  );
+
+  if (bundle.linkedInConnection?.profile && bundle.linkedInConnection.sessionValid !== false) {
+    const profile = bundle.linkedInConnection.profile as Record<string, unknown>;
+    const title = typeof profile.name === "string" ? profile.name : "LinkedIn profile";
+    push(
+      {
+        id: "linkedin:profile",
+        title: `LinkedIn profile: ${title}`,
+        url: connectorRecordUrl("linkedin:profile"),
+        text: compactJsonText(profile, 1800),
+        metadata: { type: "linkedin", publicId: bundle.linkedInConnection.publicId },
+      },
+      profile,
+      "linkedin",
+    );
+  }
+
+  for (const social of bundle.socialConnections) {
+    const profile = social.profile as Record<string, unknown>;
+    const id = `${social.platform}:${social.publicId}`;
+    push(
+      {
+        id,
+        title: `${social.platform} profile: ${social.publicId}`,
+        url: connectorRecordUrl(id),
+        text: compactJsonText(profile, 1800),
+        metadata: { type: "social", platform: social.platform, publicId: social.publicId },
+      },
+      profile,
+      "social",
+    );
+  }
+
+  for (const access of bundle.socialAccessRequests) {
+    const id = `social-access:${access.platform}:${access.publicId}`;
+    push(
+      {
+        id,
+        title: `${access.platform} access state: ${access.publicId}`,
+        url: connectorRecordUrl(id),
+        text: `${access.status}${access.lastError ? `: ${access.lastError}` : ""}`,
+        metadata: { type: "social_access", platform: access.platform, publicId: access.publicId, status: access.status },
+      },
+      access,
+      "social_access",
+    );
+  }
+
+  for (const scan of bundle.scanRuns) {
+    const id = `scan:${scan.id}`;
+    push(
+      {
+        id,
+        title: `One scan ${scan.status}: ${scan.createdAt.toISOString()}`,
+        url: connectorRecordUrl(id),
+        text: scan.summary || compactJsonText(scan.normalizedResult ?? scan.input, 1800) || scan.error || scan.status,
+        metadata: { type: "scan", scanRunId: scan.id, status: scan.status, createdAt: scan.createdAt.toISOString() },
+      },
+      scan,
+      "scan",
+    );
+  }
+  return out.slice(0, max);
+}
+
+export async function fetchConnectorRecord(firebaseUid: string, id: string): Promise<ConnectorSearchResult | null> {
+  const bundle = await getConnectorAccountBundle(firebaseUid);
+  if (!bundle) return null;
+  if (id === "account:me") {
+    return {
+      id,
+      title: "HushhOne account context",
+      url: connectorRecordUrl(id),
+      text: compactJsonText({
+        email: bundle.email,
+        name: bundle.name,
+        linkedInConnected: Boolean(bundle.linkedInConnection?.profile && bundle.linkedInConnection.sessionValid !== false),
+        socialProfiles: bundle.socialConnections.map((row) => ({ platform: row.platform, publicId: row.publicId })),
+        socialAccessRequests: bundle.socialAccessRequests.map((row) => ({
+          platform: row.platform,
+          publicId: row.publicId,
+          status: row.status,
+          nextCheckAt: row.nextCheckAt,
+        })),
+        latestScan: bundle.scanRuns[0]
+          ? { scanRunId: bundle.scanRuns[0].id, status: bundle.scanRuns[0].status, createdAt: bundle.scanRuns[0].createdAt }
+          : null,
+      }),
+      metadata: { type: "account", email: bundle.email },
+    };
+  }
+  if (id === "linkedin:profile" && bundle.linkedInConnection?.profile && bundle.linkedInConnection.sessionValid !== false) {
+    return {
+      id,
+      title: "LinkedIn profile",
+      url: connectorRecordUrl(id),
+      text: compactJsonText(bundle.linkedInConnection.profile, 6000),
+      metadata: { type: "linkedin", publicId: bundle.linkedInConnection.publicId },
+    };
+  }
+  if (id.startsWith("scan:")) {
+    const scanRunId = id.slice("scan:".length);
+    const scan = bundle.scanRuns.find((row) => row.id === scanRunId);
+    if (!scan) return null;
+    return {
+      id,
+      title: `One scan ${scan.status}: ${scan.createdAt.toISOString()}`,
+      url: connectorRecordUrl(id),
+      text: compactJsonText(
+        {
+          status: scan.status,
+          mode: scan.mode,
+          purpose: scan.purpose,
+          summary: scan.summary,
+          result: scan.normalizedResult,
+          error: scan.error,
+          createdAt: scan.createdAt,
+          completedAt: scan.completedAt,
+          timing: { phase1Ms: scan.phase1Ms, phase2Ms: scan.phase2Ms, totalMs: scan.totalMs, outcome: scan.outcome },
+        },
+        12000,
+      ),
+      metadata: { type: "scan", scanRunId: scan.id, status: scan.status },
+    };
+  }
+  if (id.startsWith("social-access:")) {
+    const [, platform, publicId] = id.split(":");
+    const access = bundle.socialAccessRequests.find((row) => row.platform === platform && row.publicId === publicId);
+    if (!access) return null;
+    return {
+      id,
+      title: `${platform} access state: ${publicId}`,
+      url: connectorRecordUrl(id),
+      text: compactJsonText(access, 5000),
+      metadata: { type: "social_access", platform, publicId, status: access.status },
+    };
+  }
+  const [platform, publicId] = id.split(":");
+  const social = bundle.socialConnections.find((row) => row.platform === platform && row.publicId === publicId);
+  if (!social) return null;
+  return {
+    id,
+    title: `${platform} profile: ${publicId}`,
+    url: connectorRecordUrl(id),
+    text: compactJsonText(social.profile, 8000),
+    metadata: { type: "social", platform, publicId },
+  };
 }
 
 export async function createAuditJob(params: {

@@ -16,6 +16,8 @@ import {
   initialsForName,
   normalizeLinkedInUrl,
   linkedinHandleFromUrl,
+  normalizeInstagramUrl,
+  instagramHandleFromUrl,
 } from "@/lib/auth/identity";
 import {
   completeGoogleRedirect,
@@ -27,6 +29,7 @@ import {
   signOutOfGoogle,
 } from "@/lib/firebase/client";
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
+import { hasInstagramProfile, type InstagramAccessInfo, type InstagramProfileFull } from "@/lib/instagram/profile";
 import type {
   ConfirmedProfile,
   DashboardCategoryMap,
@@ -117,6 +120,7 @@ const LS_ACTIVE_STARTED_AT = "one_active_started_at"; // epoch ms the active sca
 const LS_DISCOVERY = "one_discovery"; // in-progress Phase-0 disambiguation (confirmed + shown + location)
 const LS_LI_FULL = "one_li_full"; // enriched LinkedIn profile → survives refresh so a returning session's re-scan still carries the ground truth
 const LS_LI_CONNECTED = "one_li_connected"; // legacy marker; the profile payload itself now drives the mandatory gate
+const LS_IG_FULL = "one_ig_full"; // optional Instagram public profile context → survives refresh like LinkedIn
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
@@ -155,6 +159,7 @@ function clearPersisted() {
   safeDel("local", LS_DISCOVERY);
   safeDel("local", LS_LI_FULL);
   safeDel("local", LS_LI_CONNECTED);
+  safeDel("local", LS_IG_FULL);
   safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
@@ -289,15 +294,128 @@ function Manual({
   );
 }
 
+function ConnectInstagramInline({
+  authUser,
+  profiles,
+  onConnected,
+}: {
+  authUser: ClientUser | null;
+  profiles: InstagramProfileFull[];
+  onConnected: (profile: InstagramProfileFull) => void;
+}) {
+  type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [err, setErr] = useState("");
+  const [pendingAccess, setPendingAccess] = useState<InstagramAccessInfo | null>(null);
+  const normalized = normalizeInstagramUrl(url);
+  const invalid = touched && !!url && !normalized;
+  const connected = profiles[0] ?? null;
+
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setTouched(true);
+    setErr("");
+    if (!authUser) {
+      setErr("Sign in again to add Instagram.");
+      setPhase("error");
+      return;
+    }
+    if (!normalized) {
+      setErr("Paste a valid Instagram profile URL.");
+      setPhase("error");
+      return;
+    }
+    setPhase("fetching");
+    setPendingAccess(null);
+    track("instagram_connect_started");
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/instagram/enrich-url", {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; profile?: InstagramProfileFull | null; error?: string; code?: string; access?: InstagramAccessInfo;
+      };
+      if (res.status === 202 && payload.code === "instagram_access_pending" && payload.access) {
+        setPendingAccess(payload.access);
+        setUrl("");
+        setPhase("pending");
+        track("instagram_connect_pending", { state: payload.access.state });
+        return;
+      }
+      if (!res.ok || !payload.ok || !hasInstagramProfile(payload.profile)) {
+        throw new Error(payload.error || "We could not read this Instagram profile.");
+      }
+      setUrl("");
+      setPhase("connected");
+      onConnected(payload.profile);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "We could not read this Instagram profile.";
+      track("instagram_connect_failed", { reason: message.slice(0, 120) });
+      setErr(message);
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "fetching";
+  return (
+    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+      <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          id="instagram-url"
+          className={"input" + (invalid ? " invalid" : "")}
+          placeholder="https://www.instagram.com/ankit_ya_i_am/"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            if (err) setErr("");
+            if (pendingAccess) setPendingAccess(null);
+          }}
+          onBlur={() => setTouched(true)}
+          autoComplete="url"
+          inputMode="url"
+          aria-invalid={invalid}
+        />
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+          {busy ? "Adding..." : "Add"}
+        </button>
+      </div>
+      {connected ? (
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      ) : pendingAccess ? (
+        <span className="field-hint">
+          Follow request sent. Instagram will be added after owner approval.
+        </span>
+      ) : (
+        <span className="field-hint">Direct public profile link only.</span>
+      )}
+      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+    </form>
+  );
+}
+
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
 function PreCollect({
   user,
   profile,
+  authUser,
+  instagramProfiles,
+  onInstagramConnected,
   onCollect,
   busy,
 }: {
   user: Identity;
   profile: LinkedInProfile | null;
+  authUser: ClientUser | null;
+  instagramProfiles: InstagramProfileFull[];
+  onInstagramConnected: (profile: InstagramProfileFull) => void;
   onCollect: () => void;
   busy: boolean;
 }) {
@@ -360,6 +478,12 @@ function PreCollect({
               One will research the real you from your verified LinkedIn{verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.
             </span>
           </div>
+
+          <ConnectInstagramInline
+            authUser={authUser}
+            profiles={instagramProfiles}
+            onConnected={onInstagramConnected}
+          />
         </div>
 
         <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
@@ -1692,6 +1816,7 @@ export default function OneExperience() {
   // The enriched LinkedIn profile pulled from the user's pasted URL (structured
   // experience/education/skills/certs) — fed into the scan as the authoritative ground truth.
   const [liProfile, setLiProfile] = useState<LinkedInProfileFull | null>(null);
+  const [igProfiles, setIgProfiles] = useState<InstagramProfileFull[]>([]);
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
@@ -1809,6 +1934,15 @@ export default function OneExperience() {
     safeSet("local", LS_LI_CONNECTED, "1");
     track("linkedin_connected");
     setStage("precollect");
+  };
+
+  const onInstagramConnected = (profile: InstagramProfileFull) => {
+    setIgProfiles((prev) => {
+      const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
+      safeSet("local", LS_IG_FULL, JSON.stringify(next));
+      return next;
+    });
+    track("instagram_connected");
   };
 
   // Settings is a signed-in overlay stage; remember where we came from for "Done".
@@ -2094,6 +2228,35 @@ export default function OneExperience() {
       }
       if (profile) setLiProfile(profile);
       else setLiProfile(null);
+
+      let instagramProfiles: InstagramProfileFull[] = [];
+      const savedIg = safeGet("local", LS_IG_FULL);
+      if (savedIg) {
+        try {
+          const parsed = JSON.parse(savedIg) as unknown;
+          instagramProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasInstagramProfile).slice(0, 4);
+          if (instagramProfiles.length) safeSet("local", LS_IG_FULL, JSON.stringify(instagramProfiles));
+          else safeDel("local", LS_IG_FULL);
+        } catch {
+          safeDel("local", LS_IG_FULL);
+        }
+      }
+      if (!instagramProfiles.length) {
+        try {
+          const authorization = await getFirebaseBearer(user as User);
+          const res = await fetch("/api/instagram/profile", { headers: { Authorization: authorization } });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profiles?: InstagramProfileFull[] };
+            instagramProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
+              .filter(hasInstagramProfile)
+              .slice(0, 4);
+            if (instagramProfiles.length) safeSet("local", LS_IG_FULL, JSON.stringify(instagramProfiles));
+          }
+        } catch {
+          /* optional social context — ignore transient/offline failures */
+        }
+      }
+      setIgProfiles(instagramProfiles);
       const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
 
       // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
@@ -2259,6 +2422,7 @@ export default function OneExperience() {
       await signOutOfGoogle().catch(() => undefined);
       clearPersisted();
       setAuthUser(null);
+      setIgProfiles([]);
       setStage("landing");
     }
   };
@@ -2379,6 +2543,7 @@ export default function OneExperience() {
           longitude: location.longitude,
           zipCode: location.zipCode,
           linkedinProfile: liProfile ?? undefined, // verified LinkedIn anchor → ground truth for Phase 1
+          socialProfiles: igProfiles.length ? igProfiles : undefined,
           confirmedProfiles, // derived LinkedIn pivot → seeds Phase 1 + 2
           consentAttestation: true,
           purpose: "self_audit",
@@ -2547,7 +2712,7 @@ export default function OneExperience() {
     const loc = discoverLocRef.current ?? {};
     track("disambiguation_complete", { confirmed: confirmed.length });
     safeDel("local", LS_DISCOVERY);
-    void runScan(loc, confirmed);
+    void runScan(loc, [...confirmed, ...instagramPivots()]);
   };
 
   // persist in-progress disambiguation so a refresh restores the gate progress
@@ -2578,6 +2743,12 @@ export default function OneExperience() {
     if (!url) return [];
     return [{ platform: "LinkedIn", handle: linkedinHandleFromUrl(url), url, category: "Professional" }];
   };
+
+  const instagramPivots = (): ConfirmedProfile[] =>
+    igProfiles.flatMap((profile) => {
+      const url = normalizeInstagramUrl(profile.profileUrl);
+      return url ? [{ platform: "Instagram", handle: instagramHandleFromUrl(url), url, category: "Social" }] : [];
+    });
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
@@ -2627,7 +2798,7 @@ export default function OneExperience() {
         // Deep Research → anchor on the pasted LinkedIn pivot and scan directly.
         // (DISCOVER_MODE revives the old "confirm candidates" Phase-0 instead.) Shadow → scan directly.
         if (RESEARCH_MODE && DISCOVER_MODE) void runDiscover(loc);
-        else if (RESEARCH_MODE) void runScan(loc, linkedinPivot());
+        else if (RESEARCH_MODE) void runScan(loc, [...linkedinPivot(), ...instagramPivots()]);
         else void runScan(loc);
       },
       (err) => {
@@ -2693,6 +2864,7 @@ export default function OneExperience() {
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
     setLiProfile(null);
+    setIgProfiles([]);
     setDashboard(null);
     setAudit(null);
     setEmailDelivery(null);
@@ -2737,6 +2909,7 @@ export default function OneExperience() {
       setAuthUser(null);
       setIdentity({ name: "", email: "" });
       setLiProfile(null);
+      setIgProfiles([]);
       setDashboard(null);
       setAudit(null);
       setEmailDelivery(null);
@@ -2827,7 +3000,16 @@ export default function OneExperience() {
     );
   else if (stage === "precollect")
     view = (
-      <PreCollect key="p" user={identity} profile={liProfile} onCollect={startCollect} busy={geoBusy} />
+      <PreCollect
+        key="p"
+        user={identity}
+        profile={liProfile}
+        authUser={authUser}
+        instagramProfiles={igProfiles}
+        onInstagramConnected={onInstagramConnected}
+        onCollect={startCollect}
+        busy={geoBusy}
+      />
     );
   else if (stage === "disambiguate")
     view = (
@@ -2879,7 +3061,7 @@ export default function OneExperience() {
           RESEARCH_MODE && DISCOVER_MODE
             ? void runDiscover({ zipCode: zip })
             : RESEARCH_MODE
-              ? void runScan({ zipCode: zip }, linkedinPivot())
+              ? void runScan({ zipCode: zip }, [...linkedinPivot(), ...instagramPivots()])
               : void runScan({ zipCode: zip })
         }
       />

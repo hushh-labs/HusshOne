@@ -21,6 +21,12 @@ function extractLinkedInPromptJson(question: string): Record<string, unknown> {
   return JSON.parse(match![1]) as Record<string, unknown>;
 }
 
+function extractSocialPromptJson(question: string): Array<Record<string, unknown>> {
+  const match = question.match(/SOCIAL_ENRICHED_PROFILES_JSON[\s\S]*?```json\n([\s\S]*?)\n```/);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]) as Array<Record<string, unknown>>;
+}
+
 describe("buildPersonDossierQuestion", () => {
   it("defuses a LinkedIn anchor into a load-reducer (identity pre-confirmed, budgeted, lean)", () => {
     const url = "https://www.linkedin.com/in/ankit-kumar-singh-001";
@@ -285,6 +291,42 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
     expect(q).not.toContain("li_at");
     expect(JSON.stringify(json)).not.toContain("cookie");
     expect(q).toContain("tokens, cookies");
+    expect(q).not.toContain("session.pkl");
+  });
+
+  it("adds Instagram as optional supporting social context, not identity ground truth", () => {
+    const input = scraperInput();
+    input.socialProfiles = [
+      {
+        platform: "Instagram",
+        username: "ankit_ya_i_am",
+        displayName: "Ankit Kumar Singh",
+        bio: "Builder at Hushh",
+        avatarUrl: "https://cdn.example.com/avatar.jpg",
+        externalUrl: "https://ankit.example.com/",
+        profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+        isVerified: false,
+        isPrivate: false,
+        stats: { posts: "42", followers: "1,234", following: "567" },
+        recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", kind: "post", caption: "Demo" }],
+        source: "scraper",
+      },
+    ];
+
+    const q = buildPersonDossierQuestion(input);
+    const social = extractSocialPromptJson(q);
+
+    expect(social[0]).toMatchObject({
+      platform: "Instagram",
+      username: "ankit_ya_i_am",
+      profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+      source: "scraper",
+    });
+    expect(q).toContain("Optional social-profile JSON is supporting context only");
+    expect(q).toContain("supporting cross-platform context only");
+    expect(q).toContain("not as proof of identity, employment, education, or private activity");
+    expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");
+    expect(q).not.toContain("li_at");
     expect(q).not.toContain("session.pkl");
   });
 });

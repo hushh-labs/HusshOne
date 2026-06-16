@@ -1,4 +1,5 @@
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
+import type { InstagramProfileFull } from "@/lib/instagram/profile";
 
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
@@ -52,6 +53,9 @@ export interface OneSubjectInput {
       present, Phase-1 treats identity as SOLVED and seeds its search budget from the real
       career spine instead of re-discovering who the subject is. */
   linkedinProfile?: LinkedInProfileFull;
+  /** Optional public social profiles enriched through standalone workers. These support
+      Phase-1 footprint discovery, but LinkedIn remains the identity/career ground truth. */
+  socialProfiles?: InstagramProfileFull[];
   consentAttestation: boolean;
   purpose: "self_audit";
 }
