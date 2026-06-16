@@ -209,18 +209,7 @@ async function authedTool(request: Request): Promise<ConnectorUser> {
   return connectorUserFromAuthorization(request);
 }
 
-export async function callConnectorTool(request: Request, name: string, rawArgs: unknown) {
-  let user: ConnectorUser;
-  try {
-    user = await authedTool(request);
-  } catch {
-    return {
-      isError: true,
-      content: [{ type: "text", text: "Authentication required: link your HushhOne account to continue." }],
-      _meta: oauthChallengeMeta(request),
-    };
-  }
-
+export async function callConnectorToolForUser(user: ConnectorUser, name: string, rawArgs: unknown) {
   const args = toolArgs(rawArgs);
   try {
     if (name === "search") {
@@ -288,4 +277,18 @@ export async function callConnectorTool(request: Request, name: string, rawArgs:
     const code = error instanceof ConnectorToolError ? error.code : "connector_tool_failed";
     return { isError: true, structuredContent: { ok: false, code, error: message }, content: [{ type: "text", text: message }] };
   }
+}
+
+export async function callConnectorTool(request: Request, name: string, rawArgs: unknown) {
+  let user: ConnectorUser;
+  try {
+    user = await authedTool(request);
+  } catch {
+    return {
+      isError: true,
+      content: [{ type: "text", text: "Authentication required: link your HushhOne account to continue." }],
+      _meta: oauthChallengeMeta(request),
+    };
+  }
+  return callConnectorToolForUser(user, name, rawArgs);
 }
