@@ -638,6 +638,7 @@ function PreCollect({
   onInstagramConnected,
   onThreadsConnected,
   onXConnected,
+  onLinkedInChange,
   onSocialPreferenceConsentChange,
   onCollect,
   busy,
@@ -652,6 +653,7 @@ function PreCollect({
   onInstagramConnected: (profile: InstagramProfileFull) => void;
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onXConnected: (profile: XProfileFull) => void;
+  onLinkedInChange: () => void;
   onSocialPreferenceConsentChange: (value: boolean) => void;
   onCollect: () => void;
   busy: boolean;
@@ -715,6 +717,25 @@ function PreCollect({
           <div className="pc-phone">
             <span className="field-hint">
               One will research the real you from your verified LinkedIn{verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.
+            </span>
+          </div>
+
+          <div className="field-group" style={{ gap: 8 }}>
+            <label htmlFor="linkedin-connected-url">LinkedIn profile URL <span style={{ color: "var(--muted)" }}>(required)</span></label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                id="linkedin-connected-url"
+                className="input"
+                value={profile?.profileUrl ?? ""}
+                readOnly
+                aria-label="Connected LinkedIn profile URL"
+              />
+              <button className="ghost-btn" type="button" onClick={onLinkedInChange} style={{ minWidth: 116 }}>
+                Change
+              </button>
+            </div>
+            <span className="field-hint">
+              {Icons.check(12)} LinkedIn is the required career anchor for Phase 1.
             </span>
           </div>
 
@@ -2493,6 +2514,13 @@ export default function OneExperience() {
     setStage("precollect");
   };
 
+  const onLinkedInChange = () => {
+    safeDel("local", LS_LI_FULL);
+    safeDel("local", LS_LI_CONNECTED);
+    setLiProfile(null);
+    setStage("connect");
+  };
+
   const onInstagramConnected = (profile: InstagramProfileFull) => {
     setIgProfiles((prev) => {
       const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
@@ -3796,6 +3824,7 @@ export default function OneExperience() {
         onInstagramConnected={onInstagramConnected}
         onThreadsConnected={onThreadsConnected}
         onXConnected={onXConnected}
+        onLinkedInChange={onLinkedInChange}
         onSocialPreferenceConsentChange={onSocialPreferenceConsentChanged}
         onCollect={startCollect}
         busy={geoBusy}
