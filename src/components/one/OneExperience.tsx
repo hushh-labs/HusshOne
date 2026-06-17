@@ -116,6 +116,13 @@ function mapSignInError(e: unknown): string {
   return e instanceof Error ? e.message : "Sign-in failed.";
 }
 
+function sanitizeScanErrorMessage(message: string): string {
+  if (/body\/question must NOT have more than 40000 characters/i.test(message)) {
+    return "One had too much source context to start the scan. Please try again.";
+  }
+  return message;
+}
+
 function extractIdentity(user: ClientUser): Identity {
   return { name: normalizeName(user.displayName), email: normalizeEmail(user.email) };
 }
@@ -1883,6 +1890,8 @@ function EmptyState({ onManual, onRetry }: { onManual: () => void; onRetry: () =
 }
 
 function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: () => void; onManual: () => void }) {
+  const displayMessage = sanitizeScanErrorMessage(message);
+
   return (
     <div className="screen hero screen-enter">
       <div className="content hero-copy">
@@ -1892,7 +1901,7 @@ function ErrorState({ message, onRetry, onManual }: { message: string; onRetry: 
           <br />
           finish the scan.
         </h1>
-        <p className="sub">{message || "Try again, or add a source manually."}</p>
+        <p className="sub">{displayMessage || "Try again, or add a source manually."}</p>
         <div className="state-actions">
           <button className="cta" style={{ height: 56, fontSize: 16 }} onClick={onRetry}>
             {Icons.retry(16)}
