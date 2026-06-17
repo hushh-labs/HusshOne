@@ -9,6 +9,8 @@ import {
   linkedinHandleFromUrl,
   normalizeInstagramUrl,
   instagramHandleFromUrl,
+  normalizeThreadsUrl,
+  threadsHandleFromUrl,
 } from "@/lib/auth/identity";
 import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
@@ -17,7 +19,8 @@ import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull, type LinkedInExperience, type LinkedInEducation, type LinkedInCertification } from "@/lib/linkedin/profile";
 import type { InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "@/lib/instagram/profile";
-import type { ConfirmedProfile, LocationMode, OneSubjectInput } from "@/lib/ria/types";
+import type { ThreadsPost, ThreadsProfileFull } from "@/lib/threads/profile";
+import type { ConfirmedProfile, LocationMode, OneSubjectInput, SocialProfileFull } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 
@@ -37,6 +40,9 @@ const DEADLINE_MS = 1_650_000;
 // Don't START Phase-2 inline if less than this remains before the deadline; recovery
 // (a fresh request) runs synthesis instead so it isn't cut off mid-way.
 const PHASE2_RESERVE_MS = 200_000;
+// Threads standalone archive can collect up to 1024 visible posts. Keep the Phase-1 prompt
+// bounded until the later integration pass decides how much of that archive to summarize.
+const THREADS_PROMPT_POST_LIMIT = 300;
 
 function clientIp(request: Request) {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
@@ -176,89 +182,157 @@ function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
   };
 }
 
-function parseSocialProfiles(value: unknown): InstagramProfileFull[] | undefined {
+function parseSocialProfiles(value: unknown): SocialProfileFull[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const out: InstagramProfileFull[] = [];
+  const out: SocialProfileFull[] = [];
   const s = (v: unknown, max = 300) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
   const rec = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
   const strOrNull = (v: unknown, max = 300) => s(v, max) || null;
   const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
   for (const item of value) {
     const p = rec(item);
-    if (p.platform !== "Instagram" || p.source !== "scraper") continue;
-    const profileUrl = normalizeInstagramUrl(p.profileUrl);
-    const username = s(p.username, 60) || (profileUrl ? instagramHandleFromUrl(profileUrl) : "");
-    const url = profileUrl || normalizeInstagramUrl(`https://www.instagram.com/${username}/`);
-    if (!username || !url) continue;
-    const stats = rec(p.stats);
-    const profile: InstagramProfileFull = {
-      platform: "Instagram",
-      username: username.toLowerCase(),
-      displayName: strOrNull(p.displayName, 120),
-      bio: strOrNull(p.bio, 1000),
-      avatarUrl: strOrNull(p.avatarUrl, 1000),
-      externalUrl: strOrNull(p.externalUrl, 500),
-      profileUrl: url,
-      source: "scraper",
-      connectedAt: strOrNull(p.connectedAt, 80) || new Date().toISOString(),
-    };
-    const isVerified = bool(p.isVerified);
-    const isPrivate = bool(p.isPrivate);
-    if (typeof isVerified === "boolean") profile.isVerified = isVerified;
-    if (typeof isPrivate === "boolean") profile.isPrivate = isPrivate;
-    const cleanStats = {
-      posts: strOrNull(stats.posts, 40),
-      followers: strOrNull(stats.followers, 40),
-      following: strOrNull(stats.following, 40),
-    };
-    if (Object.values(cleanStats).some(Boolean)) profile.stats = cleanStats;
-    const highlights: InstagramHighlight[] = [];
-    for (const highlight of Array.isArray(p.highlights) ? p.highlights : []) {
-      const h = rec(highlight);
-      const title = s(h.title, 120);
-      if (!title) continue;
-      highlights.push({
-        title,
-        url: strOrNull(h.url, 500),
-        thumbnailUrl: strOrNull(h.thumbnailUrl, 1000),
-      });
-      if (highlights.length >= 24) break;
+    if (p.source !== "scraper") continue;
+    if (p.platform === "Instagram") {
+      const profileUrl = normalizeInstagramUrl(p.profileUrl);
+      const username = s(p.username, 60) || (profileUrl ? instagramHandleFromUrl(profileUrl) : "");
+      const url = profileUrl || normalizeInstagramUrl(`https://www.instagram.com/${username}/`);
+      if (!username || !url) continue;
+      const stats = rec(p.stats);
+      const profile: InstagramProfileFull = {
+        platform: "Instagram",
+        username: username.toLowerCase(),
+        displayName: strOrNull(p.displayName, 120),
+        bio: strOrNull(p.bio, 1000),
+        avatarUrl: strOrNull(p.avatarUrl, 1000),
+        externalUrl: strOrNull(p.externalUrl, 500),
+        profileUrl: url,
+        source: "scraper",
+        connectedAt: strOrNull(p.connectedAt, 80) || new Date().toISOString(),
+      };
+      const isVerified = bool(p.isVerified);
+      const isPrivate = bool(p.isPrivate);
+      if (typeof isVerified === "boolean") profile.isVerified = isVerified;
+      if (typeof isPrivate === "boolean") profile.isPrivate = isPrivate;
+      const cleanStats = {
+        posts: strOrNull(stats.posts, 40),
+        followers: strOrNull(stats.followers, 40),
+        following: strOrNull(stats.following, 40),
+      };
+      if (Object.values(cleanStats).some(Boolean)) profile.stats = cleanStats;
+      const highlights: InstagramHighlight[] = [];
+      for (const highlight of Array.isArray(p.highlights) ? p.highlights : []) {
+        const h = rec(highlight);
+        const title = s(h.title, 120);
+        if (!title) continue;
+        highlights.push({
+          title,
+          url: strOrNull(h.url, 500),
+          thumbnailUrl: strOrNull(h.thumbnailUrl, 1000),
+        });
+        if (highlights.length >= 24) break;
+      }
+      if (highlights.length) profile.highlights = highlights;
+      const posts: InstagramPublicPost[] = [];
+      for (const post of Array.isArray(p.recentPublicPosts) ? p.recentPublicPosts : []) {
+        const r = rec(post);
+        const postUrl = s(r.url, 500);
+        if (!/^https:\/\/www\.instagram\.com\/(?:p|reel)\//i.test(postUrl)) continue;
+        const position = Number(r.position);
+        posts.push({
+          url: postUrl,
+          kind: /\/reel\//i.test(postUrl) ? "reel" : "post",
+          ...(Number.isFinite(position) && position > 0 ? { position: Math.round(position) } : {}),
+          caption: strOrNull(r.caption, 500),
+          thumbnailUrl: strOrNull(r.thumbnailUrl, 1000),
+          cdnUrls: Array.isArray(r.cdnUrls)
+            ? r.cdnUrls.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 12)
+            : undefined,
+          alt: strOrNull(r.alt, 500),
+          ariaLabel: strOrNull(r.ariaLabel, 300),
+          isCarousel: r.isCarousel === true || undefined,
+          isVideo: r.isVideo === true || undefined,
+          timestamp: strOrNull(r.timestamp, 80),
+          likes: strOrNull(r.likes, 40),
+          comments: strOrNull(r.comments, 40),
+          visibleText: strOrNull(r.visibleText, 300),
+        });
+        if (posts.length >= 120) break;
+      }
+      if (posts.length) profile.recentPublicPosts = posts;
+      const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => s(item, 300))
+        .filter(Boolean)
+        .slice(0, 80);
+      if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
+      out.push(profile);
+    } else if (p.platform === "Threads") {
+      const profileUrl = normalizeThreadsUrl(p.profileUrl);
+      const username = s(p.username, 60) || (profileUrl ? threadsHandleFromUrl(profileUrl) : "");
+      const url = profileUrl || normalizeThreadsUrl(`https://www.threads.com/@${username}`);
+      if (!username || !url) continue;
+      const stats = rec(p.stats);
+      const profile: ThreadsProfileFull = {
+        platform: "Threads",
+        username: username.toLowerCase(),
+        displayName: strOrNull(p.displayName, 120),
+        bio: strOrNull(p.bio, 1000),
+        avatarUrl: strOrNull(p.avatarUrl, 1000),
+        externalUrl: strOrNull(p.externalUrl, 500),
+        profileUrl: url,
+        source: "scraper",
+        connectedAt: strOrNull(p.connectedAt, 80) || new Date().toISOString(),
+      };
+      const isVerified = bool(p.isVerified);
+      const isPrivate = bool(p.isPrivate);
+      if (typeof isVerified === "boolean") profile.isVerified = isVerified;
+      if (typeof isPrivate === "boolean") profile.isPrivate = isPrivate;
+      const cleanStats = {
+        followers: strOrNull(stats.followers, 40),
+        threads: strOrNull(stats.threads, 40),
+        following: strOrNull(stats.following, 40),
+      };
+      if (Object.values(cleanStats).some(Boolean)) profile.stats = cleanStats;
+      const threads: ThreadsPost[] = [];
+      for (const post of Array.isArray(p.recentThreads) ? p.recentThreads : []) {
+        const r = rec(post);
+        const postUrl = s(r.url, 500);
+        if (!/^https:\/\/www\.threads\.com\/@[^/]+\/post\/[^/]+/i.test(postUrl)) continue;
+        const position = Number(r.position);
+        threads.push({
+          url: postUrl,
+          ...(Number.isFinite(position) && position > 0 ? { position: Math.round(position) } : {}),
+          text: strOrNull(r.text, 1200),
+          contentSeed: strOrNull(r.contentSeed, 1500),
+          timestamp: strOrNull(r.timestamp, 80),
+          mediaUrls: Array.isArray(r.mediaUrls)
+            ? r.mediaUrls.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 12)
+            : undefined,
+          thumbnailUrl: strOrNull(r.thumbnailUrl, 1000),
+          feedPhotoUrl: strOrNull(r.feedPhotoUrl, 1000),
+          externalLinks: Array.isArray(r.externalLinks)
+            ? r.externalLinks.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 8)
+            : undefined,
+          replyCount: strOrNull(r.replyCount, 40),
+          repostCount: strOrNull(r.repostCount, 40),
+          likeCount: strOrNull(r.likeCount, 40),
+          quoteCount: strOrNull(r.quoteCount, 40),
+          visibleLabels: Array.isArray(r.visibleLabels)
+            ? r.visibleLabels.map((item) => s(item, 120)).filter(Boolean).slice(0, 24)
+            : undefined,
+          visibleText: strOrNull(r.visibleText, 1200),
+        });
+        if (threads.length >= THREADS_PROMPT_POST_LIMIT) break;
+      }
+      if (threads.length) profile.recentThreads = threads;
+      const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => s(item, 300))
+        .filter(Boolean)
+        .slice(0, 80);
+      if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
+      out.push(profile);
     }
-    if (highlights.length) profile.highlights = highlights;
-    const posts: InstagramPublicPost[] = [];
-    for (const post of Array.isArray(p.recentPublicPosts) ? p.recentPublicPosts : []) {
-      const r = rec(post);
-      const postUrl = s(r.url, 500);
-      if (!/^https:\/\/www\.instagram\.com\/(?:p|reel)\//i.test(postUrl)) continue;
-      const position = Number(r.position);
-      posts.push({
-        url: postUrl,
-        kind: /\/reel\//i.test(postUrl) ? "reel" : "post",
-        ...(Number.isFinite(position) && position > 0 ? { position: Math.round(position) } : {}),
-        caption: strOrNull(r.caption, 500),
-        thumbnailUrl: strOrNull(r.thumbnailUrl, 1000),
-        cdnUrls: Array.isArray(r.cdnUrls)
-          ? r.cdnUrls.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 12)
-          : undefined,
-        alt: strOrNull(r.alt, 500),
-        ariaLabel: strOrNull(r.ariaLabel, 300),
-        isCarousel: r.isCarousel === true || undefined,
-        isVideo: r.isVideo === true || undefined,
-        timestamp: strOrNull(r.timestamp, 80),
-        likes: strOrNull(r.likes, 40),
-        comments: strOrNull(r.comments, 40),
-        visibleText: strOrNull(r.visibleText, 300),
-      });
-      if (posts.length >= 120) break;
-    }
-    if (posts.length) profile.recentPublicPosts = posts;
-    const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
-      .filter((item): item is string => typeof item === "string")
-      .map((item) => s(item, 300))
-      .filter(Boolean)
-      .slice(0, 80);
-    if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
-    out.push(profile);
     if (out.length >= 4) break;
   }
   return out.length ? out : undefined;
@@ -331,13 +405,21 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     }
   }
   for (const profile of socialProfiles ?? []) {
-    const url = normalizeInstagramUrl(profile.profileUrl);
+    const isThreads = profile.platform === "Threads";
+    const url = isThreads ? normalizeThreadsUrl(profile.profileUrl) : normalizeInstagramUrl(profile.profileUrl);
     if (!url) continue;
-    const exists = (confirmedProfiles ?? []).some((p) => /instagram/i.test(p.platform || "") && p.url === url);
+    const exists = (confirmedProfiles ?? []).some(
+      (p) => new RegExp(`^${profile.platform}$`, "i").test(p.platform || "") && p.url === url,
+    );
     if (!exists) {
       confirmedProfiles = [
         ...(confirmedProfiles ?? []),
-        { platform: "Instagram", handle: instagramHandleFromUrl(url), url, category: "Social" },
+        {
+          platform: profile.platform,
+          handle: isThreads ? threadsHandleFromUrl(url) : instagramHandleFromUrl(url),
+          url,
+          category: "Social",
+        },
       ];
     }
   }

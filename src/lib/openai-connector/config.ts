@@ -2,6 +2,7 @@ export const CONNECTOR_SCOPES = [
   "one.profile.read",
   "one.social.read",
   "one.scan.read",
+  "one.context.write",
   "one.social.write",
 ] as const;
 

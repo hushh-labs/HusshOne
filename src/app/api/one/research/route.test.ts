@@ -160,7 +160,7 @@ describe("POST /api/one/research", () => {
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
   });
 
-  it("passes optional Instagram social context into Phase-1 without replacing LinkedIn ground truth", async () => {
+  it("passes optional Instagram and Threads social context into Phase-1 without replacing LinkedIn ground truth", async () => {
     const instagramProfile = {
       platform: "Instagram",
       username: "ankit_ya_i_am",
@@ -175,6 +175,20 @@ describe("POST /api/one/research", () => {
       recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", caption: "Demo" }],
       source: "scraper",
     };
+    const threadsProfile = {
+      platform: "Threads",
+      username: "threads",
+      displayName: "Threads",
+      bio: "Say more with Threads.",
+      avatarUrl: "https://cdn.example.com/threads-avatar.jpg",
+      externalUrl: "https://about.example.com/",
+      profileUrl: "https://www.threads.com/@threads",
+      isVerified: true,
+      isPrivate: false,
+      stats: { followers: "6.5M", threads: "1.2K" },
+      recentThreads: [{ url: "https://www.threads.com/@threads/post/Cabc123", text: "Visible post", contentSeed: "Visible post", feedPhotoUrl: "https://cdn.example.com/feed.jpg", likeCount: "126" }],
+      source: "scraper",
+    };
     const { POST } = await import("./route");
     const response = await POST(
       makeRequest({
@@ -185,7 +199,7 @@ describe("POST /api/one/research", () => {
         consentAttestation: true,
         purpose: "self_audit",
         linkedinProfile,
-        socialProfiles: [instagramProfile],
+        socialProfiles: [instagramProfile, threadsProfile],
       }),
     );
 
@@ -197,21 +211,30 @@ describe("POST /api/one/research", () => {
     expect(question).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
     expect(question).toContain("SOCIAL_ENRICHED_PROFILES_JSON");
     expect(question).toContain('"username": "ankit_ya_i_am"');
+    expect(question).toContain('"platform": "Threads"');
+    expect(question).toContain('"recentThreads"');
     expect(question).toContain("supporting cross-platform context only");
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
 
     const db = await import("@/lib/db/scan-store");
     const input = vi.mocked(db.createConsentAndScan).mock.calls[0]?.[0]?.input as {
-      socialProfiles?: Array<{ username?: string; profileUrl?: string }>;
+      socialProfiles?: Array<{ platform?: string; username?: string; profileUrl?: string }>;
       confirmedProfiles?: Array<{ platform?: string; url?: string }>;
     };
     expect(input.socialProfiles?.[0]).toMatchObject({
+      platform: "Instagram",
       username: "ankit_ya_i_am",
       profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+    });
+    expect(input.socialProfiles?.[1]).toMatchObject({
+      platform: "Threads",
+      username: "threads",
+      profileUrl: "https://www.threads.com/@threads",
     });
     expect(input.confirmedProfiles).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ platform: "Instagram", url: "https://www.instagram.com/ankit_ya_i_am/" }),
+        expect.objectContaining({ platform: "Threads", url: "https://www.threads.com/@threads" }),
       ]),
     );
   });

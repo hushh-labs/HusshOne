@@ -18,6 +18,8 @@ import {
   linkedinHandleFromUrl,
   normalizeInstagramUrl,
   instagramHandleFromUrl,
+  normalizeThreadsUrl,
+  threadsHandleFromUrl,
 } from "@/lib/auth/identity";
 import {
   completeGoogleRedirect,
@@ -30,6 +32,7 @@ import {
 } from "@/lib/firebase/client";
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { hasInstagramProfile, type InstagramAccessInfo, type InstagramProfileFull } from "@/lib/instagram/profile";
+import { hasThreadsProfile, type ThreadsAccessInfo, type ThreadsProfileFull } from "@/lib/threads/profile";
 import type {
   ConfirmedProfile,
   DashboardCategoryMap,
@@ -121,6 +124,7 @@ const LS_DISCOVERY = "one_discovery"; // in-progress Phase-0 disambiguation (con
 const LS_LI_FULL = "one_li_full"; // enriched LinkedIn profile → survives refresh so a returning session's re-scan still carries the ground truth
 const LS_LI_CONNECTED = "one_li_connected"; // legacy marker; the profile payload itself now drives the mandatory gate
 const LS_IG_FULL = "one_ig_full"; // optional Instagram public profile context → survives refresh like LinkedIn
+const LS_THREADS_FULL = "one_threads_full"; // optional Threads visible profile context → survives refresh like Instagram
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
@@ -160,6 +164,7 @@ function clearPersisted() {
   safeDel("local", LS_LI_FULL);
   safeDel("local", LS_LI_CONNECTED);
   safeDel("local", LS_IG_FULL);
+  safeDel("local", LS_THREADS_FULL);
   safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
@@ -401,13 +406,122 @@ function ConnectInstagramInline({
   );
 }
 
+function ConnectThreadsInline({
+  authUser,
+  profiles,
+  onConnected,
+}: {
+  authUser: ClientUser | null;
+  profiles: ThreadsProfileFull[];
+  onConnected: (profile: ThreadsProfileFull) => void;
+}) {
+  type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [err, setErr] = useState("");
+  const [pendingAccess, setPendingAccess] = useState<ThreadsAccessInfo | null>(null);
+  const normalized = normalizeThreadsUrl(url);
+  const invalid = touched && !!url && !normalized;
+  const connected = profiles[0] ?? null;
+
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setTouched(true);
+    setErr("");
+    if (!authUser) {
+      setErr("Sign in again to add Threads.");
+      setPhase("error");
+      return;
+    }
+    if (!normalized) {
+      setErr("Paste a valid Threads profile URL.");
+      setPhase("error");
+      return;
+    }
+    setPhase("fetching");
+    setPendingAccess(null);
+    track("threads_connect_started");
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/threads/enrich-url", {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; profile?: ThreadsProfileFull | null; error?: string; code?: string; access?: ThreadsAccessInfo;
+      };
+      if (res.status === 202 && payload.code === "threads_access_pending" && payload.access) {
+        setPendingAccess(payload.access);
+        setUrl("");
+        setPhase("pending");
+        track("threads_connect_pending", { state: payload.access.state });
+        return;
+      }
+      if (!res.ok || !payload.ok || !hasThreadsProfile(payload.profile)) {
+        throw new Error(payload.error || "We could not read this Threads profile.");
+      }
+      setUrl("");
+      setPhase("connected");
+      onConnected(payload.profile);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "We could not read this Threads profile.";
+      track("threads_connect_failed", { reason: message.slice(0, 120) });
+      setErr(message);
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "fetching";
+  return (
+    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+      <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          id="threads-url"
+          className={"input" + (invalid ? " invalid" : "")}
+          placeholder="https://www.threads.com/@threads"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            if (err) setErr("");
+            if (pendingAccess) setPendingAccess(null);
+          }}
+          onBlur={() => setTouched(true)}
+          autoComplete="url"
+          inputMode="url"
+          aria-invalid={invalid}
+        />
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+          {busy ? "Adding..." : "Add"}
+        </button>
+      </div>
+      {connected ? (
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      ) : pendingAccess ? (
+        <span className="field-hint">
+          Follow request sent. Threads will be added after owner approval.
+        </span>
+      ) : (
+        <span className="field-hint">Direct public profile link only.</span>
+      )}
+      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+    </form>
+  );
+}
+
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
 function PreCollect({
   user,
   profile,
   authUser,
   instagramProfiles,
+  threadsProfiles,
   onInstagramConnected,
+  onThreadsConnected,
   onCollect,
   busy,
 }: {
@@ -415,7 +529,9 @@ function PreCollect({
   profile: LinkedInProfile | null;
   authUser: ClientUser | null;
   instagramProfiles: InstagramProfileFull[];
+  threadsProfiles: ThreadsProfileFull[];
   onInstagramConnected: (profile: InstagramProfileFull) => void;
+  onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onCollect: () => void;
   busy: boolean;
 }) {
@@ -483,6 +599,11 @@ function PreCollect({
             authUser={authUser}
             profiles={instagramProfiles}
             onConnected={onInstagramConnected}
+          />
+          <ConnectThreadsInline
+            authUser={authUser}
+            profiles={threadsProfiles}
+            onConnected={onThreadsConnected}
           />
         </div>
 
@@ -1817,6 +1938,7 @@ export default function OneExperience() {
   // experience/education/skills/certs) — fed into the scan as the authoritative ground truth.
   const [liProfile, setLiProfile] = useState<LinkedInProfileFull | null>(null);
   const [igProfiles, setIgProfiles] = useState<InstagramProfileFull[]>([]);
+  const [threadsProfiles, setThreadsProfiles] = useState<ThreadsProfileFull[]>([]);
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
@@ -1943,6 +2065,15 @@ export default function OneExperience() {
       return next;
     });
     track("instagram_connected");
+  };
+
+  const onThreadsConnected = (profile: ThreadsProfileFull) => {
+    setThreadsProfiles((prev) => {
+      const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
+      safeSet("local", LS_THREADS_FULL, JSON.stringify(next));
+      return next;
+    });
+    track("threads_connected");
   };
 
   // Settings is a signed-in overlay stage; remember where we came from for "Done".
@@ -2257,6 +2388,35 @@ export default function OneExperience() {
         }
       }
       setIgProfiles(instagramProfiles);
+
+      let connectedThreadsProfiles: ThreadsProfileFull[] = [];
+      const savedThreads = safeGet("local", LS_THREADS_FULL);
+      if (savedThreads) {
+        try {
+          const parsed = JSON.parse(savedThreads) as unknown;
+          connectedThreadsProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasThreadsProfile).slice(0, 4);
+          if (connectedThreadsProfiles.length) safeSet("local", LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
+          else safeDel("local", LS_THREADS_FULL);
+        } catch {
+          safeDel("local", LS_THREADS_FULL);
+        }
+      }
+      if (!connectedThreadsProfiles.length) {
+        try {
+          const authorization = await getFirebaseBearer(user as User);
+          const res = await fetch("/api/threads/profile", { headers: { Authorization: authorization } });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profiles?: ThreadsProfileFull[] };
+            connectedThreadsProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
+              .filter(hasThreadsProfile)
+              .slice(0, 4);
+            if (connectedThreadsProfiles.length) safeSet("local", LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
+          }
+        } catch {
+          /* optional social context — ignore transient/offline failures */
+        }
+      }
+      setThreadsProfiles(connectedThreadsProfiles);
       const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
 
       // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
@@ -2529,6 +2689,7 @@ export default function OneExperience() {
 
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), 1_800_000); // match server cap (30min)
+    const socialProfiles = [...igProfiles, ...threadsProfiles];
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);
@@ -2543,7 +2704,7 @@ export default function OneExperience() {
           longitude: location.longitude,
           zipCode: location.zipCode,
           linkedinProfile: liProfile ?? undefined, // verified LinkedIn anchor → ground truth for Phase 1
-          socialProfiles: igProfiles.length ? igProfiles : undefined,
+          socialProfiles: socialProfiles.length ? socialProfiles : undefined,
           confirmedProfiles, // derived LinkedIn pivot → seeds Phase 1 + 2
           consentAttestation: true,
           purpose: "self_audit",
@@ -2712,7 +2873,7 @@ export default function OneExperience() {
     const loc = discoverLocRef.current ?? {};
     track("disambiguation_complete", { confirmed: confirmed.length });
     safeDel("local", LS_DISCOVERY);
-    void runScan(loc, [...confirmed, ...instagramPivots()]);
+    void runScan(loc, [...confirmed, ...socialPivots()]);
   };
 
   // persist in-progress disambiguation so a refresh restores the gate progress
@@ -2749,6 +2910,14 @@ export default function OneExperience() {
       const url = normalizeInstagramUrl(profile.profileUrl);
       return url ? [{ platform: "Instagram", handle: instagramHandleFromUrl(url), url, category: "Social" }] : [];
     });
+
+  const threadsPivots = (): ConfirmedProfile[] =>
+    threadsProfiles.flatMap((profile) => {
+      const url = normalizeThreadsUrl(profile.profileUrl);
+      return url ? [{ platform: "Threads", handle: threadsHandleFromUrl(url), url, category: "Social" }] : [];
+    });
+
+  const socialPivots = (): ConfirmedProfile[] => [...instagramPivots(), ...threadsPivots()];
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
@@ -2798,7 +2967,7 @@ export default function OneExperience() {
         // Deep Research → anchor on the pasted LinkedIn pivot and scan directly.
         // (DISCOVER_MODE revives the old "confirm candidates" Phase-0 instead.) Shadow → scan directly.
         if (RESEARCH_MODE && DISCOVER_MODE) void runDiscover(loc);
-        else if (RESEARCH_MODE) void runScan(loc, [...linkedinPivot(), ...instagramPivots()]);
+        else if (RESEARCH_MODE) void runScan(loc, [...linkedinPivot(), ...socialPivots()]);
         else void runScan(loc);
       },
       (err) => {
@@ -3006,7 +3175,9 @@ export default function OneExperience() {
         profile={liProfile}
         authUser={authUser}
         instagramProfiles={igProfiles}
+        threadsProfiles={threadsProfiles}
         onInstagramConnected={onInstagramConnected}
+        onThreadsConnected={onThreadsConnected}
         onCollect={startCollect}
         busy={geoBusy}
       />
@@ -3061,7 +3232,7 @@ export default function OneExperience() {
           RESEARCH_MODE && DISCOVER_MODE
             ? void runDiscover({ zipCode: zip })
             : RESEARCH_MODE
-              ? void runScan({ zipCode: zip }, [...linkedinPivot(), ...instagramPivots()])
+              ? void runScan({ zipCode: zip }, [...linkedinPivot(), ...socialPivots()])
               : void runScan({ zipCode: zip })
         }
       />

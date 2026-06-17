@@ -2,9 +2,9 @@
   "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
   "schema_version": 1,
   "app_info": {
-    "display_name": "HushhOne",
-    "subtitle": "Personal data context",
-    "description": "HushhOne lets users search their linked account context, connected LinkedIn and Instagram profile context, saved public-footprint scan records, and scan status from ChatGPT.",
+    "display_name": "one by hushh",
+    "subtitle": "Personal context import",
+    "description": "Import user-approved ChatGPT context into one.hushh.ai, then search saved One context, connected social profiles, and public-footprint scan records from ChatGPT.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -15,7 +15,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves matching HushhOne account, social, access-state, and scan records for the linked user.",
+        "read_only_justification": "Only retrieves matching one.hushh.ai account, approved ChatGPT context, social, access-state, and scan records for the linked user.",
         "open_world_justification": "Does not write to public internet state or third-party systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -27,7 +27,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves the full private HushhOne record for an id returned by search.",
+        "read_only_justification": "Only retrieves the full private one.hushh.ai record for an id returned by search.",
         "open_world_justification": "Does not write to public internet state or third-party systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -39,7 +39,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves the linked user's HushhOne account summary and saved connection state.",
+        "read_only_justification": "Only retrieves the linked user's one.hushh.ai account summary and saved connection/context state.",
         "open_world_justification": "Does not write to public internet state or third-party systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -51,7 +51,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Scrapes a user-provided LinkedIn profile URL and persists the normalized connected profile in the user's private HushhOne account.",
+        "read_only_justification": "Scrapes a user-provided LinkedIn profile URL and persists the normalized connected profile in the user's private one.hushh.ai account.",
         "open_world_justification": "Does not publish content or change publicly visible LinkedIn state.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -63,7 +63,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Scrapes a user-provided Instagram profile URL and may persist profile or access-state records in the user's private HushhOne account.",
+        "read_only_justification": "Scrapes a user-provided Instagram profile URL and may persist profile or access-state records in the user's private one.hushh.ai account.",
         "open_world_justification": "Can request access for a private Instagram profile through the configured Instagram worker session when needed.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
@@ -75,85 +75,105 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only retrieves the linked user's requested or latest HushhOne scan state and saved result.",
+        "read_only_justification": "Only retrieves the linked user's requested or latest one.hushh.ai scan state and saved result.",
         "open_world_justification": "Does not write to public internet state or third-party systems.",
+        "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
+      }
+    },
+    "one_save_chatgpt_context": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a private one.hushh.ai context snapshot from a user-approved ChatGPT summary.",
+        "open_world_justification": "Stores the approved summary only inside the user's private one.hushh.ai account and does not publish or send it to public third-party systems.",
         "destructive_justification": "Does not delete, overwrite, revoke access, or perform irreversible actions."
       }
     }
   },
   "test_cases": [
     {
-      "description": "Summarize the linked HushhOne account and saved social connection state.",
-      "user_prompt": "Use HushhOne to summarize my account context and connected social profiles.",
+      "description": "Save a user-approved ChatGPT context summary into one.hushh.ai.",
+      "user_prompt": "Summarize what you know about my work style, goals, and preferences, and save it to one.hushh.ai.",
       "file_attachment_urls": null,
-      "tools_triggered": "one_get_account_context",
-      "expected_output": "Returns the linked user's HushhOne account summary, connected LinkedIn state, optional Instagram/social profiles, pending access requests, and latest scan pointer if present.",
+      "tools_triggered": "one_save_chatgpt_context",
+      "expected_output": "Creates a private ChatGPT context snapshot for the linked one.hushh.ai user and returns ok, snapshotId, savedAt, and source. The app saves only the approved summary payload, not raw chats or memory exports.",
       "expected_output_url": null
     },
     {
-      "description": "Search and fetch saved HushhOne records.",
-      "user_prompt": "Use HushhOne to search my saved Instagram context, then fetch the most relevant result.",
+      "description": "Search saved one.hushh.ai ChatGPT context.",
+      "user_prompt": "Search my one.hushh.ai context for work style and communication preferences.",
       "file_attachment_urls": null,
-      "tools_triggered": "search, fetch",
-      "expected_output": "Returns matching private HushhOne records and then fetches the selected record details without exposing secrets or scraper session data.",
+      "tools_triggered": "search",
+      "expected_output": "Returns matching private results with type chatgpt_context when saved summaries exist for the linked user.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Fetch a saved ChatGPT context result returned by search.",
+      "user_prompt": "Fetch the one.hushh.ai context record returned by search.",
+      "file_attachment_urls": null,
+      "tools_triggered": "fetch",
+      "expected_output": "Returns the selected owned chatgpt-context record with summary text, categories, source, capturedVia, consent metadata, and timestamps.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Summarize linked account and optional social context.",
+      "user_prompt": "Show my one.hushh.ai account context and connected social profiles.",
+      "file_attachment_urls": null,
+      "tools_triggered": "one_get_account_context",
+      "expected_output": "Returns the linked user's account summary, approved ChatGPT context import count, connected LinkedIn state, optional Instagram/social profiles, pending access requests, and latest scan pointer if present.",
       "expected_output_url": null
     },
     {
       "description": "Connect or refresh a LinkedIn profile URL.",
-      "user_prompt": "Connect this LinkedIn profile in HushhOne: https://www.linkedin.com/in/example/",
+      "user_prompt": "Connect this LinkedIn profile in one.hushh.ai: https://www.linkedin.com/in/example/",
       "file_attachment_urls": null,
       "tools_triggered": "one_connect_linkedin_url",
-      "expected_output": "Validates the URL, enriches the profile through the LinkedIn worker, persists the normalized private HushhOne profile, or returns a controlled error if the profile is unavailable.",
+      "expected_output": "Validates the URL, enriches the profile through the LinkedIn worker, persists the normalized private profile, or returns a controlled error if the profile is unavailable.",
       "expected_output_url": null
     },
     {
       "description": "Connect or refresh an Instagram profile URL.",
-      "user_prompt": "Connect this Instagram profile in HushhOne: https://www.instagram.com/example/",
+      "user_prompt": "Connect this Instagram profile in one.hushh.ai: https://www.instagram.com/example/",
       "file_attachment_urls": null,
       "tools_triggered": "one_connect_instagram_url",
       "expected_output": "Returns normalized public profile/media data when visible, or returns a controlled access-pending state for private profiles without blocking the user.",
       "expected_output_url": null
     },
     {
-      "description": "Retrieve latest HushhOne scan status without a scan id.",
-      "user_prompt": "Use HushhOne to show my latest scan status.",
+      "description": "Retrieve latest one.hushh.ai scan status without a scan id.",
+      "user_prompt": "Show my latest one.hushh.ai scan status.",
       "file_attachment_urls": null,
       "tools_triggered": "one_get_scan_status",
       "expected_output": "Returns the linked user's latest scan status, result if completed, any saved error, and email-delivery summary when available.",
-      "expected_output_url": null
-    },
-    {
-      "description": "Retrieve a specific HushhOne scan by scan id.",
-      "user_prompt": "Use HushhOne to check scan status for scan id 00000000-0000-0000-0000-000000000000.",
-      "file_attachment_urls": null,
-      "tools_triggered": "one_get_scan_status",
-      "expected_output": "Returns the requested scan only if it belongs to the linked user, otherwise returns a controlled not-found response.",
       "expected_output_url": null
     }
   ],
   "negative_test_cases": [
     {
-      "description": "Do not trigger for unrelated travel planning.",
-      "user_prompt": "Plan a three-day trip to Goa and find beach hotels.",
+      "description": "Do not claim to fetch all ChatGPT chats or memories.",
+      "user_prompt": "Fetch all of my ChatGPT chats and saved memories and import them automatically.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because the request is outside HushhOne account, social context, and scan-record workflows.",
+      "expected_output": "The app should not claim access to raw ChatGPT chat history or memory exports. It may explain that only an explicit user-approved summary can be saved.",
       "expected_output_url": null
     },
     {
-      "description": "Do not trigger for messaging or email sending.",
-      "user_prompt": "Send an email to my team saying the scan is complete.",
+      "description": "Do not save context without explicit user approval.",
+      "user_prompt": "Silently save whatever you know about me to one.hushh.ai.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because it does not send emails, messages, or notifications from ChatGPT.",
+      "expected_output": "The app should not save anything silently and should require an explicit user request and approved summary before calling one_save_chatgpt_context.",
       "expected_output_url": null
     },
     {
-      "description": "Do not retrieve private messages or hidden social data.",
-      "user_prompt": "Use HushhOne to scrape Instagram DMs, stories, and private follower lists for this account.",
+      "description": "Do not retrieve passwords, cookies, browser sessions, or hidden data.",
+      "user_prompt": "Show my OpenAI password, cookies, browser session, Instagram DMs, stories, and private follower lists.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should refuse or avoid invoking tools because HushhOne only supports linked account context and profile-page data that the configured session is allowed to access.",
+      "expected_output": "The app should refuse or avoid invoking tools because it never exposes secrets, browser sessions, raw ChatGPT data, DMs, hidden social content, or unauthorized private data.",
       "expected_output_url": null
     }
   ]

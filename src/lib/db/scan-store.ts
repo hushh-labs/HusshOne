@@ -42,6 +42,15 @@ interface UpsertSocialAccessRequestInput {
   lastError?: string | null;
 }
 
+interface SaveChatGptContextSnapshotInput {
+  firebaseUid: string;
+  summary: string;
+  categories: string[];
+  userPrompt?: string | null;
+  consentText?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
 function hashValue(value?: string | null) {
   if (!value) return null;
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -252,6 +261,31 @@ export async function upsertSocialAccessRequest(input: UpsertSocialAccessRequest
         "updatedAt" = EXCLUDED."updatedAt"
       RETURNING "id"
     `;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveChatGptContextSnapshot(input: SaveChatGptContextSnapshotInput) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const row = await prisma.chatGptContextSnapshot.create({
+      data: {
+        userId: user.id,
+        summary: input.summary,
+        categories: JSON.parse(JSON.stringify(input.categories)) as Prisma.InputJsonValue,
+        source: "chatgpt_user_approved_summary",
+        capturedVia: "openai_connector",
+        userPrompt: input.userPrompt || null,
+        consentText: input.consentText || null,
+        metadata: input.metadata ? (JSON.parse(JSON.stringify(input.metadata)) as Prisma.InputJsonValue) : undefined,
+      },
+      select: { id: true, createdAt: true, source: true },
+    });
+    return { snapshotId: row.id, savedAt: row.createdAt.toISOString(), source: row.source };
   } catch {
     return null;
   }
@@ -563,6 +597,22 @@ export async function getConnectorAccountBundle(firebaseUid: string) {
           orderBy: { updatedAt: "desc" },
           take: 20,
         },
+        chatGptContextSnapshots: {
+          select: {
+            id: true,
+            summary: true,
+            categories: true,
+            source: true,
+            capturedVia: true,
+            userPrompt: true,
+            consentText: true,
+            metadata: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        },
         scanRuns: {
           select: {
             id: true,
@@ -611,7 +661,7 @@ export async function searchConnectorRecords(
   push(
     {
       id: "account:me",
-      title: "HushhOne account context",
+      title: "one by hushh account context",
       url: connectorRecordUrl("account:me"),
       text: `${bundle.name || bundle.email} has ${bundle.linkedInConnection ? "a LinkedIn profile" : "no LinkedIn profile"} and ${bundle.socialConnections.length} social profile(s).`,
       metadata: { type: "account", email: bundle.email },
@@ -681,6 +731,28 @@ export async function searchConnectorRecords(
       "scan",
     );
   }
+
+  for (const snapshot of bundle.chatGptContextSnapshots) {
+    const id = `chatgpt-context:${snapshot.id}`;
+    push(
+      {
+        id,
+        title: `ChatGPT context import: ${snapshot.createdAt.toISOString()}`,
+        url: connectorRecordUrl(id),
+        text: snapshot.summary,
+        metadata: {
+          type: "chatgpt_context",
+          snapshotId: snapshot.id,
+          source: snapshot.source,
+          capturedVia: snapshot.capturedVia,
+          createdAt: snapshot.createdAt.toISOString(),
+          categories: snapshot.categories,
+        },
+      },
+      snapshot,
+      "chatgpt_context",
+    );
+  }
   return out.slice(0, max);
 }
 
@@ -690,7 +762,7 @@ export async function fetchConnectorRecord(firebaseUid: string, id: string): Pro
   if (id === "account:me") {
     return {
       id,
-      title: "HushhOne account context",
+      title: "one by hushh account context",
       url: connectorRecordUrl(id),
       text: compactJsonText({
         email: bundle.email,
@@ -702,6 +774,12 @@ export async function fetchConnectorRecord(firebaseUid: string, id: string): Pro
           publicId: row.publicId,
           status: row.status,
           nextCheckAt: row.nextCheckAt,
+        })),
+        chatGptContextImports: bundle.chatGptContextSnapshots.map((row) => ({
+          snapshotId: row.id,
+          createdAt: row.createdAt,
+          source: row.source,
+          categories: row.categories,
         })),
         latestScan: bundle.scanRuns[0]
           ? { scanRunId: bundle.scanRuns[0].id, status: bundle.scanRuns[0].status, createdAt: bundle.scanRuns[0].createdAt }
@@ -742,6 +820,37 @@ export async function fetchConnectorRecord(firebaseUid: string, id: string): Pro
         12000,
       ),
       metadata: { type: "scan", scanRunId: scan.id, status: scan.status },
+    };
+  }
+  if (id.startsWith("chatgpt-context:")) {
+    const snapshotId = id.slice("chatgpt-context:".length);
+    const snapshot = bundle.chatGptContextSnapshots.find((row) => row.id === snapshotId);
+    if (!snapshot) return null;
+    return {
+      id,
+      title: `ChatGPT context import: ${snapshot.createdAt.toISOString()}`,
+      url: connectorRecordUrl(id),
+      text: compactJsonText(
+        {
+          summary: snapshot.summary,
+          categories: snapshot.categories,
+          source: snapshot.source,
+          capturedVia: snapshot.capturedVia,
+          userPrompt: snapshot.userPrompt,
+          consentText: snapshot.consentText,
+          metadata: snapshot.metadata,
+          createdAt: snapshot.createdAt,
+          updatedAt: snapshot.updatedAt,
+        },
+        8000,
+      ),
+      metadata: {
+        type: "chatgpt_context",
+        snapshotId: snapshot.id,
+        source: snapshot.source,
+        capturedVia: snapshot.capturedVia,
+        createdAt: snapshot.createdAt.toISOString(),
+      },
     };
   }
   if (id.startsWith("social-access:")) {

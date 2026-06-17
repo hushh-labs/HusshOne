@@ -22,9 +22,9 @@ async function handleOne(request: Request, rpc: JsonRpcRequest) {
       return result(rpc.id, {
         protocolVersion: typeof rpc.params?.protocolVersion === "string" ? rpc.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "hushhone-openai-connector", version: "0.1.0" },
+        serverInfo: { name: "one-by-hushh-openai-connector", version: "0.1.0" },
         instructions:
-          "Use this connector only for the linked user's HushhOne account, profiles, social context, and scan records. Never expose secrets or scraper session data.",
+          "Use this connector only for the linked user's one.hushh.ai account, approved ChatGPT context imports, profiles, social context, and scan records. Never expose secrets, raw ChatGPT chats, raw memories, or scraper session data.",
       });
     case "tools/list":
       return result(rpc.id, { tools: connectorTools });

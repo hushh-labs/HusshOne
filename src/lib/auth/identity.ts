@@ -119,3 +119,59 @@ export function instagramHandleFromUrl(value: unknown): string {
   if (!normalized) return "";
   return new URL(normalized).pathname.split("/").filter(Boolean)[0] || "";
 }
+
+const THREADS_RESERVED_SEGMENTS = new Set([
+  "about",
+  "activity",
+  "api",
+  "challenge",
+  "developer",
+  "explore",
+  "feed",
+  "help",
+  "login",
+  "oauth",
+  "post",
+  "privacy",
+  "search",
+  "settings",
+  "signup",
+  "terms",
+]);
+
+/** Canonicalize a user-pasted Threads profile URL.
+ *  Accepts threads.com/www.threads.com direct `@username` profile paths only.
+ *  Rejects posts, login, search, internal routes, and non-profile paths. */
+export function normalizeThreadsUrl(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const raw = value.trim();
+  if (!raw) return "";
+  const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let url: URL;
+  try {
+    url = new URL(withProto);
+  } catch {
+    return "";
+  }
+  const host = url.hostname.toLowerCase();
+  if (host !== "threads.com" && host !== "www.threads.com" && host !== "threads.net" && host !== "www.threads.net") return "";
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 1) return "";
+  const segment = parts[0].trim();
+  if (!segment.startsWith("@")) return "";
+  const username = segment.slice(1);
+  if (!username || THREADS_RESERVED_SEGMENTS.has(username.toLowerCase())) return "";
+  if (!/^[a-z0-9._]{1,30}$/i.test(username)) return "";
+  if (username.startsWith(".") || username.endsWith(".") || username.includes("..")) return "";
+  return `https://www.threads.com/@${username.toLowerCase()}`;
+}
+
+export function isThreadsUrl(value: unknown): boolean {
+  return !!normalizeThreadsUrl(value);
+}
+
+export function threadsHandleFromUrl(value: unknown): string {
+  const normalized = normalizeThreadsUrl(value);
+  if (!normalized) return "";
+  return (new URL(normalized).pathname.split("/").filter(Boolean)[0] || "").replace(/^@/, "");
+}

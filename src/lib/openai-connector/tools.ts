@@ -1,4 +1,11 @@
-import { fetchConnectorRecord, getLatestScanForUser, getOwnedScanRun, getScanEmailDelivery, searchConnectorRecords } from "@/lib/db/scan-store";
+import {
+  fetchConnectorRecord,
+  getLatestScanForUser,
+  getOwnedScanRun,
+  getScanEmailDelivery,
+  saveChatGptContextSnapshot,
+  searchConnectorRecords,
+} from "@/lib/db/scan-store";
 import { persistConnectedProfile } from "@/lib/linkedin/connection";
 import { hasUrlEnrichedLinkedInProfile } from "@/lib/linkedin/profile";
 import { scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
@@ -27,6 +34,7 @@ export class ConnectorToolError extends Error {
 }
 
 const readSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.social.read", "one.scan.read"] }];
+const contextWriteSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.context.write"] }];
 const socialWriteSecurity = [{ type: "oauth2", scopes: ["one.profile.read", "one.social.read", "one.social.write"] }];
 
 const searchOutputSchema = {
@@ -104,16 +112,28 @@ const scanStatusOutputSchema = {
   additionalProperties: false,
 };
 
+const chatGptContextOutputSchema = {
+  type: "object",
+  properties: {
+    ok: { type: "boolean" },
+    snapshotId: { type: "string" },
+    savedAt: { type: "string" },
+    source: { type: "string" },
+  },
+  required: ["ok", "snapshotId", "savedAt", "source"],
+  additionalProperties: false,
+};
+
 export const connectorTools = [
   {
     name: "search",
-    title: "Search HushhOne",
-    description: "Use this when the user asks to search their HushhOne profile, connected social context, scan reports, or public-footprint findings.",
+    title: "Search one by hushh",
+    description: "Use this when the user asks to search their one.hushh.ai profile, approved ChatGPT context imports, connected social context, scan reports, or public-footprint findings.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query over the linked user's HushhOne records." },
-        type: { type: "string", enum: ["all", "account", "linkedin", "social", "social_access", "scan"], default: "all" },
+        query: { type: "string", description: "Search query over the linked user's one.hushh.ai records." },
+        type: { type: "string", enum: ["all", "account", "chatgpt_context", "linkedin", "social", "social_access", "scan"], default: "all" },
         limit: { type: "number", minimum: 1, maximum: 20, default: 10 },
       },
       required: ["query"],
@@ -125,8 +145,8 @@ export const connectorTools = [
   },
   {
     name: "fetch",
-    title: "Fetch HushhOne record",
-    description: "Use this when the user needs the full contents of a HushhOne search result by id.",
+    title: "Fetch one by hushh record",
+    description: "Use this when the user needs the full contents of a one.hushh.ai search result by id.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string", description: "Opaque id returned by search." } },
@@ -139,8 +159,8 @@ export const connectorTools = [
   },
   {
     name: "one_get_account_context",
-    title: "Get HushhOne account context",
-    description: "Use this when the user asks what HushhOne knows about their linked account, profile connections, or latest scan state.",
+    title: "Get one by hushh account context",
+    description: "Use this when the user asks what one.hushh.ai knows about their linked account, approved ChatGPT context imports, profile connections, or latest scan state.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     outputSchema: accountOutputSchema,
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
@@ -149,7 +169,7 @@ export const connectorTools = [
   {
     name: "one_connect_linkedin_url",
     title: "Connect LinkedIn URL",
-    description: "Use this when the user explicitly asks to connect or refresh their LinkedIn profile URL in HushhOne.",
+    description: "Use this when the user explicitly asks to connect or refresh their LinkedIn profile URL in one.hushh.ai.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "LinkedIn personal profile URL, usually https://www.linkedin.com/in/<handle>/." } },
@@ -163,7 +183,7 @@ export const connectorTools = [
   {
     name: "one_connect_instagram_url",
     title: "Connect Instagram URL",
-    description: "Use this when the user explicitly asks to connect or refresh an Instagram profile URL in HushhOne. This can request access for private profiles.",
+    description: "Use this when the user explicitly asks to connect or refresh an Instagram profile URL in one.hushh.ai. This can request access for private profiles.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "Instagram profile URL, usually https://www.instagram.com/<handle>/." } },
@@ -176,21 +196,62 @@ export const connectorTools = [
   },
   {
     name: "one_get_scan_status",
-    title: "Get HushhOne scan status",
-    description: "Use this when the user asks for a specific HushhOne scan status by scanRunId, or asks for their latest saved scan state.",
+    title: "Get one by hushh scan status",
+    description: "Use this when the user asks for a specific one.hushh.ai scan status by scanRunId, or asks for their latest saved scan state.",
     inputSchema: {
       type: "object",
-      properties: { scanRunId: { type: "string", description: "Optional scan id returned by HushhOne. Omit to return the linked user's latest scan." } },
+      properties: { scanRunId: { type: "string", description: "Optional scan id returned by one.hushh.ai. Omit to return the linked user's latest scan." } },
       additionalProperties: false,
     },
     outputSchema: scanStatusOutputSchema,
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     securitySchemes: [{ type: "oauth2", scopes: ["one.scan.read"] }],
   },
+  {
+    name: "one_save_chatgpt_context",
+    title: "Save ChatGPT context",
+    description:
+      "Use this when the user explicitly asks to import or save a ChatGPT-generated summary of their work style, goals, preferences, or other approved context into one.hushh.ai.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "User-approved ChatGPT context summary to save into one.hushh.ai. Do not include raw chat history or secrets.",
+        },
+        categories: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional context categories, such as work_style, goals, preferences, projects, or communication_style.",
+        },
+        userPrompt: { type: "string", description: "Optional exact user prompt that requested the save." },
+        consentText: { type: "string", description: "Optional consent wording confirming the user asked to save this summary." },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+    outputSchema: chatGptContextOutputSchema,
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+    securitySchemes: contextWriteSecurity,
+  },
 ];
 
 function str(value: unknown, max = 500) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function strList(value: unknown, maxItems = 12, maxLen = 80) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    const text = str(item, maxLen);
+    if (!text || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    out.push(text);
+    if (out.length >= maxItems) break;
+  }
+  return out;
 }
 
 function safeContent(value: unknown) {
@@ -209,18 +270,7 @@ async function authedTool(request: Request): Promise<ConnectorUser> {
   return connectorUserFromAuthorization(request);
 }
 
-export async function callConnectorTool(request: Request, name: string, rawArgs: unknown) {
-  let user: ConnectorUser;
-  try {
-    user = await authedTool(request);
-  } catch {
-    return {
-      isError: true,
-      content: [{ type: "text", text: "Authentication required: link your HushhOne account to continue." }],
-      _meta: oauthChallengeMeta(request),
-    };
-  }
-
+export async function callConnectorToolForUser(user: ConnectorUser, name: string, rawArgs: unknown) {
   const args = toolArgs(rawArgs);
   try {
     if (name === "search") {
@@ -232,7 +282,7 @@ export async function callConnectorTool(request: Request, name: string, rawArgs:
       requireConnectorScopes(user, ["one.profile.read"]);
       const id = str(args.id, 300);
       const doc = id ? await fetchConnectorRecord(user.firebaseUid, id) : null;
-      if (!doc) throw new ConnectorToolError("HushhOne record not found.", "record_not_found", 404);
+      if (!doc) throw new ConnectorToolError("one.hushh.ai record not found.", "record_not_found", 404);
       return ok(doc);
     }
     if (name === "one_get_account_context") {
@@ -257,6 +307,28 @@ export async function callConnectorTool(request: Request, name: string, rawArgs:
         emailDelivery,
         createdAt,
       });
+    }
+    if (name === "one_save_chatgpt_context") {
+      requireConnectorScopes(user, ["one.context.write"]);
+      const summary = str(args.summary, 4000);
+      if (!summary) {
+        throw new ConnectorToolError(
+          "A user-approved ChatGPT context summary is required.",
+          "chatgpt_context_summary_required",
+          400,
+        );
+      }
+      const saved = await saveChatGptContextSnapshot({
+        firebaseUid: user.firebaseUid,
+        summary,
+        categories: strList(args.categories),
+        userPrompt: str(args.userPrompt, 1000) || null,
+        consentText: str(args.consentText, 600) || null,
+      });
+      if (!saved) {
+        throw new ConnectorToolError("Could not save ChatGPT context into one.hushh.ai.", "chatgpt_context_save_failed", 503);
+      }
+      return ok({ ok: true, ...saved });
     }
     if (name === "one_connect_linkedin_url") {
       requireConnectorScopes(user, ["one.social.write"]);
@@ -288,4 +360,18 @@ export async function callConnectorTool(request: Request, name: string, rawArgs:
     const code = error instanceof ConnectorToolError ? error.code : "connector_tool_failed";
     return { isError: true, structuredContent: { ok: false, code, error: message }, content: [{ type: "text", text: message }] };
   }
+}
+
+export async function callConnectorTool(request: Request, name: string, rawArgs: unknown) {
+  let user: ConnectorUser;
+  try {
+    user = await authedTool(request);
+  } catch {
+    return {
+      isError: true,
+      content: [{ type: "text", text: "Authentication required: link your one.hushh.ai account to continue." }],
+      _meta: oauthChallengeMeta(request),
+    };
+  }
+  return callConnectorToolForUser(user, name, rawArgs);
 }
