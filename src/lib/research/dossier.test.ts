@@ -294,7 +294,7 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
     expect(q).not.toContain("session.pkl");
   });
 
-  it("adds Instagram as optional supporting social context, not identity ground truth", () => {
+  it("adds Instagram and Threads as optional supporting social context, not identity ground truth", () => {
     const input = scraperInput();
     input.socialProfiles = [
       {
@@ -311,6 +311,20 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
         recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", kind: "post", caption: "Demo" }],
         source: "scraper",
       },
+      {
+        platform: "Threads",
+        username: "threads",
+        displayName: "Threads",
+        bio: "Say more with Threads.",
+        avatarUrl: "https://cdn.example.com/threads-avatar.jpg",
+        externalUrl: "https://about.example.com/",
+        profileUrl: "https://www.threads.com/@threads",
+        isVerified: true,
+        isPrivate: false,
+        stats: { followers: "6.5M", threads: "1.2K" },
+        recentThreads: [{ url: "https://www.threads.com/@threads/post/Cabc123", text: "Visible post", contentSeed: "Visible post", feedPhotoUrl: "https://cdn.example.com/feed.jpg", likeCount: "126" }],
+        source: "scraper",
+      },
     ];
 
     const q = buildPersonDossierQuestion(input);
@@ -322,7 +336,15 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
       profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
       source: "scraper",
     });
+    expect(social[1]).toMatchObject({
+      platform: "Threads",
+      username: "threads",
+      profileUrl: "https://www.threads.com/@threads",
+      recentThreads: [{ url: "https://www.threads.com/@threads/post/Cabc123", text: "Visible post", contentSeed: "Visible post", feedPhotoUrl: "https://cdn.example.com/feed.jpg", likeCount: "126" }],
+      source: "scraper",
+    });
     expect(q).toContain("Optional social-profile JSON is supporting context only");
+    expect(q).toContain("Instagram/Threads handles");
     expect(q).toContain("supporting cross-platform context only");
     expect(q).toContain("not as proof of identity, employment, education, or private activity");
     expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");

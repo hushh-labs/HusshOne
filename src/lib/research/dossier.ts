@@ -97,8 +97,9 @@ function socialProfilesPromptJson(input: OneSubjectInput): string {
     isVerified: profile.isVerified ?? null,
     isPrivate: profile.isPrivate ?? null,
     stats: profile.stats ?? null,
-    highlights: profile.highlights ?? [],
-    recentPublicPosts: profile.recentPublicPosts ?? [],
+    highlights: "highlights" in profile ? profile.highlights ?? [] : [],
+    recentPublicPosts: "recentPublicPosts" in profile ? profile.recentPublicPosts ?? [] : [],
+    recentThreads: "recentThreads" in profile ? profile.recentThreads ?? [] : [],
     visibleProfileText: profile.visibleProfileText ?? [],
     source: profile.source,
     connectedAt: profile.connectedAt ?? null,
@@ -146,7 +147,7 @@ ${subjectInputPromptJson(input)}
 function intelligenceOperatingProtocol(): string {
   return `ONE INTELLIGENCE OPERATING PROTOCOL:
 - Source hierarchy: (1) LinkedIn/user-provided JSON = locked ground truth for identity and self-declared career/profile facts; (2) public web evidence = citations and enrichment; (3) inference = clearly labelled, low/medium/high confidence, never stated as fact.
-- Optional social-profile JSON is supporting context only. Use Instagram handles/bio/public post metadata as search seeds and corroboration clues, not as proof of identity, employment, education, or private activity.
+  - Optional social-profile JSON is supporting context only. Use Instagram/Threads handles, bios, and public/visible post metadata as search seeds and corroboration clues, not as proof of identity, employment, education, or private activity.
 - Do not re-open, fetch, reverse-search, or cite signed LinkedIn/media URLs. LinkedIn is already provided as data. Spend search effort on public corroboration, adjacent footprint, contradictions, and useful new findings.
 - Reject same-name people unless they connect to the LinkedIn JSON, confirmed profiles, email local-part, employer/school timeline, or another strong anchor.
 - For every important claim, include source type label: LinkedIn ground truth, public web evidence, or inference. Prefer "unknown" over guessing.

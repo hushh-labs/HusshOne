@@ -10,6 +10,9 @@ import {
   normalizeInstagramUrl,
   isInstagramUrl,
   instagramHandleFromUrl,
+  normalizeThreadsUrl,
+  isThreadsUrl,
+  threadsHandleFromUrl,
 } from "./identity";
 
 describe("identity helpers", () => {
@@ -47,6 +50,32 @@ describe("Instagram profile helpers", () => {
     expect(isInstagramUrl("instagram.com/ankit_ya_i_am")).toBe(true);
     expect(isInstagramUrl("https://www.instagram.com/p/abc/")).toBe(false);
     expect(instagramHandleFromUrl("https://www.instagram.com/ankit_ya_i_am/")).toBe("ankit_ya_i_am");
+  });
+});
+
+describe("Threads profile helpers", () => {
+  it("canonicalizes valid profile URLs", () => {
+    const canonical = "https://www.threads.com/@threads";
+    expect(normalizeThreadsUrl("https://www.threads.com/@threads")).toBe(canonical);
+    expect(normalizeThreadsUrl("threads.com/@threads?hl=en")).toBe(canonical);
+    expect(normalizeThreadsUrl("  HTTP://www.threads.com/@Threads/#x  ")).toBe(canonical);
+    expect(normalizeThreadsUrl("www.threads.net/@hushh.one")).toBe("https://www.threads.com/@hushh.one");
+  });
+
+  it("rejects non-profile Threads URLs", () => {
+    expect(normalizeThreadsUrl("https://www.threads.com/login")).toBe("");
+    expect(normalizeThreadsUrl("https://www.threads.com/@threads/post/ABC")).toBe("");
+    expect(normalizeThreadsUrl("https://www.threads.com/search?q=ankit")).toBe("");
+    expect(normalizeThreadsUrl("https://www.threads.com/post/ABC")).toBe("");
+    expect(normalizeThreadsUrl("https://example.com/@threads")).toBe("");
+    expect(normalizeThreadsUrl("@threads")).toBe("");
+    expect(normalizeThreadsUrl("https://www.threads.com/@bad..name")).toBe("");
+  });
+
+  it("derives the validity flag and handle", () => {
+    expect(isThreadsUrl("threads.com/@threads")).toBe(true);
+    expect(isThreadsUrl("https://www.threads.com/@threads/post/ABC")).toBe(false);
+    expect(threadsHandleFromUrl("https://www.threads.com/@threads?hl=en")).toBe("threads");
   });
 });
 

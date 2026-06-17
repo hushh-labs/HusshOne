@@ -1,5 +1,8 @@
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type { InstagramProfileFull } from "@/lib/instagram/profile";
+import type { ThreadsProfileFull } from "@/lib/threads/profile";
+
+export type SocialProfileFull = InstagramProfileFull | ThreadsProfileFull;
 
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
@@ -55,7 +58,7 @@ export interface OneSubjectInput {
   linkedinProfile?: LinkedInProfileFull;
   /** Optional public social profiles enriched through standalone workers. These support
       Phase-1 footprint discovery, but LinkedIn remains the identity/career ground truth. */
-  socialProfiles?: InstagramProfileFull[];
+  socialProfiles?: SocialProfileFull[];
   consentAttestation: boolean;
   purpose: "self_audit";
 }
