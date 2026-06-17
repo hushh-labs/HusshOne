@@ -137,12 +137,14 @@ export async function signOutOfGoogle() {
  * token for a real Firebase session. From here on the app uses the normal Firebase
  * ID token (getFirebaseBearer) for every authed call — LinkedIn is just the front door.
  */
-export async function signInWithLinkedInCustomToken(customToken: string): Promise<User> {
+export async function signInWithOneCustomToken(customToken: string): Promise<User> {
   const auth = getAuth(getFirebaseApp());
   await ensurePersistence(auth);
   const result = await signInWithCustomToken(auth, customToken);
   return result.user;
 }
+
+export const signInWithLinkedInCustomToken = signInWithOneCustomToken;
 
 export async function getFirebaseBearer(user: User | null) {
   if (!user) return "";
@@ -150,12 +152,21 @@ export async function getFirebaseBearer(user: User | null) {
   return `Bearer ${token}`;
 }
 
-export function makeDevUser(): Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken"> {
+export function makeDevUser(): Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken" | "getIdTokenResult"> {
   return {
     uid: "dev-one-user",
     email: "dev.one@hushh.ai",
     displayName: "One Preview",
     photoURL: null,
     getIdToken: async () => "DEV_TOKEN",
+    getIdTokenResult: async () => ({
+      token: "DEV_TOKEN",
+      authTime: "",
+      issuedAtTime: "",
+      expirationTime: "",
+      signInProvider: null,
+      signInSecondFactor: null,
+      claims: { email: "dev.one@hushh.ai", name: "One Preview", provider: "dev" },
+    }),
   };
 }

@@ -5,6 +5,7 @@ export interface VerifiedOneUser {
   email: string;
   name: string | null;
   picture: string | null;
+  provider?: string | null;
 }
 
 function bearerToken(authHeader: string | null) {
@@ -24,6 +25,7 @@ export async function verifyOneRequest(authHeader: string | null): Promise<Verif
       email: "dev.one@hushh.ai",
       name: "One Preview",
       picture: null,
+      provider: "dev",
     };
   }
 
@@ -38,6 +40,7 @@ export async function verifyOneRequest(authHeader: string | null): Promise<Verif
       email,
       name: typeof decoded.name === "string" ? decoded.name : null,
       picture: typeof decoded.picture === "string" ? decoded.picture : null,
+      provider: typeof decoded.provider === "string" ? decoded.provider : null,
     };
   } catch (error) {
     if (error instanceof Error && "statusCode" in error) throw error;
