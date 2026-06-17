@@ -166,6 +166,8 @@ describe("OneExperience", () => {
     expect(screen.getByLabelText(/Instagram profile URL/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Threads profile URL/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/X profile URL/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue with profiles/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /use linkedin profile/i })).not.toBeInTheDocument();
     expect(vi.mocked(signInWithOneCustomToken)).toHaveBeenCalledWith("guest-custom-token");
   });
 
@@ -276,7 +278,7 @@ describe("OneExperience", () => {
 
   it("can connect optional socials from the first social URL intake before LinkedIn unlocks Send One", async () => {
     mocks.currentUser = guestSignedInUser();
-    mockFetch(async (url) => {
+    const fetchMock = mockFetch(async (url) => {
       if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
       if (url === "/api/instagram/enrich-url") {
         return Response.json({ ok: true, profile: instagramProfile });
@@ -293,17 +295,22 @@ describe("OneExperience", () => {
     fireEvent.change(screen.getByLabelText(/Instagram profile URL/i), {
       target: { value: "https://www.instagram.com/ankit_ya_i_am/" },
     });
-    fireEvent.click(screen.getAllByRole("button", { name: /add/i })[0]);
-    expect(await screen.findByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
-
     fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), {
       target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /use linkedin profile/i }));
+    fireEvent.click(screen.getByRole("button", { name: /continue with profiles/i }));
 
     expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(screen.getByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send one/i })).toBeDisabled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/instagram/enrich-url",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/linkedin/enrich-url",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("ignores scoped LinkedIn cache owned by another user", async () => {
