@@ -33,7 +33,7 @@ import {
   signInWithOneCustomToken,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
-import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
+import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { hasInstagramProfile, type InstagramAccessInfo, type InstagramProfileFull } from "@/lib/instagram/profile";
 import { hasThreadsProfile, type ThreadsAccessInfo, type ThreadsProfileFull } from "@/lib/threads/profile";
 import { hasXProfile, type XAccessInfo, type XProfileFull } from "@/lib/x/profile";
@@ -59,6 +59,7 @@ import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
 type Stage = "hydrating" | "landing" | "manual" | "connect" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
 type LayerStatus = "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
+type AuthProvider = "google" | "guest" | "dev" | "unknown";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken"> & Partial<Pick<User, "getIdTokenResult">>;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
@@ -119,18 +120,35 @@ function extractIdentity(user: ClientUser): Identity {
   return { name: normalizeName(user.displayName), email: normalizeEmail(user.email) };
 }
 
-async function extractIdentityWithClaims(user: ClientUser): Promise<Identity> {
+function detectAuthProvider(
+  user: ClientUser,
+  claims: Record<string, unknown> = {},
+  signInProvider?: string | null,
+): AuthProvider {
+  if (claims.provider === "guest" || user.uid.startsWith("guest:")) return "guest";
+  if (claims.provider === "dev" || user.uid === "dev-one-user") return "dev";
+  const firebaseClaims = claims.firebase && typeof claims.firebase === "object" ? claims.firebase as Record<string, unknown> : {};
+  if (signInProvider === "google.com" || firebaseClaims.sign_in_provider === "google.com") return "google";
+  return user.uid ? "google" : "unknown";
+}
+
+async function extractAuthContext(user: ClientUser): Promise<{ identity: Identity; provider: AuthProvider }> {
   const base = extractIdentity(user);
-  if (base.name && isValidEmail(base.email)) return base;
+  let claims: Record<string, unknown> = {};
+  let signInProvider: string | null = null;
   try {
     const result = await user.getIdTokenResult?.();
-    const claims = (result?.claims ?? {}) as Record<string, unknown>;
+    claims = (result?.claims ?? {}) as Record<string, unknown>;
+    signInProvider = typeof result?.signInProvider === "string" ? result.signInProvider : null;
     return {
-      name: normalizeName(base.name || claims.name),
-      email: normalizeEmail(base.email || claims.email),
+      identity: {
+        name: normalizeName(base.name || claims.name),
+        email: normalizeEmail(base.email || claims.email),
+      },
+      provider: detectAuthProvider(user, claims, signInProvider),
     };
   } catch {
-    return base;
+    return { identity: base, provider: detectAuthProvider(user, claims, signInProvider) };
   }
 }
 
@@ -680,15 +698,104 @@ function ConnectXInline({
   );
 }
 
+function ConnectLinkedInInline({
+  authUser,
+  onConnected,
+}: {
+  authUser: ClientUser | null;
+  onConnected: (profile: LinkedInProfileFull) => void;
+}) {
+  type Phase = "idle" | "fetching" | "connected" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [err, setErr] = useState("");
+  const normalized = normalizeLinkedInUrl(url);
+  const invalid = touched && !!url && !normalized;
+
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setTouched(true);
+    setErr("");
+    if (!authUser) {
+      setErr("Sign in again to add LinkedIn.");
+      setPhase("error");
+      return;
+    }
+    if (!normalized) {
+      setErr("Paste a valid LinkedIn personal profile URL.");
+      setPhase("error");
+      return;
+    }
+    setPhase("fetching");
+    track("linkedin_optional_connect_started");
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/linkedin/enrich-url", {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; profile?: LinkedInProfileFull; error?: string;
+      };
+      if (!res.ok || !payload.ok || !payload.profile) {
+        throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
+      }
+      setUrl("");
+      setPhase("connected");
+      onConnected(payload.profile);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
+      track("linkedin_optional_connect_failed", { reason: message.slice(0, 120) });
+      setErr(message);
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "fetching";
+  return (
+    <form className="field-group pc-required-link" onSubmit={submit} style={{ gap: 8 }}>
+      <label htmlFor="linkedin-optional-url">LinkedIn profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+      <div className="social-url-row">
+        <input
+          id="linkedin-optional-url"
+          className={"input" + (invalid ? " invalid" : "")}
+          placeholder="https://www.linkedin.com/in/your-profile"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            if (err) setErr("");
+          }}
+          onBlur={() => setTouched(true)}
+          autoComplete="url"
+          inputMode="url"
+          aria-invalid={invalid}
+        />
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
+          {busy ? "Adding..." : "Add"}
+        </button>
+      </div>
+      <span className="field-hint">
+        LinkedIn adds richer career context, but Google identity can start One.
+      </span>
+      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+    </form>
+  );
+}
+
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
 function PreCollect({
   user,
   profile,
   authUser,
+  authProvider,
+  requiresLinkedIn,
   instagramProfiles,
   threadsProfiles,
   xProfiles,
   socialPreferenceConsent,
+  onLinkedInConnected,
   onInstagramConnected,
   onThreadsConnected,
   onXConnected,
@@ -698,12 +805,15 @@ function PreCollect({
   busy,
 }: {
   user: Identity;
-  profile: LinkedInProfile | null;
+  profile: LinkedInProfileFull | null;
   authUser: ClientUser | null;
+  authProvider: AuthProvider;
+  requiresLinkedIn: boolean;
   instagramProfiles: InstagramProfileFull[];
   threadsProfiles: ThreadsProfileFull[];
   xProfiles: XProfileFull[];
   socialPreferenceConsent: boolean;
+  onLinkedInConnected: (profile: LinkedInProfileFull) => void;
   onInstagramConnected: (profile: InstagramProfileFull) => void;
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onXConnected: (profile: XProfileFull) => void;
@@ -714,6 +824,13 @@ function PreCollect({
 }) {
   const initials = initialsForName(user.name);
   const verifications = profile?.verifications ?? [];
+  const hasLinkedIn = hasUrlEnrichedLinkedInProfile(profile);
+  const anchorLabel = hasLinkedIn
+    ? "Verified via LinkedIn"
+    : authProvider === "dev"
+      ? "Preview identity"
+      : "Verified via Google";
+  const avatarUrl = profile?.pictureUrl || authUser?.photoURL || null;
   const socialCount = instagramProfiles.length + threadsProfiles.length + xProfiles.length;
   const needsSocialConsent = socialCount > 0;
   const magnetRef = useRef<HTMLSpanElement | null>(null);
@@ -729,7 +846,7 @@ function PreCollect({
     if (magnetRef.current) magnetRef.current.style.transform = "";
   };
   const submit = () => {
-    if (!busy && (!needsSocialConsent || socialPreferenceConsent)) onCollect();
+    if (!busy && (!requiresLinkedIn || hasLinkedIn) && (!needsSocialConsent || socialPreferenceConsent)) onCollect();
   };
   return (
     <div className="screen precollect screen-enter">
@@ -742,10 +859,10 @@ function PreCollect({
         <div className="pc-box">
           <div className="pc-id">
             <div className="pc-avatar">
-              {profile?.pictureUrl ? (
+              {avatarUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={profile.pictureUrl}
+                  src={avatarUrl}
                   alt=""
                   style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
                   onError={(e) => {
@@ -758,40 +875,51 @@ function PreCollect({
               <i className="scan" aria-hidden="true"></i>
             </div>
             <div className="pc-meta">
-              <div className="anchor">Verified via LinkedIn</div>
+              <div className="anchor">{anchorLabel}</div>
               <div className="nm">{user.name}</div>
               <div className="em">{user.email}</div>
               {profile?.headline ? <div className="em">{profile.headline}</div> : null}
             </div>
-            <div className="pc-verified" title={verifications.length ? `LinkedIn-verified: ${verifications.join(", ")}` : "Verified identity"}>
+            <div className="pc-verified" title={hasLinkedIn && verifications.length ? `LinkedIn-verified: ${verifications.join(", ")}` : "Verified identity"}>
               {Icons.check(13)}
             </div>
           </div>
 
           <div className="pc-phone">
             <span className="field-hint">
-              One will research the real you from your verified LinkedIn{verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.
+              {hasLinkedIn
+                ? `One will research the real you from your verified LinkedIn${verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.`
+                : "One will start from your signed-in Google identity. LinkedIn is optional, and adding it gives richer career context."}
             </span>
           </div>
 
-          <div className="field-group pc-required-link" style={{ gap: 8 }}>
-            <label htmlFor="linkedin-connected-url">LinkedIn profile URL <span style={{ color: "var(--muted)" }}>(required)</span></label>
-            <div className="social-url-row">
-              <input
-                id="linkedin-connected-url"
-                className="input"
-                value={profile?.profileUrl ?? ""}
-                readOnly
-                aria-label="Connected LinkedIn profile URL"
-              />
-              <button className="ghost-btn" type="button" onClick={onLinkedInChange}>
-                Change
-              </button>
+          {hasLinkedIn ? (
+            <div className="field-group pc-required-link" style={{ gap: 8 }}>
+              <label htmlFor="linkedin-connected-url">
+                LinkedIn profile URL <span style={{ color: "var(--muted)" }}>{requiresLinkedIn ? "(required)" : "(connected)"}</span>
+              </label>
+              <div className="social-url-row">
+                <input
+                  id="linkedin-connected-url"
+                  className="input"
+                  value={profile.profileUrl ?? ""}
+                  readOnly
+                  aria-label="Connected LinkedIn profile URL"
+                />
+                <button className="ghost-btn" type="button" onClick={onLinkedInChange}>
+                  Change
+                </button>
+              </div>
+              <span className="field-hint">
+                {Icons.check(12)} {requiresLinkedIn ? "LinkedIn is required for guest sessions." : "LinkedIn is connected as richer career context."}
+              </span>
             </div>
-            <span className="field-hint">
-              {Icons.check(12)} LinkedIn is the required career anchor for Phase 1.
-            </span>
-          </div>
+          ) : requiresLinkedIn ? null : (
+            <ConnectLinkedInInline
+              authUser={authUser}
+              onConnected={onLinkedInConnected}
+            />
+          )}
 
           <div className="pc-socials">
             <div className="pc-section-label">Optional social links</div>
@@ -826,7 +954,7 @@ function PreCollect({
         </div>
 
         <span className="magnet pc-actions" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
-          <button className="cta cta-xl" onClick={submit} disabled={busy || (needsSocialConsent && !socialPreferenceConsent)}>
+          <button className="cta cta-xl" onClick={submit} disabled={busy || (requiresLinkedIn && !hasLinkedIn) || (needsSocialConsent && !socialPreferenceConsent)}>
             {busy ? (
               <>
                 <span
@@ -2264,10 +2392,10 @@ function Disambiguate({
   );
 }
 
-/* ── C.5 Social URL intake — LinkedIn is mandatory, other socials optional ─
-   URL-first enrichment: LinkedIn still unlocks Phase 1, while optional social
-   profiles can be added on the same surface. No secret or worker URL is exposed
-   to the browser. No LinkedIn "skip" — the gate is mandatory. */
+/* ── C.5 Social URL intake — required only for guest LinkedIn anchoring ─
+   URL-first enrichment: guests must add LinkedIn before Phase 1, while optional
+   social profiles can be added on the same surface. No secret or worker URL is exposed
+   to the browser. */
 function ConnectLinkedIn({
   user,
   authUser,
@@ -2341,7 +2469,7 @@ function ConnectLinkedIn({
           <p className="eyebrow">One more step</p>
           <h1 className="display" style={{ fontSize: "clamp(26px,4vw,38px)" }}>Add your social profile URLs.</h1>
           <p className="sub" style={{ margin: "0 auto" }}>
-            LinkedIn is required as the career anchor. Instagram, Threads, and X are optional context.
+            LinkedIn is required for guest sessions. Instagram, Threads, and X are optional context.
           </p>
         </div>
 
@@ -2439,6 +2567,7 @@ function ConnectLinkedIn({
 export default function OneExperience() {
   const [stage, setStage] = useState<Stage>("hydrating");
   const [authUser, setAuthUser] = useState<ClientUser | null>(null);
+  const [authProvider, setAuthProvider] = useState<AuthProvider>("unknown");
   const [identity, setIdentity] = useState<Identity>({ name: "", email: "" });
   // The enriched LinkedIn profile pulled from the user's pasted URL (structured
   // experience/education/skills/certs) — fed into the scan as the authoritative ground truth.
@@ -2490,6 +2619,7 @@ export default function OneExperience() {
   const mode: "idle" | "collect" | "dashboard" =
     stage === "collect" ? "collect" : stage === "dashboard" ? "dashboard" : "idle";
 
+  const requiresLinkedIn = authProvider === "guest";
   const phaseIndex = Math.max(serverStage, shadowPhaseIndex(elapsedMs));
 
   const setPhase1LayerStatus = (status: LayerStatus) => {
@@ -2626,9 +2756,7 @@ export default function OneExperience() {
       return;
     }
     setIdentity(u);
-    // Mandatory connect gate: a user must connect LinkedIn before Send One. If they're
-    // already connected (returning session), go straight to precollect.
-    setStage(hasUrlEnrichedLinkedInProfile(liProfile) ? "precollect" : "connect");
+    setStage(requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile) ? "connect" : "precollect");
   };
 
   const onGuestStart = () => {
@@ -2637,6 +2765,7 @@ export default function OneExperience() {
     setGuestError("");
     setGuestBusy(false);
     setManualMode("guest");
+    setAuthProvider("guest");
     setIdentity({ name: "", email: "" });
     setStage("manual");
     track("guest_selected");
@@ -2656,7 +2785,7 @@ export default function OneExperience() {
     scopedDel(authUser, LS_LI_FULL);
     scopedDel(authUser, LS_LI_CONNECTED);
     setLiProfile(null);
-    setStage("connect");
+    setStage(requiresLinkedIn ? "connect" : "precollect");
   };
 
   const onInstagramConnected = (profile: InstagramProfileFull) => {
@@ -3020,8 +3149,10 @@ export default function OneExperience() {
   const hydrateFromUser = async (user: ClientUser, identityOverride?: Identity) => {
     try {
       setAuthUser(user);
-      // Google is the front door again: identity comes from the Google account.
-      const id = identityOverride ?? await extractIdentityWithClaims(user);
+      const context = await extractAuthContext(user);
+      const provider = context.provider;
+      setAuthProvider(provider);
+      const id = identityOverride ?? context.identity;
       setIdentity(id);
 
       // Rehydrate the connected LinkedIn FULL profile (pulled via the MCP connect step) so a
@@ -3153,22 +3284,19 @@ export default function OneExperience() {
       }
       setXProfiles(connectedXProfiles);
       const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
+      const linkedInRequired = provider === "guest";
 
-      // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
-      // "connect"; else "precollect". (Recovery branches below override this for returning
-      // users with an in-flight / completed scan.)
+      // Provider-aware connect gate: guest sessions need rich LinkedIn; Google/dev users
+      // can start from their signed-in identity and optionally add LinkedIn on precollect.
       const baseStage: Stage = !id.name || !isValidEmail(id.email)
         ? "manual"
-        : !linkedInConnected
+        : linkedInRequired && !linkedInConnected
           ? "connect"
           : "precollect";
       if (baseStage === "manual") setManualMode("auth");
 
-      // The URL-enriched LinkedIn profile is now mandatory before normal scan
-      // recovery. Old users may still have one_active_scan/one_last_scan from the
-      // previous flow; resuming those would bypass the LinkedIn URL gate and show
-      // "One is composing your report" before we have the new ground-truth JSON.
-      // Keep ?scan= email deep-links as explicit report-open requests.
+      // Guest sessions cannot resume normal scans until the required LinkedIn URL
+      // gate is satisfied. Keep ?scan= email deep-links as explicit report-open requests.
       const pending = safeGet("session", SS_PENDING);
       if (baseStage === "connect") {
         scopedDel(user, LS_ACTIVE_SCAN);
@@ -3324,6 +3452,7 @@ export default function OneExperience() {
       await signOutOfGoogle().catch(() => undefined);
       clearPersisted();
       setAuthUser(null);
+      setAuthProvider("unknown");
       setIgProfiles([]);
       setThreadsProfiles([]);
       setXProfiles([]);
@@ -3691,7 +3820,7 @@ export default function OneExperience() {
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
-    if (!hasUrlEnrichedLinkedInProfile(liProfile)) {
+    if (requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile)) {
       scopedDel(authUser, LS_LI_FULL);
       scopedDel(authUser, LS_LI_CONNECTED);
       setLiProfile(null);
@@ -3777,7 +3906,7 @@ export default function OneExperience() {
     setConfirmed([]);
     setDismissed([]);
     setDiscoverError("");
-    setStage(hasUrlEnrichedLinkedInProfile(liProfile) ? "precollect" : "connect");
+    setStage(requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile) ? "connect" : "precollect");
   };
 
   // From the calm "pending" (deadline-handoff) screen → re-check whether the scan finished.
@@ -3807,6 +3936,7 @@ export default function OneExperience() {
     clearPersisted();
     scanRunIdRef.current = null;
     setAuthUser(null);
+    setAuthProvider("unknown");
     setIdentity({ name: "", email: "" });
     setManualMode("auth");
     setGuestBusy(false);
@@ -3859,6 +3989,7 @@ export default function OneExperience() {
       clearPersisted();
       scanRunIdRef.current = null;
       setAuthUser(null);
+      setAuthProvider("unknown");
       setIdentity({ name: "", email: "" });
       setManualMode("auth");
       setGuestBusy(false);
@@ -3977,10 +4108,13 @@ export default function OneExperience() {
         user={identity}
         profile={liProfile}
         authUser={authUser}
+        authProvider={authProvider}
+        requiresLinkedIn={requiresLinkedIn}
         instagramProfiles={igProfiles}
         threadsProfiles={threadsProfiles}
         xProfiles={xProfiles}
         socialPreferenceConsent={socialPreferenceConsent}
+        onLinkedInConnected={onLinkedInConnected}
         onInstagramConnected={onInstagramConnected}
         onThreadsConnected={onThreadsConnected}
         onXConnected={onXConnected}

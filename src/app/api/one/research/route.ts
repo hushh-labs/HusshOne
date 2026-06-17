@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
-import { verifyOneRequest } from "@/lib/auth/verify";
+import { isGuestOneUser, oneUserProvider, verifyOneRequest } from "@/lib/auth/verify";
 import {
   isValidEmail,
   normalizeEmail,
   normalizeName,
   normalizeLinkedInUrl,
-  linkedinHandleFromUrl,
   normalizeInstagramUrl,
   instagramHandleFromUrl,
   normalizeThreadsUrl,
@@ -19,7 +18,7 @@ import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
 import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/progress";
-import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull, type LinkedInExperience, type LinkedInEducation, type LinkedInCertification } from "@/lib/linkedin/profile";
+import { appendLinkedInConfirmedProfile, validateLinkedInProfileInput } from "@/lib/one/linkedin-input";
 import type { InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "@/lib/instagram/profile";
 import type { ThreadsPost, ThreadsProfileFull } from "@/lib/threads/profile";
 import type { XProfileFull, XTimelineItem } from "@/lib/x/profile";
@@ -96,93 +95,6 @@ function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] | undefined 
     if (out.length >= 12) break;
   }
   return out.length ? out : undefined;
-}
-
-/** Sanitize the verified LinkedIn profile sent by the client (full MCP profile or legacy
-    OAuth profile) into a LinkedInProfileFull. The structured arrays must be sanitized here
-    too so they ride inside ScanRun.input — the recovery / image / deep routes read them
-    back from there. Everything is bounded so a hostile/huge body can't bloat the row. */
-function parseLinkedInProfile(value: unknown): LinkedInProfileFull | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const p = value as Record<string, unknown>;
-  const s = (v: unknown, max = 300) => (typeof v === "string" ? v.trim().slice(0, max) : "");
-  const sub = s(p.sub, 120);
-  if (!sub) return undefined;
-  const rec = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
-  const list = (v: unknown, max: number) =>
-    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map((x) => x.slice(0, 80)).slice(0, max) : [];
-
-  const experience: LinkedInExperience[] = (Array.isArray(p.experience) ? p.experience : [])
-    .slice(0, 25)
-    .map((it) => {
-      const e = rec(it);
-      return {
-        title: s(e.title, 160),
-        company: s(e.company, 160),
-        employmentType: s(e.employmentType, 80) || undefined,
-        location: s(e.location, 120) || undefined,
-        startDate: s(e.startDate, 40) || undefined,
-        endDate: s(e.endDate, 40) || undefined,
-        current: e.current === true || undefined,
-        description: s(e.description, 1000) || undefined,
-      };
-    })
-    .filter((e) => e.title || e.company);
-  const education: LinkedInEducation[] = (Array.isArray(p.education) ? p.education : [])
-    .slice(0, 15)
-    .map((it) => {
-      const e = rec(it);
-      return {
-        school: s(e.school, 160),
-        degree: s(e.degree, 120) || undefined,
-        field: s(e.field, 120) || undefined,
-        startDate: s(e.startDate, 40) || undefined,
-        endDate: s(e.endDate, 40) || undefined,
-        grade: s(e.grade, 80) || undefined,
-        description: s(e.description, 1000) || undefined,
-      };
-    })
-    .filter((e) => e.school);
-  const certifications: LinkedInCertification[] = (Array.isArray(p.certifications) ? p.certifications : [])
-    .slice(0, 25)
-    .map((it) => {
-      const e = rec(it);
-      return { name: s(e.name, 160), authority: s(e.authority, 120) || undefined, date: s(e.date, 40) || undefined };
-    })
-    .filter((c) => c.name);
-  const skills = list(p.skills, 50);
-  const rawStats = rec(p.profileStats);
-  const profileStats = {
-    followers: s(rawStats.followers, 80) || undefined,
-    connections: s(rawStats.connections, 80) || undefined,
-    isConnection: rawStats.isConnection === true || undefined,
-    premium: rawStats.premium === true || undefined,
-    creator: rawStats.creator === true || undefined,
-  };
-  const hasProfileStats = Object.values(profileStats).some((v) => v !== undefined);
-
-  return {
-    sub,
-    name: s(p.name, 120),
-    givenName: s(p.givenName, 80),
-    familyName: s(p.familyName, 80),
-    email: s(p.email, 200) || null,
-    emailVerified: p.emailVerified === true,
-    locale: s(p.locale, 20) || null,
-    pictureUrl: s(p.pictureUrl, 1000) || null,
-    profileUrl: s(p.profileUrl, 400) || null,
-    headline: s(p.headline, 300) || null,
-    verifications: list(p.verifications, 10),
-    grantedScopes: list(p.grantedScopes, 20),
-    source: p.source === "mcp" ? "mcp" : p.source === "oauth" ? "oauth" : p.source === "scraper" ? "scraper" : undefined,
-    location: s(p.location, 160) || null,
-    about: s(p.about, 2000) || null,
-    ...(experience.length ? { experience } : {}),
-    ...(education.length ? { education } : {}),
-    ...(skills.length ? { skills } : {}),
-    ...(certifications.length ? { certifications } : {}),
-    ...(hasProfileStats ? { profileStats } : {}),
-  };
 }
 
 function parseSocialProfiles(value: unknown): SocialProfileFull[] | undefined {
@@ -436,7 +348,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): OneSubjectInput {
+function normalizeInput(
+  body: Record<string, unknown>,
+  verifiedEmail: string,
+  options: { requireLinkedIn: boolean },
+): OneSubjectInput {
   const name = normalizeName(body.name).slice(0, NAME_MAX);
   const email = normalizeEmail(body.email || verifiedEmail);
   const latitude = numberOrUndefined(body.latitude);
@@ -459,33 +375,12 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Browser coordinates or zip code are required"), { statusCode: 400 });
   }
 
-  // LinkedIn URL-first flow: the scraper-enriched profile is the identity/career anchor.
-  // Fold its profile URL into confirmedProfiles so the existing LinkedIn-anchor logic +
-  // Phase-2 passthrough keep working.
-  const linkedinProfile = parseLinkedInProfile(body.linkedinProfile);
-  if (!hasUrlEnrichedLinkedInProfile(linkedinProfile)) {
-    throw Object.assign(
-      new Error("Paste your LinkedIn profile URL before Send One so One can use your full LinkedIn profile."),
-      { statusCode: 400 },
-    );
-  }
+  // Provider-aware LinkedIn flow: guests must provide the scraper-enriched profile;
+  // Google/dev can start from their signed-in identity. If LinkedIn is supplied by
+  // anyone, it must still be the full URL-enriched object, never OAuth-lite.
+  const linkedinProfile = validateLinkedInProfileInput(body.linkedinProfile, options);
   const socialProfiles = parseSocialProfiles(body.socialProfiles);
-  let confirmedProfiles = parseConfirmedProfiles(body.confirmedProfiles);
-  if (linkedinProfile?.profileUrl) {
-    const url = normalizeLinkedInUrl(linkedinProfile.profileUrl) || linkedinProfile.profileUrl;
-    const hasLinkedIn = (confirmedProfiles ?? []).some(
-      (p) => /linkedin/i.test(p.platform || "") || /linkedin\.com\/in\//i.test(p.url),
-    );
-    if (!hasLinkedIn) {
-      const anchor: ConfirmedProfile = {
-        platform: "LinkedIn",
-        handle: linkedinHandleFromUrl(url) || "",
-        url,
-        category: "Professional",
-      };
-      confirmedProfiles = [anchor, ...(confirmedProfiles ?? [])];
-    }
-  }
+  let confirmedProfiles = appendLinkedInConfirmedProfile(parseConfirmedProfiles(body.confirmedProfiles), linkedinProfile);
   for (const profile of socialProfiles ?? []) {
     const isThreads = profile.platform === "Threads";
     const isX = profile.platform === "X";
@@ -535,7 +430,7 @@ export async function POST(request: Request) {
   try {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
     const body = await parseBody(request);
-    input = normalizeInput(body, verified.email);
+    input = normalizeInput(body, verified.email, { requireLinkedIn: isGuestOneUser(verified) });
     // Client analytics session id (one_sid) — links this scan's server events to the
     // user's UI funnel events for end-to-end tracing.
     sessionId = typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : null;
@@ -551,6 +446,7 @@ export async function POST(request: Request) {
       email: input.email,
       name: input.name || verified.name,
       photoUrl: input.linkedinProfile?.pictureUrl ?? verified.picture,
+      provider: oneUserProvider(verified),
     });
     userId = user?.id ?? null;
     const scan = await createConsentAndScan({
