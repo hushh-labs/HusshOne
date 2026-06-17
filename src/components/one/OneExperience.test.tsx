@@ -313,6 +313,37 @@ describe("OneExperience", () => {
     );
   });
 
+  it("does not block guest intake when optional X enrichment hangs", async () => {
+    mocks.currentUser = guestSignedInUser();
+    const fetchMock = mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/x/enrich-url") {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url === "/api/linkedin/enrich-url") {
+        return Response.json({ ok: true, profile: richLinkedInProfile() });
+      }
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/X profile URL/i), {
+      target: { value: "https://x.com/sundarpichai" },
+    });
+    fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), {
+      target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /continue with profiles/i }));
+
+    expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/x/enrich-url",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("ignores scoped LinkedIn cache owned by another user", async () => {
     mocks.currentUser = signedInUser();
     scopedLocal("other-user", "one_li_full", JSON.stringify(richLinkedInProfile()));
