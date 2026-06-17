@@ -11,6 +11,8 @@ import {
   instagramHandleFromUrl,
   normalizeThreadsUrl,
   threadsHandleFromUrl,
+  normalizeXUrl,
+  xHandleFromUrl,
 } from "@/lib/auth/identity";
 import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
@@ -20,6 +22,7 @@ import { shadowPhaseIndex, SHADOW_PHASES, oneVoiceProgress } from "@/lib/ria/pro
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull, type LinkedInExperience, type LinkedInEducation, type LinkedInCertification } from "@/lib/linkedin/profile";
 import type { InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "@/lib/instagram/profile";
 import type { ThreadsPost, ThreadsProfileFull } from "@/lib/threads/profile";
+import type { XProfileFull, XTimelineItem } from "@/lib/x/profile";
 import type { ConfirmedProfile, LocationMode, OneSubjectInput, SocialProfileFull } from "@/lib/ria/types";
 import { sendScanResultEmails } from "@/lib/notifications/scan-email";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -40,9 +43,9 @@ const DEADLINE_MS = 1_650_000;
 // Don't START Phase-2 inline if less than this remains before the deadline; recovery
 // (a fresh request) runs synthesis instead so it isn't cut off mid-way.
 const PHASE2_RESERVE_MS = 200_000;
-// Threads standalone archive can collect up to 1024 visible posts. Keep the Phase-1 prompt
-// bounded until the later integration pass decides how much of that archive to summarize.
-const THREADS_PROMPT_POST_LIMIT = 300;
+// Standalone social archives can collect up to 1024+ visible items. Keep the Phase-1
+// prompt bounded; the preference layer indexes/synthesizes the richer archive separately.
+const SOCIAL_PROMPT_POST_LIMIT = 300;
 
 function clientIp(request: Request) {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
@@ -322,7 +325,7 @@ function parseSocialProfiles(value: unknown): SocialProfileFull[] | undefined {
             : undefined,
           visibleText: strOrNull(r.visibleText, 1200),
         });
-        if (threads.length >= THREADS_PROMPT_POST_LIMIT) break;
+        if (threads.length >= SOCIAL_PROMPT_POST_LIMIT) break;
       }
       if (threads.length) profile.recentThreads = threads;
       const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
@@ -330,6 +333,85 @@ function parseSocialProfiles(value: unknown): SocialProfileFull[] | undefined {
         .map((item) => s(item, 300))
         .filter(Boolean)
         .slice(0, 80);
+      if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
+      out.push(profile);
+    } else if (p.platform === "X") {
+      const profileUrl = normalizeXUrl(p.profileUrl);
+      const username = s(p.username, 60) || s(p.handle, 60) || (profileUrl ? xHandleFromUrl(profileUrl) : "");
+      const url = profileUrl || normalizeXUrl(`https://x.com/${username}`);
+      if (!username || !url) continue;
+      const stats = rec(p.stats);
+      const profile: XProfileFull = {
+        platform: "X",
+        username,
+        handle: s(p.handle, 60) || username,
+        displayName: strOrNull(p.displayName, 120),
+        bio: strOrNull(p.bio, 1000),
+        avatarUrl: strOrNull(p.avatarUrl, 1000),
+        bannerUrl: strOrNull(p.bannerUrl, 1000),
+        externalUrl: strOrNull(p.externalUrl, 500),
+        profileUrl: url,
+        source: "scraper",
+        connectedAt: strOrNull(p.connectedAt, 80) || new Date().toISOString(),
+      };
+      const location = strOrNull(p.location, 160);
+      const joinedDate = strOrNull(p.joinedDate, 80);
+      if (location) profile.location = location;
+      if (joinedDate) profile.joinedDate = joinedDate;
+      const isVerified = bool(p.isVerified);
+      const isProtected = bool(p.isProtected);
+      const isPrivate = bool(p.isPrivate);
+      if (typeof isVerified === "boolean") profile.isVerified = isVerified;
+      if (typeof isProtected === "boolean") profile.isProtected = isProtected;
+      if (typeof isPrivate === "boolean") profile.isPrivate = isPrivate;
+      const cleanStats = {
+        followers: strOrNull(stats.followers, 40),
+        following: strOrNull(stats.following, 40),
+        posts: strOrNull(stats.posts, 40),
+      };
+      if (Object.values(cleanStats).some(Boolean)) profile.stats = cleanStats;
+      const timelineItems: XTimelineItem[] = [];
+      for (const post of Array.isArray(p.timelineItems) ? p.timelineItems : []) {
+        const r = rec(post);
+        const postUrl = s(r.url, 500);
+        if (!/^https:\/\/x\.com\/[^/]+\/status\/\d+/i.test(postUrl)) continue;
+        const position = Number(r.position);
+        const tab = s(r.tab, 30).toLowerCase() === "replies" ? "replies" : "posts";
+        timelineItems.push({
+          url: postUrl,
+          id: strOrNull(r.id ?? r.postId ?? r.tweetId, 80),
+          tab,
+          ...(Number.isFinite(position) && position > 0 ? { position: Math.round(position) } : {}),
+          text: strOrNull(r.text, 2000),
+          timestamp: strOrNull(r.timestamp, 80),
+          mediaUrls: Array.isArray(r.mediaUrls)
+            ? r.mediaUrls.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 12)
+            : undefined,
+          thumbnailUrl: strOrNull(r.thumbnailUrl, 1000),
+          primaryPhotoUrl: strOrNull(r.primaryPhotoUrl ?? r.feedPhotoUrl, 1000),
+          externalLinks: Array.isArray(r.externalLinks)
+            ? r.externalLinks.map((item) => s(item, 1000)).filter((item) => /^https?:\/\//i.test(item)).slice(0, 8)
+            : undefined,
+          replyCount: strOrNull(r.replyCount, 40),
+          repostCount: strOrNull(r.repostCount, 40),
+          quoteCount: strOrNull(r.quoteCount, 40),
+          likeCount: strOrNull(r.likeCount, 40),
+          viewCount: strOrNull(r.viewCount, 40),
+          visibleLabels: Array.isArray(r.visibleLabels)
+            ? r.visibleLabels.map((item) => s(item, 120)).filter(Boolean).slice(0, 24)
+            : undefined,
+          visibleText: strOrNull(r.visibleText, 2000),
+          isReply: r.isReply === true || tab === "replies" || undefined,
+          replyContext: strOrNull(r.replyContext, 500),
+        });
+        if (timelineItems.length >= SOCIAL_PROMPT_POST_LIMIT) break;
+      }
+      if (timelineItems.length) profile.timelineItems = timelineItems;
+      const visibleProfileText = (Array.isArray(p.visibleProfileText) ? p.visibleProfileText : [])
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => s(item, 300))
+        .filter(Boolean)
+        .slice(0, 120);
       if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
       out.push(profile);
     }
@@ -406,7 +488,8 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
   }
   for (const profile of socialProfiles ?? []) {
     const isThreads = profile.platform === "Threads";
-    const url = isThreads ? normalizeThreadsUrl(profile.profileUrl) : normalizeInstagramUrl(profile.profileUrl);
+    const isX = profile.platform === "X";
+    const url = isX ? normalizeXUrl(profile.profileUrl) : isThreads ? normalizeThreadsUrl(profile.profileUrl) : normalizeInstagramUrl(profile.profileUrl);
     if (!url) continue;
     const exists = (confirmedProfiles ?? []).some(
       (p) => new RegExp(`^${profile.platform}$`, "i").test(p.platform || "") && p.url === url,
@@ -416,7 +499,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
         ...(confirmedProfiles ?? []),
         {
           platform: profile.platform,
-          handle: isThreads ? threadsHandleFromUrl(url) : instagramHandleFromUrl(url),
+          handle: isX ? xHandleFromUrl(url) : isThreads ? threadsHandleFromUrl(url) : instagramHandleFromUrl(url),
           url,
           category: "Social",
         },
@@ -434,6 +517,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     confirmedProfiles,
     linkedinProfile,
     socialProfiles,
+    socialPreferenceConsent: body.socialPreferenceConsent === true,
     consentAttestation: true,
     purpose: "self_audit",
   };

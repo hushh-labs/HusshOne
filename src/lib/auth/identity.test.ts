@@ -13,6 +13,9 @@ import {
   normalizeThreadsUrl,
   isThreadsUrl,
   threadsHandleFromUrl,
+  normalizeXUrl,
+  isXUrl,
+  xHandleFromUrl,
 } from "./identity";
 
 describe("identity helpers", () => {
@@ -76,6 +79,29 @@ describe("Threads profile helpers", () => {
     expect(isThreadsUrl("threads.com/@threads")).toBe(true);
     expect(isThreadsUrl("https://www.threads.com/@threads/post/ABC")).toBe(false);
     expect(threadsHandleFromUrl("https://www.threads.com/@threads?hl=en")).toBe("threads");
+  });
+});
+
+describe("X profile helpers", () => {
+  it("canonicalizes valid Twitter/X profile URLs", () => {
+    expect(normalizeXUrl("https://x.com/sundarpichai")).toBe("https://x.com/sundarpichai");
+    expect(normalizeXUrl("twitter.com/sundarpichai?lang=en")).toBe("https://x.com/sundarpichai");
+    expect(normalizeXUrl("  HTTP://mobile.twitter.com/SundarPichai/#x  ")).toBe("https://x.com/SundarPichai");
+  });
+
+  it("rejects non-profile Twitter/X URLs", () => {
+    expect(normalizeXUrl("https://x.com/home")).toBe("");
+    expect(normalizeXUrl("https://x.com/search?q=hushh")).toBe("");
+    expect(normalizeXUrl("https://x.com/sundarpichai/status/123")).toBe("");
+    expect(normalizeXUrl("https://twitter.com/i/flow/login")).toBe("");
+    expect(normalizeXUrl("https://example.com/sundarpichai")).toBe("");
+    expect(normalizeXUrl("@sundarpichai")).toBe("");
+  });
+
+  it("derives the validity flag and handle", () => {
+    expect(isXUrl("twitter.com/sundarpichai?lang=en")).toBe(true);
+    expect(isXUrl("https://x.com/sundarpichai/status/123")).toBe(false);
+    expect(xHandleFromUrl("https://x.com/sundarpichai?lang=en")).toBe("sundarpichai");
   });
 });
 

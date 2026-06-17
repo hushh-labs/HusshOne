@@ -51,6 +51,32 @@ interface SaveChatGptContextSnapshotInput {
   metadata?: Record<string, unknown> | null;
 }
 
+interface SaveUserPreferenceProfileInput {
+  firebaseUid: string;
+  scanRunId?: string | null;
+  status: string;
+  version: string;
+  profile: unknown;
+  inputHash?: string | null;
+  generatedAt?: string | null;
+  staleAfter?: string | null;
+}
+
+interface LogUserPreferenceRunInput {
+  firebaseUid: string;
+  scanRunId?: string | null;
+  status: string;
+  event: string;
+  version?: string | null;
+  inputHash?: string | null;
+  platforms?: unknown;
+  counts?: unknown;
+  selectedEvidenceIds?: unknown;
+  selectedSignalIds?: unknown;
+  durationMs?: number | null;
+  error?: string | null;
+}
+
 function hashValue(value?: string | null) {
   if (!value) return null;
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -286,6 +312,94 @@ export async function saveChatGptContextSnapshot(input: SaveChatGptContextSnapsh
       select: { id: true, createdAt: true, source: true },
     });
     return { snapshotId: row.id, savedAt: row.createdAt.toISOString(), source: row.source };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveUserPreferenceProfile(input: SaveUserPreferenceProfileInput) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const profile = JSON.parse(JSON.stringify(input.profile)) as Prisma.InputJsonValue;
+    const generatedAt = input.generatedAt ? new Date(input.generatedAt) : new Date();
+    const staleAfter = input.staleAfter ? new Date(input.staleAfter) : null;
+    return await prisma.userPreferenceProfile.upsert({
+      where: { userId: user.id },
+      create: {
+        userId: user.id,
+        scanRunId: input.scanRunId || null,
+        status: input.status,
+        version: input.version,
+        inputHash: input.inputHash || null,
+        profile,
+        generatedAt,
+        staleAfter,
+      },
+      update: {
+        scanRunId: input.scanRunId || null,
+        status: input.status,
+        version: input.version,
+        inputHash: input.inputHash || null,
+        profile,
+        generatedAt,
+        staleAfter,
+      },
+      select: { id: true, updatedAt: true },
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getUserPreferenceProfileByInputHash<TProfile = unknown>(
+  firebaseUid: string,
+  inputHash: string | null,
+): Promise<TProfile | null> {
+  if (!inputHash) return null;
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const row = await prisma.userPreferenceProfile.findFirst({
+      where: { userId: user.id, inputHash, status: "completed" },
+      select: { profile: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    return (row?.profile ?? null) as unknown as TProfile | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function logUserPreferenceRun(input: LogUserPreferenceRunInput) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const json = (value: unknown) => (value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue));
+    const row = await prisma.socialPreferenceRunLog.create({
+      data: {
+        userId: user.id,
+        scanRunId: input.scanRunId || null,
+        status: input.status,
+        event: input.event,
+        version: input.version || null,
+        inputHash: input.inputHash || null,
+        platforms: json(input.platforms),
+        counts: json(input.counts),
+        selectedEvidenceIds: json(input.selectedEvidenceIds),
+        selectedSignalIds: json(input.selectedSignalIds),
+        durationMs: typeof input.durationMs === "number" ? Math.round(input.durationMs) : null,
+        error: input.error || null,
+      },
+      select: { id: true, createdAt: true },
+    });
+    return { id: row.id, createdAt: row.createdAt.toISOString() };
   } catch {
     return null;
   }

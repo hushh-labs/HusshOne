@@ -146,7 +146,9 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText(/Working through public sources/i)).toBeInTheDocument();
+    expect(await screen.findByText("Your intelligence is assembling.")).toBeInTheDocument();
+    expect(screen.getAllByText("Preference intelligence").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Phase 1 dossier").length).toBeGreaterThan(0);
     expect(screen.queryByText("Paste your LinkedIn profile URL.")).not.toBeInTheDocument();
   });
 

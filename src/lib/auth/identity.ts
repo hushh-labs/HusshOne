@@ -175,3 +175,56 @@ export function threadsHandleFromUrl(value: unknown): string {
   if (!normalized) return "";
   return (new URL(normalized).pathname.split("/").filter(Boolean)[0] || "").replace(/^@/, "");
 }
+
+const X_RESERVED_SEGMENTS = new Set([
+  "account",
+  "compose",
+  "explore",
+  "hashtag",
+  "home",
+  "i",
+  "intent",
+  "login",
+  "messages",
+  "notifications",
+  "search",
+  "settings",
+  "share",
+  "signup",
+]);
+
+/** Canonicalize a user-pasted Twitter/X profile URL.
+ *  Accepts x.com/twitter.com direct handle paths only and returns x.com.
+ *  Rejects statuses/posts and app-internal routes. */
+export function normalizeXUrl(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const raw = value.trim();
+  if (!raw) return "";
+  const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let url: URL;
+  try {
+    url = new URL(withProto);
+  } catch {
+    return "";
+  }
+  const host = url.hostname.toLowerCase();
+  if (host !== "x.com" && host !== "www.x.com" && host !== "twitter.com" && host !== "www.twitter.com" && host !== "mobile.twitter.com") {
+    return "";
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 1) return "";
+  const handle = parts[0].trim().replace(/^@/, "");
+  if (!handle || X_RESERVED_SEGMENTS.has(handle.toLowerCase())) return "";
+  if (!/^[a-z0-9_]{1,15}$/i.test(handle)) return "";
+  return `https://x.com/${handle}`;
+}
+
+export function isXUrl(value: unknown): boolean {
+  return !!normalizeXUrl(value);
+}
+
+export function xHandleFromUrl(value: unknown): string {
+  const normalized = normalizeXUrl(value);
+  if (!normalized) return "";
+  return new URL(normalized).pathname.split("/").filter(Boolean)[0] || "";
+}

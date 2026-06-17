@@ -1,8 +1,10 @@
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type { InstagramProfileFull } from "@/lib/instagram/profile";
 import type { ThreadsProfileFull } from "@/lib/threads/profile";
+import type { XProfileFull } from "@/lib/x/profile";
+import type { UserPreferenceProfile } from "@/lib/social-intelligence/preference-profile";
 
-export type SocialProfileFull = InstagramProfileFull | ThreadsProfileFull;
+export type SocialProfileFull = InstagramProfileFull | ThreadsProfileFull | XProfileFull;
 
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";
@@ -59,6 +61,8 @@ export interface OneSubjectInput {
   /** Optional public social profiles enriched through standalone workers. These support
       Phase-1 footprint discovery, but LinkedIn remains the identity/career ground truth. */
   socialProfiles?: SocialProfileFull[];
+  /** Explicit consent to build and periodically refresh the social preference layer. */
+  socialPreferenceConsent?: boolean;
   consentAttestation: boolean;
   purpose: "self_audit";
 }
@@ -331,6 +335,13 @@ export interface OneDashboardResult {
   imageStartedAt?: number;
   /** Citations gathered by the image pipeline. */
   imageCitations?: unknown[];
+
+  /* ── Social preference intelligence ───────────────────────────────────────
+     Filled by /api/one/research/[id]/preferences. This can complete before the
+     main dossier because it reads the stored scan input, not the Phase-1 report. */
+  preferenceStatus?: "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
+  preferenceProfile?: UserPreferenceProfile;
+  preferenceStartedAt?: number;
 }
 
 export interface PersonAuditStatus {

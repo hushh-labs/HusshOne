@@ -23,6 +23,11 @@ model OneUser {
   linkedInConnection LinkedInConnection?
   socialConnections SocialConnection[]
   socialAccessRequests SocialAccessRequest[]
+  socialContentItems SocialContentItem[]
+  socialMediaAssets SocialMediaAsset[]
+  socialRefreshJobs SocialRefreshJob[]
+  preferenceProfile UserPreferenceProfile?
+  preferenceRunLogs SocialPreferenceRunLog[]
   chatGptContextSnapshots ChatGptContextSnapshot[]
 
   @@index([email])
@@ -92,6 +97,89 @@ model SocialAccessRequest {
   @@index([nextCheckAt])
 }
 
+// Indexed visible social posts/replies/media context. This is the app-facing
+// source-of-truth ledger; larger timeline/vector backends can mirror from here.
+model SocialContentItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  platform    String
+  publicId    String
+  itemId      String
+  itemUrl     String
+  itemType    String
+  text        String?
+  timestamp   DateTime?
+  media       Json?
+  metrics     Json?
+  features    Json?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @updatedAt
+  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform, itemId])
+  @@index([userId, platform, timestamp])
+  @@index([userId, lastSeenAt])
+}
+
+// Safe media-analysis metadata. Never store cookies, localStorage, browser
+// secrets, or private fetch material here.
+model SocialMediaAsset {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  platform    String
+  assetHash   String
+  sourceUrl   String
+  cacheUri    String?
+  analysis    Json?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @updatedAt
+  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform, assetHash])
+  @@index([userId, platform])
+}
+
+// Queue/lock row for keeping connected socials fresh after the first scan.
+model SocialRefreshJob {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  platform    String
+  publicId    String
+  status      String   @default("queued")
+  priority    Int      @default(0)
+  attempts    Int      @default(0)
+  lockedAt    DateTime?
+  nextRunAt   DateTime @default(now())
+  lastError   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextRunAt, priority])
+  @@index([userId, platform, publicId])
+}
+
+// Latest derived preference graph shown at the top of the One dossier.
+model UserPreferenceProfile {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @unique @db.Uuid
+  scanRunId   String?  @db.Uuid
+  status      String   @default("completed")
+  version     String
+  inputHash   String?
+  profile     Json
+  generatedAt DateTime @default(now())
+  staleAfter  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scanRun     ScanRun? @relation(fields: [scanRunId], references: [id], onDelete: SetNull)
+
+  @@index([userId, updatedAt])
+  @@index([staleAfter])
+}
+
 // The user's connected LinkedIn (full profile) from the MCP "Connect LinkedIn" step.
 // 1:1 with OneUser so a returning session re-scans with the ground truth without
 // re-logging into LinkedIn. sessionValid flips false when the server session expires
@@ -152,9 +240,37 @@ model ScanRun {
   user            OneUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
   auditJobs       AuditJob[]
   notifications   OneNotification[]
+  preferenceProfiles UserPreferenceProfile[]
+  preferenceRunLogs SocialPreferenceRunLog[]
 
   @@index([userId, createdAt])
   @@index([status])
+}
+
+// Per-run audit trail for the optional social preference layer. This keeps
+// selection/debug metadata outside the main dossier while preserving the answer
+// to "which evidence/signals were selected for this scan?"
+model SocialPreferenceRunLog {
+  id                  String   @id @default(uuid()) @db.Uuid
+  userId              String   @db.Uuid
+  scanRunId           String?  @db.Uuid
+  status              String
+  event               String
+  version             String?
+  inputHash           String?
+  platforms           Json?
+  counts              Json?
+  selectedEvidenceIds Json?
+  selectedSignalIds   Json?
+  durationMs          Int?
+  error               String?
+  createdAt           DateTime @default(now())
+  user                OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scanRun             ScanRun? @relation(fields: [scanRunId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([scanRunId, createdAt])
+  @@index([status, event])
 }
 
 model AuditJob {
