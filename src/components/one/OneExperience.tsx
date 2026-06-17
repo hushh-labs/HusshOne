@@ -2264,18 +2264,30 @@ function Disambiguate({
   );
 }
 
-/* ── C.5 LinkedIn profile URL — mandatory step after Google sign-in ────────
-   URL-first enrichment: the user pastes their LinkedIn personal-profile URL, then
-   the server calls the standalone cloud enrichment worker. No secret or worker URL
-   is exposed to the browser. No "skip" — the gate is mandatory. */
+/* ── C.5 Social URL intake — LinkedIn is mandatory, other socials optional ─
+   URL-first enrichment: LinkedIn still unlocks Phase 1, while optional social
+   profiles can be added on the same surface. No secret or worker URL is exposed
+   to the browser. No LinkedIn "skip" — the gate is mandatory. */
 function ConnectLinkedIn({
   user,
   authUser,
+  instagramProfiles,
+  threadsProfiles,
+  xProfiles,
   onConnected,
+  onInstagramConnected,
+  onThreadsConnected,
+  onXConnected,
 }: {
   user: Identity;
   authUser: ClientUser;
+  instagramProfiles: InstagramProfileFull[];
+  threadsProfiles: ThreadsProfileFull[];
+  xProfiles: XProfileFull[];
   onConnected: (profile: LinkedInProfileFull) => void;
+  onInstagramConnected: (profile: InstagramProfileFull) => void;
+  onThreadsConnected: (profile: ThreadsProfileFull) => void;
+  onXConnected: (profile: XProfileFull) => void;
 }) {
   type Phase = "idle" | "fetching" | "connected" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
@@ -2323,17 +2335,17 @@ function ConnectLinkedIn({
   const busy = phase === "fetching";
 
   return (
-    <div className="screen screen-enter">
-      <div className="content" style={{ gap: 22 }}>
+    <div className="screen social-connect screen-enter">
+      <div className="content social-connect-content">
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <p className="eyebrow">One more step</p>
-          <h1 className="display" style={{ fontSize: "clamp(26px,4vw,38px)" }}>Paste your LinkedIn profile URL.</h1>
+          <h1 className="display" style={{ fontSize: "clamp(26px,4vw,38px)" }}>Add your social profile URLs.</h1>
           <p className="sub" style={{ margin: "0 auto" }}>
-            One uses your profile as the career anchor so it researches the real you, not a stranger who shares your name.
+            LinkedIn is required as the career anchor. Instagram, Threads, and X are optional context.
           </p>
         </div>
 
-        <form className="card" onSubmit={submit}>
+        <div className="card social-connect-card">
           <div className="pc-id">
             <div className="pc-avatar"><span>{initialsForName(user.name)}</span></div>
             <div className="pc-meta">
@@ -2352,6 +2364,9 @@ function ConnectLinkedIn({
                 setUrl(e.target.value);
                 if (err) setErr("");
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submit();
+              }}
               onBlur={() => setTouched(true)}
               autoComplete="url"
               inputMode="url"
@@ -2361,8 +2376,28 @@ function ConnectLinkedIn({
               Use your personal profile link, not a company, jobs, feed, or search page.
             </span>
           </div>
+
+          <div className="pc-socials">
+            <div className="pc-section-label">Optional social context</div>
+            <ConnectInstagramInline
+              authUser={authUser}
+              profiles={instagramProfiles}
+              onConnected={onInstagramConnected}
+            />
+            <ConnectThreadsInline
+              authUser={authUser}
+              profiles={threadsProfiles}
+              onConnected={onThreadsConnected}
+            />
+            <ConnectXInline
+              authUser={authUser}
+              profiles={xProfiles}
+              onConnected={onXConnected}
+            />
+          </div>
+
           <div className="cta-block">
-            <button className="solid-cta" type="submit" disabled={busy || phase === "connected" || !normalized}>
+            <button className="solid-cta" type="button" onClick={() => void submit()} disabled={busy || phase === "connected" || !normalized}>
               {busy ? (
                 <>
                   <span
@@ -2388,7 +2423,7 @@ function ConnectLinkedIn({
               )}
             </button>
           </div>
-        </form>
+        </div>
 
         {err ? (
           <p className="l-hero-error" role="alert">
@@ -3922,7 +3957,18 @@ export default function OneExperience() {
     );
   else if (stage === "connect")
     view = (
-      <ConnectLinkedIn key="conn" user={identity} authUser={authUser as ClientUser} onConnected={onLinkedInConnected} />
+      <ConnectLinkedIn
+        key="conn"
+        user={identity}
+        authUser={authUser as ClientUser}
+        instagramProfiles={igProfiles}
+        threadsProfiles={threadsProfiles}
+        xProfiles={xProfiles}
+        onConnected={onLinkedInConnected}
+        onInstagramConnected={onInstagramConnected}
+        onThreadsConnected={onThreadsConnected}
+        onXConnected={onXConnected}
+      />
     );
   else if (stage === "precollect")
     view = (
