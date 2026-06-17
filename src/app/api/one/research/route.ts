@@ -344,6 +344,23 @@ function statusCodeOf(error: unknown) {
   return null;
 }
 
+function upstreamStatusOf(error: unknown) {
+  if (typeof error === "object" && error && "upstreamStatus" in error) {
+    const status = Number((error as { upstreamStatus?: number }).upstreamStatus);
+    return Number.isFinite(status) ? status : null;
+  }
+  return null;
+}
+
+function isTransientResearchPollError(error: unknown) {
+  const upstreamStatus = upstreamStatusOf(error);
+  if (upstreamStatus !== null) {
+    return [408, 429, 500, 502, 503, 504].includes(upstreamStatus);
+  }
+  const message = error instanceof Error ? error.message : "";
+  return /timed out|timeout/i.test(message);
+}
+
 function researchStartMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : "";
   if (/body\/question must NOT have more than 40000 characters/i.test(raw)) {
@@ -552,7 +569,31 @@ export async function POST(request: Request) {
             await handoffDeadline(Date.now() - startedAt, "phase1");
             return;
           }
-          const dr = await pollResearch(jobId);
+          let dr;
+          try {
+            dr = await pollResearch(jobId);
+          } catch (pollError) {
+            if (!isTransientResearchPollError(pollError)) {
+              throw pollError;
+            }
+            const elapsedMs = Date.now() - startedAt;
+            console.warn(
+              JSON.stringify({
+                event: "one.research.poll_transient_error",
+                severity: "WARNING",
+                scanRunId,
+                sessionId,
+                email: input.email,
+                jobId,
+                elapsedMs,
+                message: pollError instanceof Error ? pollError.message : "Deep Research status check failed",
+                upstreamStatus: upstreamStatusOf(pollError),
+              }),
+            );
+            send({ type: "progress", stage: stageNow(), elapsedMs, scanning: scanningNow() });
+            await sleep(POLL_INTERVAL_MS);
+            continue;
+          }
           if (dr.progress) latestRawProgress = dr.progress; // keep the latest real signal
           if (dr.status === "completed" && dr.report) {
             report = dr.report;
