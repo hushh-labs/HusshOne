@@ -20,6 +20,8 @@ import {
   instagramHandleFromUrl,
   normalizeThreadsUrl,
   threadsHandleFromUrl,
+  normalizeXUrl,
+  xHandleFromUrl,
 } from "@/lib/auth/identity";
 import {
   completeGoogleRedirect,
@@ -33,6 +35,7 @@ import {
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { hasInstagramProfile, type InstagramAccessInfo, type InstagramProfileFull } from "@/lib/instagram/profile";
 import { hasThreadsProfile, type ThreadsAccessInfo, type ThreadsProfileFull } from "@/lib/threads/profile";
+import { hasXProfile, type XAccessInfo, type XProfileFull } from "@/lib/x/profile";
 import type {
   ConfirmedProfile,
   DashboardCategoryMap,
@@ -54,6 +57,7 @@ import DossierReport from "./DossierReport";
 import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
 type Stage = "hydrating" | "landing" | "manual" | "connect" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
+type LayerStatus = "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
@@ -125,6 +129,7 @@ const LS_LI_FULL = "one_li_full"; // enriched LinkedIn profile → survives refr
 const LS_LI_CONNECTED = "one_li_connected"; // legacy marker; the profile payload itself now drives the mandatory gate
 const LS_IG_FULL = "one_ig_full"; // optional Instagram public profile context → survives refresh like LinkedIn
 const LS_THREADS_FULL = "one_threads_full"; // optional Threads visible profile context → survives refresh like Instagram
+const LS_X_FULL = "one_x_full"; // optional X visible profile context → survives refresh like Instagram/Threads
 const SS_SCAN_RUN = "one_scan_run"; // legacy in-flight key (session-scoped) — cleared only
 const SS_DEV_AUTH = "one_dev_auth"; // restore the dev user on refresh (no Firebase session)
 const SS_PENDING = "one_pending_scan"; // deep-link (?scan=) awaiting sign-in
@@ -165,6 +170,7 @@ function clearPersisted() {
   safeDel("local", LS_LI_CONNECTED);
   safeDel("local", LS_IG_FULL);
   safeDel("local", LS_THREADS_FULL);
+  safeDel("local", LS_X_FULL);
   safeDel("session", SS_SCAN_RUN); // legacy
   safeDel("session", SS_DEV_AUTH);
   safeDel("session", SS_PENDING);
@@ -513,6 +519,113 @@ function ConnectThreadsInline({
   );
 }
 
+function ConnectXInline({
+  authUser,
+  profiles,
+  onConnected,
+}: {
+  authUser: ClientUser | null;
+  profiles: XProfileFull[];
+  onConnected: (profile: XProfileFull) => void;
+}) {
+  type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [err, setErr] = useState("");
+  const [pendingAccess, setPendingAccess] = useState<XAccessInfo | null>(null);
+  const normalized = normalizeXUrl(url);
+  const invalid = touched && !!url && !normalized;
+  const connected = profiles[0] ?? null;
+
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setTouched(true);
+    setErr("");
+    if (!authUser) {
+      setErr("Sign in again to add X.");
+      setPhase("error");
+      return;
+    }
+    if (!normalized) {
+      setErr("Paste a valid X profile URL.");
+      setPhase("error");
+      return;
+    }
+    setPhase("fetching");
+    setPendingAccess(null);
+    track("x_connect_started");
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/x/enrich-url", {
+        method: "POST",
+        headers: { Authorization: authorization, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: normalized }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean; profile?: XProfileFull | null; error?: string; code?: string; access?: XAccessInfo;
+      };
+      if (res.status === 202 && payload.code === "x_access_pending" && payload.access) {
+        setPendingAccess(payload.access);
+        setUrl("");
+        setPhase("pending");
+        track("x_connect_pending", { state: payload.access.state });
+        return;
+      }
+      if (!res.ok || !payload.ok || !hasXProfile(payload.profile)) {
+        throw new Error(payload.error || "We could not read this X profile.");
+      }
+      setUrl("");
+      setPhase("connected");
+      onConnected(payload.profile);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "We could not read this X profile.";
+      track("x_connect_failed", { reason: message.slice(0, 120) });
+      setErr(message);
+      setPhase("error");
+    }
+  };
+
+  const busy = phase === "fetching";
+  return (
+    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+      <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          id="x-url"
+          className={"input" + (invalid ? " invalid" : "")}
+          placeholder="https://x.com/sundarpichai"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            if (err) setErr("");
+            if (pendingAccess) setPendingAccess(null);
+          }}
+          onBlur={() => setTouched(true)}
+          autoComplete="url"
+          inputMode="url"
+          aria-invalid={invalid}
+        />
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+          {busy ? "Adding..." : "Add"}
+        </button>
+      </div>
+      {connected ? (
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      ) : pendingAccess ? (
+        <span className="field-hint">
+          Follow request sent. X will be added after owner approval.
+        </span>
+      ) : (
+        <span className="field-hint">Direct public X/Twitter profile link only.</span>
+      )}
+      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+    </form>
+  );
+}
+
 /* ── C. Pre-collection — "The Moment Before Discovery" ──── */
 function PreCollect({
   user,
@@ -520,8 +633,12 @@ function PreCollect({
   authUser,
   instagramProfiles,
   threadsProfiles,
+  xProfiles,
+  socialPreferenceConsent,
   onInstagramConnected,
   onThreadsConnected,
+  onXConnected,
+  onSocialPreferenceConsentChange,
   onCollect,
   busy,
 }: {
@@ -530,13 +647,19 @@ function PreCollect({
   authUser: ClientUser | null;
   instagramProfiles: InstagramProfileFull[];
   threadsProfiles: ThreadsProfileFull[];
+  xProfiles: XProfileFull[];
+  socialPreferenceConsent: boolean;
   onInstagramConnected: (profile: InstagramProfileFull) => void;
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
+  onXConnected: (profile: XProfileFull) => void;
+  onSocialPreferenceConsentChange: (value: boolean) => void;
   onCollect: () => void;
   busy: boolean;
 }) {
   const initials = initialsForName(user.name);
   const verifications = profile?.verifications ?? [];
+  const socialCount = instagramProfiles.length + threadsProfiles.length + xProfiles.length;
+  const needsSocialConsent = socialCount > 0;
   const magnetRef = useRef<HTMLSpanElement | null>(null);
   const onMove = (e: React.MouseEvent) => {
     const el = magnetRef.current;
@@ -550,7 +673,7 @@ function PreCollect({
     if (magnetRef.current) magnetRef.current.style.transform = "";
   };
   const submit = () => {
-    if (!busy) onCollect();
+    if (!busy && (!needsSocialConsent || socialPreferenceConsent)) onCollect();
   };
   return (
     <div className="screen precollect screen-enter">
@@ -605,10 +728,28 @@ function PreCollect({
             profiles={threadsProfiles}
             onConnected={onThreadsConnected}
           />
+          <ConnectXInline
+            authUser={authUser}
+            profiles={xProfiles}
+            onConnected={onXConnected}
+          />
+          <label className="field-hint" style={{ display: "flex", gap: 9, alignItems: "flex-start", paddingLeft: 0, marginTop: 2 }}>
+            <input
+              type="checkbox"
+              checked={socialPreferenceConsent}
+              onChange={(e) => onSocialPreferenceConsentChange(e.target.checked)}
+              disabled={!needsSocialConsent}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              Allow One to analyze and periodically refresh visible content from connected social URLs for preference intelligence.
+              {!needsSocialConsent ? " Add Instagram, Threads, or X to enable this layer." : ""}
+            </span>
+          </label>
         </div>
 
         <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
-          <button className="cta cta-xl" onClick={submit} disabled={busy}>
+          <button className="cta cta-xl" onClick={submit} disabled={busy || (needsSocialConsent && !socialPreferenceConsent)}>
             {busy ? (
               <>
                 <span
@@ -1012,6 +1153,258 @@ function RichCards({ rich: rawRich }: { rich: NonNullable<OneDashboardResult["ri
   return <>{cards}</>;
 }
 
+function PreferenceIntelligence({
+  profile,
+  status,
+}: {
+  profile?: OneDashboardResult["preferenceProfile"];
+  status?: OneDashboardResult["preferenceStatus"];
+}) {
+  if (!profile) {
+    if (!status || status === "idle") return null;
+    const copy =
+      status === "skipped"
+        ? {
+            title: "Preference intelligence is not enabled for this scan.",
+            body: "Connect a social profile and allow preference intelligence to build this layer.",
+          }
+        : status === "failed"
+          ? {
+              title: "Preference intelligence needs another run.",
+              body: "The main dossier can continue while this layer is retried later.",
+            }
+          : status === "pending"
+            ? {
+                title: "Preference intelligence is queued.",
+                body: "One will keep this layer warm while the dossier continues.",
+              }
+            : {
+                title: "One is reading your social patterns.",
+                body: "Visible posts, captions, media, links, and counters are being clustered into preference signals.",
+              };
+    return (
+      <section className={`pref-intel pref-intel-loading pref-intel-${status}`}>
+        <div>
+          <p className="eyebrow">Social preference intelligence</p>
+          <h2>{copy.title}</h2>
+          <p>{copy.body}</p>
+        </div>
+        {status === "running" ? <span className="pref-spinner" aria-hidden="true" /> : null}
+      </section>
+    );
+  }
+
+  const metrics = [
+    ["items", profile.updatedFrom.indexedItems],
+    ["media", profile.updatedFrom.mediaAssets],
+    ["links", profile.updatedFrom.externalLinks],
+    ["signals", profile.topSignals.length],
+    ["selected", profile.selection?.selectedEvidenceCount ?? 0],
+  ];
+  const domainLabel = (domain: string) =>
+    domain
+      .split("_")
+      .map((part) => part[0]?.toUpperCase() + part.slice(1))
+      .join(" ");
+  const selectedPlatforms = profile.selection
+    ? Object.entries(profile.selection.selectedByPlatform).filter(([, count]) => count > 0)
+    : [];
+  const selectedDomains = profile.selection
+    ? Object.entries(profile.selection.byDomain)
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+    : [];
+
+  return (
+    <section className="pref-intel">
+      <div className="pref-top">
+        <div>
+          <p className="eyebrow">Social preference intelligence</p>
+          <h2>{profile.summary}</h2>
+          <p>
+            Updated {new Date(profile.generatedAt).toLocaleString()} from {profile.updatedFrom.platforms.join(", ") || "connected socials"}.
+          </p>
+        </div>
+        <div className="pref-metrics" aria-label="Preference intelligence metrics">
+          {metrics.map(([label, value]) => (
+            <span key={label}>
+              <b>{value}</b>
+              <em>{label}</em>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {profile.selection ? (
+        <div className="pref-tracking" aria-label="Preference selection tracking">
+          <div>
+            <span>Selection tracking</span>
+            <strong>
+              {profile.selection.selectedEvidenceCount} / {profile.selection.evidencePoolSize} evidence items selected
+            </strong>
+            <small>
+              cap {profile.selection.selectionRules.evidenceCap}
+              {profile.selection.droppedEvidenceCount ? ` · ${profile.selection.droppedEvidenceCount} dropped by cap` : " · no evidence dropped"}
+            </small>
+          </div>
+          <div className="pref-tracking-pills">
+            {selectedPlatforms.map(([platform, count]) => (
+              <span key={platform}>
+                {platform}: {count}
+              </span>
+            ))}
+            {selectedDomains.map(([domain, count]) => (
+              <span key={domain}>
+                {domainLabel(domain)}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {profile.topSignals.length ? (
+        <div className="pref-signals">
+          {profile.topSignals.slice(0, 8).map((signal) => (
+            <div className="pref-signal" key={signal.id}>
+              <span>{domainLabel(signal.domain)}</span>
+              <strong>{signal.label}</strong>
+              <small>
+                {signal.confidence} confidence · {Math.round(signal.strength * 100)} strength
+                {signal.needsConfirmation ? " · needs confirmation" : ""}
+              </small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {profile.collage.length ? (
+        <div className="pref-collage" aria-label="Preference evidence collage">
+          {profile.collage.slice(0, 12).map((item) => (
+            <a
+              key={item.evidenceId}
+              href={item.postUrl ?? undefined}
+              target="_blank"
+              rel="noreferrer"
+              className="pref-shot"
+              title={item.reason}
+            >
+              {item.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={item.imageUrl} alt="" loading="lazy" />
+              ) : (
+                <span className="pref-shot-text">{item.caption || item.reason}</span>
+              )}
+              <span className="pref-shot-meta">
+                <b>{item.platform}</b>
+                <em>{item.signals.slice(0, 2).join(" · ") || item.reason}</em>
+              </span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function LayerStateLine({
+  label,
+  status,
+  detail,
+}: {
+  label: string;
+  status: LayerStatus;
+  detail: string;
+}) {
+  const text = status === "idle" ? "waiting" : status;
+  return (
+    <div className={`layer-line layer-line-${status}`}>
+      <span>{label}</span>
+      <strong>{text}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function ProgressiveDashboardShell({
+  phase1Status,
+  phase1Message,
+  preferenceStatus,
+  preferenceProfile,
+  elapsedMs,
+  onReset,
+}: {
+  phase1Status: LayerStatus;
+  phase1Message: string | null;
+  preferenceStatus: LayerStatus;
+  preferenceProfile?: OneDashboardResult["preferenceProfile"];
+  elapsedMs: number;
+  onReset: () => void;
+}) {
+  const phaseDetail =
+    phase1Status === "completed"
+      ? "Dossier is ready."
+      : phase1Status === "pending"
+        ? "Still running in the background. Email fallback is active."
+        : phase1Status === "failed"
+          ? "Dossier hit an error."
+          : phase1Message || "One is reading public sources and composing the dossier.";
+  const preferenceDetail =
+    preferenceStatus === "completed"
+      ? "Preference layer is ready."
+      : preferenceStatus === "skipped"
+        ? "No preference layer for this scan."
+        : preferenceStatus === "failed"
+          ? "Preference layer hit an error."
+          : "Building from connected social context.";
+
+  return (
+    <div className="dash progressive-dash" data-screen-label="Dashboard">
+      <div className="dash-inner">
+        <div className="dash-head screen-enter">
+          <p className="eyebrow">Gathered by One</p>
+          <h1 className="display">Your intelligence is assembling.</h1>
+          <p className="sub">Preference intelligence and the Phase 1 dossier are running as separate layers.</p>
+        </div>
+
+        <div className="layer-board" aria-label="One scan layer status">
+          <LayerStateLine label="Preference intelligence" status={preferenceStatus} detail={preferenceDetail} />
+          <LayerStateLine label="Phase 1 dossier" status={phase1Status} detail={`${phaseDetail} · ${mmss(elapsedMs)}`} />
+        </div>
+
+        <PreferenceIntelligence profile={preferenceProfile} status={preferenceStatus} />
+
+        <section className="dossier-shell" aria-busy={phase1Status === "running"}>
+          <div>
+            <p className="eyebrow">Phase 1 dossier</p>
+            <h2>{phase1Status === "pending" ? "The dossier is still running." : "One is preparing your dossier."}</h2>
+            <p>{phaseDetail}</p>
+          </div>
+          <div className="dossier-skeleton" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        </section>
+
+        <div className="dash-foot">
+          <div className="privacy-row">
+            <span className="p">{Icons.shield(14)} Private by default</span>
+            <span className="p">{Icons.check(14)} Layers update independently</span>
+            <span className="p">{Icons.check(14)} Email fallback active</span>
+          </div>
+          <div className="state-actions">
+            <button className="ghost-btn" onClick={onReset}>
+              Start over
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({
   result,
   audit,
@@ -1041,13 +1434,14 @@ function Dashboard({
               </div>
             ) : null}
           </div>
+          <PreferenceIntelligence profile={result.preferenceProfile} status={result.preferenceStatus} />
           <DossierReport
             report={
               result.report +
               (result.deepReport ? `\n\n${result.deepReport}` : "") +
               (result.imageReport ? `\n\n${result.imageReport}` : "")
             }
-            deepening={result.deepStatus === "running" || result.imageStatus === "running"}
+            deepening={result.deepStatus === "running" || result.imageStatus === "running" || result.preferenceStatus === "running"}
           />
           <div className="dash-foot">
             <div className="privacy-row">
@@ -1939,11 +2333,16 @@ export default function OneExperience() {
   const [liProfile, setLiProfile] = useState<LinkedInProfileFull | null>(null);
   const [igProfiles, setIgProfiles] = useState<InstagramProfileFull[]>([]);
   const [threadsProfiles, setThreadsProfiles] = useState<ThreadsProfileFull[]>([]);
+  const [xProfiles, setXProfiles] = useState<XProfileFull[]>([]);
+  const [socialPreferenceConsent, setSocialPreferenceConsent] = useState(false);
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [serverStage, setServerStage] = useState(0);
   const [liveSource, setLiveSource] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<OneDashboardResult | null>(null);
+  const [phase1Status, setPhase1Status] = useState<LayerStatus>("idle");
+  const [preferenceStatus, setPreferenceStatus] = useState<LayerStatus>("idle");
+  const [preferenceProfile, setPreferenceProfile] = useState<OneDashboardResult["preferenceProfile"] | undefined>(undefined);
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
   const [error, setError] = useState("");
@@ -1966,6 +2365,10 @@ export default function OneExperience() {
   const collectStart = useRef(0); // performance.now() of THIS mount entering collect — for the reveal min-dwell
   const scanStartedAtRef = useRef(0); // absolute epoch ms the scan began — resumable elapsed across refresh/background
   const scanRunIdRef = useRef<string | null>(null);
+  const phase1StatusRef = useRef<LayerStatus>("idle");
+  const preferenceStatusRef = useRef<LayerStatus>("idle");
+  const preferenceProfileRef = useRef<OneDashboardResult["preferenceProfile"] | undefined>(undefined);
+  const progressiveOpenedRef = useRef(false);
   const pollStopRef = useRef(false); // abort in-flight recovery polling on logout/delete/unmount
   const prevStageRef = useRef<Stage>("precollect"); // where to return to when leaving Settings
 
@@ -1973,6 +2376,38 @@ export default function OneExperience() {
     stage === "collect" ? "collect" : stage === "dashboard" ? "dashboard" : "idle";
 
   const phaseIndex = Math.max(serverStage, shadowPhaseIndex(elapsedMs));
+
+  const setPhase1LayerStatus = (status: LayerStatus) => {
+    phase1StatusRef.current = status;
+    setPhase1Status(status);
+  };
+
+  const setPreferenceLayer = (status: LayerStatus, profile?: OneDashboardResult["preferenceProfile"]) => {
+    preferenceStatusRef.current = status;
+    if (profile !== undefined) {
+      preferenceProfileRef.current = profile;
+      setPreferenceProfile(profile);
+    }
+    setPreferenceStatus(status);
+  };
+
+  const openProgressiveDashboard = (scanRunId: string) => {
+    if (!progressiveOpenedRef.current) {
+      progressiveOpenedRef.current = true;
+      track("progressive_dashboard_opened", { scanRunId });
+    }
+    setStage("dashboard");
+  };
+
+  const resetProgressiveLayers = () => {
+    phase1StatusRef.current = "idle";
+    preferenceStatusRef.current = "idle";
+    preferenceProfileRef.current = undefined;
+    progressiveOpenedRef.current = false;
+    setPhase1Status("idle");
+    setPreferenceStatus("idle");
+    setPreferenceProfile(undefined);
+  };
 
   // reflect baked accent/motion defaults into CSS chrome (replaces the Tweaks panel)
   useEffect(() => {
@@ -2012,10 +2447,10 @@ export default function OneExperience() {
     return () => b.classList.remove("scroll-on");
   }, [stage]);
 
-  // cinematic progress while collecting: ease toward 0.92 across the estimated
-  // multi-minute run, track elapsed; never regress, never complete until the result lands
+  // cinematic progress while collecting/progressive dashboard: ease toward 0.92 across
+  // the estimated multi-minute run, track elapsed; never regress until the result lands.
   useEffect(() => {
-    if (stage !== "collect") return;
+    if (stage !== "collect" && !(stage === "dashboard" && (phase1StatusRef.current === "running" || phase1StatusRef.current === "pending"))) return;
     // Resume from the scan's ABSOLUTE start (epoch ms) so refresh / background / reconnect
     // all show the TRUE elapsed. Date.now() is wall-clock — unlike rAF it keeps advancing
     // in a hidden tab, and a setInterval (not rAF) still fires (throttled) in the background.
@@ -2076,6 +2511,28 @@ export default function OneExperience() {
     track("threads_connected");
   };
 
+  const onXConnected = (profile: XProfileFull) => {
+    setXProfiles((prev) => {
+      const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
+      safeSet("local", LS_X_FULL, JSON.stringify(next));
+      return next;
+    });
+    track("x_connected");
+  };
+
+  const onSocialPreferenceConsentChanged = (value: boolean) => {
+    setSocialPreferenceConsent(value);
+    track("social_preference_consent_changed", {
+      enabled: value,
+      socialProfileCount: igProfiles.length + threadsProfiles.length + xProfiles.length,
+      platforms: [
+        ...(igProfiles.length ? ["instagram"] : []),
+        ...(threadsProfiles.length ? ["threads"] : []),
+        ...(xProfiles.length ? ["x"] : []),
+      ],
+    });
+  };
+
   // Settings is a signed-in overlay stage; remember where we came from for "Done".
   const goToSettings = () => {
     if (stage === "settings") return;
@@ -2087,8 +2544,18 @@ export default function OneExperience() {
   const revealResult = async (final: ScanFinal) => {
     const minDwell = 4500;
     const elapsed = performance.now() - collectStart.current;
-    if (elapsed < minDwell) await new Promise((r) => setTimeout(r, minDwell - elapsed));
-    const result = final.result;
+    if (!progressiveOpenedRef.current && elapsed < minDwell) await new Promise((r) => setTimeout(r, minDwell - elapsed));
+    const earlyPreferenceProfile = preferenceProfileRef.current;
+    const earlyPreferenceStatus = preferenceStatusRef.current;
+    const result: OneDashboardResult = {
+      ...final.result,
+      ...(earlyPreferenceProfile
+        ? { preferenceStatus: "completed" as const, preferenceProfile: earlyPreferenceProfile }
+        : !final.result.preferenceStatus && earlyPreferenceStatus !== "idle"
+          ? { preferenceStatus: earlyPreferenceStatus as OneDashboardResult["preferenceStatus"] }
+          : {}),
+    };
+    setPhase1LayerStatus("completed");
     setDashboard(result);
     setAudit(final.audit || null);
     setEmailDelivery(final.emailDelivery || null);
@@ -2200,7 +2667,7 @@ export default function OneExperience() {
   // status check so a finished scan reveals at once (the wall-clock timer already self-
   // heals on the next tick). One check — not a new poll loop — so it can't stack.
   useEffect(() => {
-    if (stage !== "collect" && stage !== "pending") return;
+    if (stage !== "collect" && stage !== "pending" && !(stage === "dashboard" && !dashboard?.report)) return;
     const onVis = () => {
       if (typeof document === "undefined" || document.visibilityState !== "visible") return;
       const id = scanRunIdRef.current || safeGet("local", LS_ACTIVE_SCAN);
@@ -2213,6 +2680,7 @@ export default function OneExperience() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, authUser]);
 
   // Progressive Tier-2: once the deep-research dashboard is showing and the deep tier isn't
@@ -2301,6 +2769,78 @@ export default function OneExperience() {
         }
         await new Promise((r) => setTimeout(r, 12_000));
       }
+    };
+    void run();
+    return () => {
+      stopped = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, dashboard?.scanRunId, authUser]);
+
+  // Social preference intelligence: runs as an independent layer as soon as the scan id
+  // exists. It can finish before the Phase-1 dossier because it reads ScanRun.input.
+  useEffect(() => {
+    if (!RESEARCH_MODE || stage !== "dashboard" || !authUser) return;
+    const id = dashboard?.scanRunId || scanRunIdRef.current;
+    if (!id) return;
+    const currentStatus = dashboard?.preferenceStatus ?? preferenceStatusRef.current;
+    if (currentStatus === "completed" || currentStatus === "failed" || currentStatus === "skipped") return;
+
+    let stopped = false;
+    const startedAt = performance.now();
+    const PREF_POLL_CAP_MS = 10 * 60 * 1000;
+    const run = async () => {
+      await Promise.resolve();
+      if (stopped) return;
+      if (preferenceStatusRef.current === "idle") setPreferenceLayer("running");
+      setDashboard((prev) => (prev && !prev.preferenceStatus ? { ...prev, preferenceStatus: "running", preferenceStartedAt: Date.now() } : prev));
+      track("preference_started", { scanRunId: id });
+      while (!stopped && performance.now() - startedAt < PREF_POLL_CAP_MS) {
+        try {
+          const authorization = await getFirebaseBearer(authUser as User);
+          const res = await fetch(`/api/one/research/${encodeURIComponent(id)}/preferences`, {
+            headers: { Authorization: authorization },
+          });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => null)) as {
+              preferenceStatus?: string;
+              preferenceProfile?: OneDashboardResult["preferenceProfile"] | null;
+              result?: OneDashboardResult | null;
+            } | null;
+            const nextProfile = payload?.result?.preferenceProfile ?? payload?.preferenceProfile ?? undefined;
+            if (payload?.result) {
+              const next = payload.result;
+              setDashboard((prev) => (prev ? { ...prev, ...next } : next));
+            }
+            if (nextProfile) {
+              setPreferenceLayer("completed", nextProfile);
+              setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "completed", preferenceProfile: nextProfile } : prev));
+            }
+            if (payload?.preferenceStatus === "completed") {
+              track("preference_completed", {
+                scanRunId: id,
+                signals: nextProfile?.topSignals.length ?? 0,
+                selectedEvidence: nextProfile?.selection?.selectedEvidenceCount ?? 0,
+              });
+              return;
+            }
+            if (payload?.preferenceStatus === "skipped") {
+              setPreferenceLayer("skipped");
+              setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "skipped" } : prev));
+              return;
+            }
+            if (payload?.preferenceStatus === "failed") {
+              setPreferenceLayer("failed");
+              track("preference_failed", { scanRunId: id });
+              return;
+            }
+          }
+        } catch {
+          /* transient — keep polling */
+        }
+        await new Promise((r) => setTimeout(r, 10_000));
+      }
+      if (!stopped) track("preference_poll_timeout", { scanRunId: id });
     };
     void run();
     return () => {
@@ -2417,6 +2957,35 @@ export default function OneExperience() {
         }
       }
       setThreadsProfiles(connectedThreadsProfiles);
+
+      let connectedXProfiles: XProfileFull[] = [];
+      const savedX = safeGet("local", LS_X_FULL);
+      if (savedX) {
+        try {
+          const parsed = JSON.parse(savedX) as unknown;
+          connectedXProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasXProfile).slice(0, 4);
+          if (connectedXProfiles.length) safeSet("local", LS_X_FULL, JSON.stringify(connectedXProfiles));
+          else safeDel("local", LS_X_FULL);
+        } catch {
+          safeDel("local", LS_X_FULL);
+        }
+      }
+      if (!connectedXProfiles.length) {
+        try {
+          const authorization = await getFirebaseBearer(user as User);
+          const res = await fetch("/api/x/profile", { headers: { Authorization: authorization } });
+          if (res.ok) {
+            const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profiles?: XProfileFull[] };
+            connectedXProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
+              .filter(hasXProfile)
+              .slice(0, 4);
+            if (connectedXProfiles.length) safeSet("local", LS_X_FULL, JSON.stringify(connectedXProfiles));
+          }
+        } catch {
+          /* optional social context — ignore transient/offline failures */
+        }
+      }
+      setXProfiles(connectedXProfiles);
       const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
 
       // Mandatory connect gate: identity-incomplete → manual first; else not-connected →
@@ -2453,10 +3022,13 @@ export default function OneExperience() {
         const startedAt = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
         scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
         collectStart.current = performance.now();
-        setStage("collect");
+        setPhase1LayerStatus("running");
+        setPreferenceLayer("running");
+        openProgressiveDashboard(inFlight);
         const outcome = await resilientRecover(user, inFlight);
         if (outcome === "revealed") return;
         if (outcome === "failed") {
+          setPhase1LayerStatus("failed");
           setError("That scan didn't finish. Start a new one when you're ready.");
           setStage("error");
           return;
@@ -2524,10 +3096,13 @@ export default function OneExperience() {
             scanStartedAtRef.current = Number.isFinite(createdMs) ? createdMs : Date.now();
             safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
             collectStart.current = performance.now();
-            setStage("collect");
+            setPhase1LayerStatus("running");
+            setPreferenceLayer("running");
+            openProgressiveDashboard(payload.scanRunId);
             const outcome = await resilientRecover(user, payload.scanRunId);
             if (outcome === "revealed") return;
             if (outcome === "failed") {
+              setPhase1LayerStatus("failed");
               setError("That scan didn't finish. Start a new one when you're ready.");
               setStage("error");
               return;
@@ -2583,6 +3158,9 @@ export default function OneExperience() {
       clearPersisted();
       setAuthUser(null);
       setIgProfiles([]);
+      setThreadsProfiles([]);
+      setXProfiles([]);
+      setSocialPreferenceConsent(false);
       setStage("landing");
     }
   };
@@ -2679,6 +3257,7 @@ export default function OneExperience() {
     setServerStage(0);
     setLiveSource(null);
     setDashboard(null);
+    resetProgressiveLayers();
     setAudit(null);
     setEmailDelivery(null);
     setError("");
@@ -2689,7 +3268,9 @@ export default function OneExperience() {
 
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), 1_800_000); // match server cap (30min)
-    const socialProfiles = [...igProfiles, ...threadsProfiles];
+    const socialProfiles = [...igProfiles, ...threadsProfiles, ...xProfiles];
+    setPhase1LayerStatus("running");
+    setPreferenceLayer(socialProfiles.length && socialPreferenceConsent ? "running" : "skipped");
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);
@@ -2705,6 +3286,7 @@ export default function OneExperience() {
           zipCode: location.zipCode,
           linkedinProfile: liProfile ?? undefined, // verified LinkedIn anchor → ground truth for Phase 1
           socialProfiles: socialProfiles.length ? socialProfiles : undefined,
+          socialPreferenceConsent: socialProfiles.length ? socialPreferenceConsent : false,
           confirmedProfiles, // derived LinkedIn pivot → seeds Phase 1 + 2
           consentAttestation: true,
           purpose: "self_audit",
@@ -2726,31 +3308,42 @@ export default function OneExperience() {
           // so the resumed timer shows the true elapsed (not a reset-to-0% bar).
           safeSet("local", LS_ACTIVE_SCAN, msg.scanRunId);
           safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current || Date.now()));
+          openProgressiveDashboard(msg.scanRunId);
+          track("phase1_stream_started", { scanRunId: msg.scanRunId });
         }
         if (typeof msg.stage === "number") setServerStage((s) => Math.max(s, msg.stage as number));
-        if (typeof msg.scanning === "string") setLiveSource(msg.scanning as string);
+        if (typeof msg.scanning === "string") {
+          setLiveSource(msg.scanning as string);
+          setPhase1LayerStatus("running");
+        }
       });
 
       // Soft-deadline handoff: the scan is still running server-side (Phase-1 ran long).
       // Poll patiently, reassure the user, and fall back to the email — never a hard error.
       if (final?.type === "pending") {
+        setPhase1LayerStatus("pending");
+        track("phase1_stream_pending", { scanRunId: scanRunIdRef.current });
         setLiveSource("One is taking longer than usual — it'll keep working and email you.");
         if (scanRunIdRef.current) {
           const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
           if (outcome === "revealed") return;
           if (outcome === "failed") {
+            setPhase1LayerStatus("failed");
             setError("One could not complete the scan.");
             setStage("error");
             return;
           }
         }
-        setStage("pending"); // still running after our patience window → it'll arrive by email
+        if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
         return;
       }
 
       if (!final || final.type === "error" || !final.result) {
+        setPhase1LayerStatus("failed");
         throw new Error(final?.error || "One could not complete the scan.");
       }
+      setPhase1LayerStatus("completed");
+      track("phase1_stream_completed", { scanRunId: scanRunIdRef.current });
       await revealResult({ result: final.result, audit: final.audit, emailDelivery: final.emailDelivery });
     } catch (e) {
       // the stream dropped, but the scan keeps running server-side — keep polling
@@ -2758,6 +3351,7 @@ export default function OneExperience() {
         const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
         if (outcome === "revealed") return;
         if (outcome === "failed") {
+          setPhase1LayerStatus("failed");
           setError("One could not complete the scan.");
           setStage("error");
           return;
@@ -2766,7 +3360,8 @@ export default function OneExperience() {
         // row, which resilientRecover would have cleared) → it's still running. Show the
         // calm pending screen and KEEP it resumable; the email delivers it.
         if (safeGet("local", LS_ACTIVE_SCAN)) {
-          setStage("pending");
+          setPhase1LayerStatus("pending");
+          if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
           return;
         }
       }
@@ -2917,7 +3512,13 @@ export default function OneExperience() {
       return url ? [{ platform: "Threads", handle: threadsHandleFromUrl(url), url, category: "Social" }] : [];
     });
 
-  const socialPivots = (): ConfirmedProfile[] => [...instagramPivots(), ...threadsPivots()];
+  const xPivots = (): ConfirmedProfile[] =>
+    xProfiles.flatMap((profile) => {
+      const url = normalizeXUrl(profile.profileUrl);
+      return url ? [{ platform: "X", handle: xHandleFromUrl(url), url, category: "Social" }] : [];
+    });
+
+  const socialPivots = (): ConfirmedProfile[] => [...instagramPivots(), ...threadsPivots(), ...xPivots()];
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
@@ -2939,13 +3540,16 @@ export default function OneExperience() {
       scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
       collectStart.current = performance.now();
       setError("");
-      setStage("collect");
+      setPhase1LayerStatus("running");
+      openProgressiveDashboard(active);
       void resilientRecover(authUser, active).then((outcome) => {
         if (outcome === "failed") {
+          setPhase1LayerStatus("failed");
           setError("That scan didn't finish. Start a new one when you're ready.");
           setStage("error");
         } else if (outcome === "gaveup" && safeGet("local", LS_ACTIVE_SCAN)) {
-          setStage("pending");
+          setPhase1LayerStatus("pending");
+          openProgressiveDashboard(active);
         }
       });
       return;
@@ -2992,6 +3596,7 @@ export default function OneExperience() {
     safeDel("local", LS_ACTIVE_STARTED_AT);
     safeDel("local", LS_DISCOVERY);
     setDashboard(null);
+    resetProgressiveLayers();
     setAudit(null);
     setEmailDelivery(null);
     setError("");
@@ -3013,7 +3618,8 @@ export default function OneExperience() {
       return;
     }
     setLiveSource("One is checking on your dossier…");
-    setStage("collect");
+    setPhase1LayerStatus("running");
+    if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
     const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
     if (outcome === "revealed") return;
     if (outcome === "failed") {
@@ -3021,7 +3627,8 @@ export default function OneExperience() {
       setStage("error");
       return;
     }
-    setStage("pending");
+    setPhase1LayerStatus("pending");
+    if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
   };
 
   const reset = async () => {
@@ -3034,7 +3641,11 @@ export default function OneExperience() {
     setIdentity({ name: "", email: "" });
     setLiProfile(null);
     setIgProfiles([]);
+    setThreadsProfiles([]);
+    setXProfiles([]);
+    setSocialPreferenceConsent(false);
     setDashboard(null);
+    resetProgressiveLayers();
     setAudit(null);
     setEmailDelivery(null);
     setError("");
@@ -3079,7 +3690,11 @@ export default function OneExperience() {
       setIdentity({ name: "", email: "" });
       setLiProfile(null);
       setIgProfiles([]);
+      setThreadsProfiles([]);
+      setXProfiles([]);
+      setSocialPreferenceConsent(false);
       setDashboard(null);
+      resetProgressiveLayers();
       setAudit(null);
       setEmailDelivery(null);
       setError("");
@@ -3176,8 +3791,12 @@ export default function OneExperience() {
         authUser={authUser}
         instagramProfiles={igProfiles}
         threadsProfiles={threadsProfiles}
+        xProfiles={xProfiles}
+        socialPreferenceConsent={socialPreferenceConsent}
         onInstagramConnected={onInstagramConnected}
         onThreadsConnected={onThreadsConnected}
+        onXConnected={onXConnected}
+        onSocialPreferenceConsentChange={onSocialPreferenceConsentChanged}
         onCollect={startCollect}
         busy={geoBusy}
       />
@@ -3202,6 +3821,18 @@ export default function OneExperience() {
     view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
     view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} onScanAgain={scanAgain} />;
+  else if (stage === "dashboard")
+    view = (
+      <ProgressiveDashboardShell
+        key="pd"
+        phase1Status={phase1Status}
+        phase1Message={liveSource}
+        preferenceStatus={preferenceStatus}
+        preferenceProfile={preferenceProfile}
+        elapsedMs={elapsedMs}
+        onReset={reset}
+      />
+    );
   else if (stage === "empty")
     view = (
       <EmptyState
