@@ -125,7 +125,7 @@ describe("OneExperience", () => {
     expect(screen.getByText("Your personal intelligence agent.")).toBeInTheDocument();
   });
 
-  it("creates a guest session from manual identity and routes to LinkedIn URL capture", async () => {
+  it("creates a guest session from manual identity and routes to the unified social URL intake", async () => {
     mockFetch(async (url) => {
       if (url === "/api/one/guest-session") {
         return Response.json({
@@ -146,11 +146,15 @@ describe("OneExperience", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
-    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(screen.getByLabelText("LinkedIn profile URL")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Instagram profile URL/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Threads profile URL/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/X profile URL/i)).toBeInTheDocument();
     expect(vi.mocked(signInWithOneCustomToken)).toHaveBeenCalledWith("guest-custom-token");
   });
 
-  it("routes stale local active scans to LinkedIn URL capture when no rich profile exists", async () => {
+  it("routes stale local active scans to social URL intake when no rich profile exists", async () => {
     mocks.currentUser = signedInUser();
     window.localStorage.setItem("one_active_scan", "stale-scan");
     window.localStorage.setItem("one_active_started_at", String(Date.now() - 60_000));
@@ -162,7 +166,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
     expect(screen.queryByText(/One is composing your report/i)).not.toBeInTheDocument();
     expect(window.localStorage.getItem("one_active_scan")).toBeNull();
     expect(window.localStorage.getItem("one_active_started_at")).toBeNull();
@@ -170,7 +174,7 @@ describe("OneExperience", () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain("/api/one/scans/stale-scan");
   });
 
-  it("does not ask the server for latest running scans before LinkedIn URL capture", async () => {
+  it("does not ask the server for latest running scans before social URL intake", async () => {
     mocks.currentUser = signedInUser();
     const fetchMock = mockFetch(async (url) => {
       if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
@@ -182,7 +186,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
     expect(screen.queryByText(/One is composing your report/i)).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain("/api/one/scans/latest");
   });
@@ -219,6 +223,38 @@ describe("OneExperience", () => {
     expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
   });
 
+  it("can connect optional socials from the first social URL intake before LinkedIn unlocks Send One", async () => {
+    mocks.currentUser = signedInUser();
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/instagram/enrich-url") {
+        return Response.json({ ok: true, profile: instagramProfile });
+      }
+      if (url === "/api/linkedin/enrich-url") {
+        return Response.json({ ok: true, profile: richLinkedInProfile() });
+      }
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Instagram profile URL/i), {
+      target: { value: "https://www.instagram.com/ankit_ya_i_am/" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /add/i })[0]);
+    expect(await screen.findByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), {
+      target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /use linkedin profile/i }));
+
+    expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
+    expect(screen.getByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /send one/i })).toBeDisabled();
+  });
+
   it("ignores scoped LinkedIn cache owned by another user", async () => {
     mocks.currentUser = signedInUser();
     scopedLocal("other-user", "one_li_full", JSON.stringify(richLinkedInProfile()));
@@ -229,7 +265,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
     expect(window.localStorage.getItem("one_li_full")).toBeNull();
   });
 
@@ -248,7 +284,7 @@ describe("OneExperience", () => {
     await waitFor(() => expect(send).not.toBeDisabled());
   });
 
-  it("routes stale completed reports with no rich profile back to LinkedIn URL capture", async () => {
+  it("routes stale completed reports with no rich profile back to social URL intake", async () => {
     mocks.currentUser = signedInUser();
     window.localStorage.setItem("one_last_scan", "old-completed");
     mockFetch(async (url) => {
@@ -266,7 +302,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
     expect(screen.queryByText(/Your deep research dossier/i)).not.toBeInTheDocument();
     expect(window.localStorage.getItem("one_last_scan")).toBeNull();
   });

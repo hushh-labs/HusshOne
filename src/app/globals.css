@@ -445,6 +445,47 @@ button { font-family: inherit; cursor: pointer; }
 .solid-cta:active { background: #000; }
 .solid-cta:disabled { opacity: 0.35; cursor: default; }
 
+/* First signed-in URL intake: LinkedIn is mandatory, socials are visible upfront. */
+.screen.social-connect {
+  justify-content: flex-start;
+  align-items: center;
+  padding: calc(74px + env(safe-area-inset-top)) clamp(16px, 4vw, 34px) calc(28px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.social-connect-content {
+  max-width: 720px;
+  gap: 16px;
+  padding-bottom: 18px;
+}
+.social-connect-card {
+  width: min(720px, 100%);
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.social-connect-card > .pc-id {
+  width: 100%;
+  max-width: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 15px 16px;
+}
+.social-connect-card > .field-group,
+.social-connect-card > .pc-socials,
+.social-connect-card > .cta-block {
+  padding: 14px 16px;
+  border-top: 1px solid var(--hair);
+}
+.social-connect-card > .field-group {
+  background: rgba(255,255,255,0.38);
+}
+.social-connect-card > .cta-block {
+  margin-top: 0;
+  background: var(--white);
+}
+
 /* ── Collection sequence overlay ────────────────────────── */
 /* The orb owns the upper zone (see CanvasField collect layout); the scan
    console is centered in the space below it, so the two never overlap. */
@@ -1275,6 +1316,23 @@ button { font-family: inherit; cursor: pointer; }
 }
 @media (max-width: 560px) {
   .screen.hero { padding-bottom: clamp(150px, 24vh, 240px); }
+  .screen.social-connect {
+    padding: calc(62px + env(safe-area-inset-top)) 12px calc(22px + env(safe-area-inset-bottom));
+  }
+  .social-connect-content {
+    max-width: 100%;
+    gap: 12px;
+  }
+  .social-connect-card {
+    width: 100%;
+    border-radius: 10px;
+  }
+  .social-connect-card > .pc-id,
+  .social-connect-card > .field-group,
+  .social-connect-card > .pc-socials,
+  .social-connect-card > .cta-block {
+    padding: 13px 14px;
+  }
   .screen.precollect {
     padding: calc(62px + env(safe-area-inset-top)) 12px calc(22px + env(safe-area-inset-bottom));
   }
