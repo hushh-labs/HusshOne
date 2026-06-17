@@ -269,6 +269,47 @@ describe("POST /api/one/research", () => {
     expect(json.error).not.toContain("body/question");
   });
 
+  it("keeps Phase-1 running when a Deep Research status poll times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const research = await import("@/lib/research/client");
+      vi.mocked(research.pollResearch)
+        .mockRejectedValueOnce(Object.assign(new Error("Deep Research request timed out"), { statusCode: 504 }))
+        .mockResolvedValueOnce({
+          status: "completed",
+          report: "# Raw report\n\nThe report body.",
+          citations: [],
+          progress: null,
+          error: null,
+        });
+
+      const { POST } = await import("./route");
+      const response = await POST(
+        makeRequest({
+          name: "Ankit Kumar Singh",
+          email: "ankit@example.com",
+          latitude: 18.564739,
+          longitude: 73.740322,
+          consentAttestation: true,
+          purpose: "self_audit",
+          linkedinProfile,
+        }),
+      );
+      const linesPromise = readStream(response);
+
+      await vi.advanceTimersByTimeAsync(8000);
+      const lines = await linesPromise;
+
+      expect(lines.at(-1)?.type).toBe("done");
+      expect(research.pollResearch).toHaveBeenCalledTimes(2);
+      const db = await import("@/lib/db/scan-store");
+      expect(db.failScanRun).not.toHaveBeenCalled();
+      expect(db.completeScanRun).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows Google users to start Phase-1 without LinkedIn", async () => {
     const { POST } = await import("./route");
     const response = await POST(

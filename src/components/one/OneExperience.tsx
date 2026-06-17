@@ -61,6 +61,7 @@ type Stage = "hydrating" | "landing" | "manual" | "connect" | "precollect" | "di
 type LayerStatus = "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
 type AuthProvider = "google" | "guest" | "dev" | "unknown";
 type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken"> & Partial<Pick<User, "getIdTokenResult">>;
+type RecoveryOutcome = { outcome: "revealed" | "failed" | "gaveup"; error?: string | null };
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
 
@@ -121,6 +122,10 @@ function sanitizeScanErrorMessage(message: string): string {
     return "One had too much source context to start the scan. Please try again.";
   }
   return message;
+}
+
+function recoveryErrorMessage(outcome: RecoveryOutcome, fallback: string): string {
+  return sanitizeScanErrorMessage(outcome.error || fallback);
 }
 
 function extractIdentity(user: ClientUser): Identity {
@@ -3043,23 +3048,25 @@ export default function OneExperience() {
   const fetchScanStatus = async (
     user: ClientUser,
     id: string,
-  ): Promise<{ status: string; result: OneDashboardResult | null; emailDelivery: ScanEmailDeliverySummary | null }> => {
+  ): Promise<{ status: string; result: OneDashboardResult | null; emailDelivery: ScanEmailDeliverySummary | null; error: string | null }> => {
     const authorization = await getFirebaseBearer(user as User);
     const res = await fetch(
       `${RESEARCH_MODE ? "/api/one/research/" : "/api/one/scans/"}${encodeURIComponent(id)}`,
       { headers: { Authorization: authorization } },
     );
-    if (res.status === 404) return { status: "unknown", result: null, emailDelivery: null };
-    if (!res.ok) return { status: "error", result: null, emailDelivery: null };
+    if (res.status === 404) return { status: "unknown", result: null, emailDelivery: null, error: null };
     const payload = (await res.json().catch(() => null)) as {
       status?: string;
       result?: OneDashboardResult | null;
       emailDelivery?: ScanEmailDeliverySummary | null;
+      error?: string | null;
     } | null;
+    if (!res.ok) return { status: "error", result: null, emailDelivery: null, error: payload?.error ?? null };
     return {
       status: payload?.status || "unknown",
       result: payload?.result ?? null,
       emailDelivery: payload?.emailDelivery ?? null,
+      error: payload?.error ?? null,
     };
   };
 
@@ -3087,7 +3094,7 @@ export default function OneExperience() {
   // its own service, so be patient (30 min) — beyond that the email is the guaranteed
   // delivery and we show the calm "pending" screen. Caller owns the "collect" stage.
   const POLL_MAX_MS = 1_800_000;
-  const resilientRecover = async (user: ClientUser, id: string): Promise<"revealed" | "failed" | "gaveup"> => {
+  const resilientRecover = async (user: ClientUser, id: string): Promise<RecoveryOutcome> => {
     pollStopRef.current = false;
     const startedAt = performance.now();
     let delay = 2000;
@@ -3096,19 +3103,20 @@ export default function OneExperience() {
       let status = "running";
       let result: OneDashboardResult | null = null;
       let emailDelivery: ScanEmailDeliverySummary | null = null;
+      let statusError: string | null = null;
       try {
-        ({ status, result, emailDelivery } = await fetchScanStatus(user, id));
+        ({ status, result, emailDelivery, error: statusError } = await fetchScanStatus(user, id));
       } catch {
         status = "error"; // network blip → treat as still running, keep polling
       }
       if (status === "completed" && result) {
         await revealResult({ result, audit: null, emailDelivery });
-        return "revealed";
+        return { outcome: "revealed" };
       }
       if (status === "failed") {
         scopedDel(user, LS_ACTIVE_SCAN);
         scopedDel(user, LS_ACTIVE_STARTED_AT);
-        return "failed";
+        return { outcome: "failed", error: statusError };
       }
       if (status === "unknown") {
         unknownStreak += 1;
@@ -3116,7 +3124,7 @@ export default function OneExperience() {
           // the row truly isn't there after a few tries → stop chasing it
           scopedDel(user, LS_ACTIVE_SCAN);
           scopedDel(user, LS_ACTIVE_STARTED_AT);
-          return "gaveup";
+          return { outcome: "gaveup" };
         }
       } else {
         unknownStreak = 0;
@@ -3124,7 +3132,7 @@ export default function OneExperience() {
       await new Promise((r) => setTimeout(r, delay));
       delay = Math.min(10_000, Math.round(delay * 1.4));
     }
-    return "gaveup";
+    return { outcome: "gaveup" };
   };
 
   // Snappy resume: when the user returns to a backgrounded tab mid-scan, do a one-shot
@@ -3490,10 +3498,10 @@ export default function OneExperience() {
         setPreferenceLayer("running");
         openProgressiveDashboard(inFlight);
         const outcome = await resilientRecover(user, inFlight);
-        if (outcome === "revealed") return;
-        if (outcome === "failed") {
+        if (outcome.outcome === "revealed") return;
+        if (outcome.outcome === "failed") {
           setPhase1LayerStatus("failed");
-          setError("That scan didn't finish. Start a new one when you're ready.");
+          setError(recoveryErrorMessage(outcome, "That scan didn't finish. Start a new one when you're ready."));
           setStage("error");
           return;
         }
@@ -3564,10 +3572,10 @@ export default function OneExperience() {
             setPreferenceLayer("running");
             openProgressiveDashboard(payload.scanRunId);
             const outcome = await resilientRecover(user, payload.scanRunId);
-            if (outcome === "revealed") return;
-            if (outcome === "failed") {
+            if (outcome.outcome === "revealed") return;
+            if (outcome.outcome === "failed") {
               setPhase1LayerStatus("failed");
-              setError("That scan didn't finish. Start a new one when you're ready.");
+              setError(recoveryErrorMessage(outcome, "That scan didn't finish. Start a new one when you're ready."));
               setStage("error");
               return;
             }
@@ -3792,11 +3800,11 @@ export default function OneExperience() {
         track("phase1_stream_pending", { scanRunId: scanRunIdRef.current });
         setLiveSource("One is taking longer than usual — it'll keep working and email you.");
         if (scanRunIdRef.current) {
-          const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
-          if (outcome === "revealed") return;
-          if (outcome === "failed") {
+          const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch((): RecoveryOutcome => ({ outcome: "gaveup" }));
+          if (outcome.outcome === "revealed") return;
+          if (outcome.outcome === "failed") {
             setPhase1LayerStatus("failed");
-            setError("One could not complete the scan.");
+            setError(recoveryErrorMessage(outcome, "One could not complete the scan."));
             setStage("error");
             return;
           }
@@ -3815,11 +3823,11 @@ export default function OneExperience() {
     } catch (e) {
       // the stream dropped, but the scan keeps running server-side — keep polling
       if (scanRunIdRef.current) {
-        const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
-        if (outcome === "revealed") return;
-        if (outcome === "failed") {
+        const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch((): RecoveryOutcome => ({ outcome: "gaveup" }));
+        if (outcome.outcome === "revealed") return;
+        if (outcome.outcome === "failed") {
           setPhase1LayerStatus("failed");
-          setError("One could not complete the scan.");
+          setError(recoveryErrorMessage(outcome, "One could not complete the scan."));
           setStage("error");
           return;
         }
@@ -4010,11 +4018,11 @@ export default function OneExperience() {
       setPhase1LayerStatus("running");
       openProgressiveDashboard(active);
       void resilientRecover(authUser, active).then((outcome) => {
-        if (outcome === "failed") {
+        if (outcome.outcome === "failed") {
           setPhase1LayerStatus("failed");
-          setError("That scan didn't finish. Start a new one when you're ready.");
+          setError(recoveryErrorMessage(outcome, "That scan didn't finish. Start a new one when you're ready."));
           setStage("error");
-        } else if (outcome === "gaveup" && scopedGet(authUser, LS_ACTIVE_SCAN)) {
+        } else if (outcome.outcome === "gaveup" && scopedGet(authUser, LS_ACTIVE_SCAN)) {
           setPhase1LayerStatus("pending");
           openProgressiveDashboard(active);
         }
@@ -4087,10 +4095,10 @@ export default function OneExperience() {
     setLiveSource("One is checking on your dossier…");
     setPhase1LayerStatus("running");
     if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
-    const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch(() => "gaveup" as const);
-    if (outcome === "revealed") return;
-    if (outcome === "failed") {
-      setError("One could not complete the scan.");
+    const outcome = await resilientRecover(authUser, scanRunIdRef.current).catch((): RecoveryOutcome => ({ outcome: "gaveup" }));
+    if (outcome.outcome === "revealed") return;
+    if (outcome.outcome === "failed") {
+      setError(recoveryErrorMessage(outcome, "One could not complete the scan."));
       setStage("error");
       return;
     }
