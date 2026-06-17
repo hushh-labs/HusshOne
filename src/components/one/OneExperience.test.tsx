@@ -1,14 +1,16 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { signInWithOneCustomToken } from "@/lib/firebase/client";
 import OneExperience from "./OneExperience";
 
 const mocks = vi.hoisted(() => ({
   currentUser: null as null | {
     uid: string;
-    email: string;
-    displayName: string;
+    email: string | null;
+    displayName: string | null;
     photoURL: string | null;
     getIdToken: () => Promise<string>;
+    getIdTokenResult?: () => Promise<{ claims: Record<string, unknown> }>;
   },
 }));
 
@@ -22,12 +24,21 @@ vi.mock("@/lib/firebase/client", () => ({
     displayName: "One Preview",
     photoURL: null,
     getIdToken: async () => "DEV_TOKEN",
+    getIdTokenResult: async () => ({ claims: { email: "dev.one@hushh.ai", name: "One Preview", provider: "dev" } }),
   })),
   observeAuth: vi.fn((onChange: (user: typeof mocks.currentUser) => void) => {
     queueMicrotask(() => onChange(mocks.currentUser));
     return () => undefined;
   }),
   signInWithGoogle: vi.fn(async () => mocks.currentUser),
+  signInWithOneCustomToken: vi.fn(async () => ({
+    uid: "guest-1",
+    email: null,
+    displayName: null,
+    photoURL: null,
+    getIdToken: async () => "guest-token",
+    getIdTokenResult: async () => ({ claims: { email: "guest@example.com", name: "Guest User", provider: "guest" } }),
+  })),
   signOutOfGoogle: vi.fn(async () => undefined),
 }));
 
@@ -42,6 +53,7 @@ function signedInUser() {
     displayName: "Ankit Kumar Singh",
     photoURL: null,
     getIdToken: async () => "token",
+    getIdTokenResult: async () => ({ claims: { email: "ankit@example.com", name: "Ankit Kumar Singh" } }),
   };
 }
 
@@ -77,6 +89,23 @@ function mockFetch(handler: (url: string, init?: RequestInit) => Response | Prom
   return fetchMock;
 }
 
+function scopedLocal(uid: string, key: string, value: string) {
+  window.localStorage.setItem(key, JSON.stringify({ __oneScoped: true, uid, value }));
+}
+
+const instagramProfile = {
+  platform: "Instagram",
+  username: "ankit_ya_i_am",
+  displayName: "Ankit Kumar Singh",
+  bio: "Builder at Hushh",
+  avatarUrl: null,
+  externalUrl: null,
+  profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+  isVerified: false,
+  isPrivate: false,
+  source: "scraper",
+};
+
 describe("OneExperience", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -91,8 +120,34 @@ describe("OneExperience", () => {
     render(<OneExperience />);
 
     expect(await screen.findByRole("button", { name: /continue with google/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue as guest/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start with linkedin/i })).not.toBeInTheDocument();
     expect(screen.getByText("Your personal intelligence agent.")).toBeInTheDocument();
+  });
+
+  it("creates a guest session from manual identity and routes to LinkedIn URL capture", async () => {
+    mockFetch(async (url) => {
+      if (url === "/api/one/guest-session") {
+        return Response.json({
+          ok: true,
+          customToken: "guest-custom-token",
+          identity: { name: "Guest User", email: "guest@example.com" },
+          provider: "guest",
+        });
+      }
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /continue as guest/i }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Guest User" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "guest@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(vi.mocked(signInWithOneCustomToken)).toHaveBeenCalledWith("guest-custom-token");
   });
 
   it("routes stale local active scans to LinkedIn URL capture when no rich profile exists", async () => {
@@ -134,9 +189,9 @@ describe("OneExperience", () => {
 
   it("still resumes an active scan after a rich URL-enriched LinkedIn profile exists", async () => {
     mocks.currentUser = signedInUser();
-    window.localStorage.setItem("one_li_full", JSON.stringify(richLinkedInProfile()));
-    window.localStorage.setItem("one_active_scan", "active-rich-scan");
-    window.localStorage.setItem("one_active_started_at", String(Date.now() - 30_000));
+    scopedLocal("firebase-1", "one_li_full", JSON.stringify(richLinkedInProfile()));
+    scopedLocal("firebase-1", "one_active_scan", "active-rich-scan");
+    scopedLocal("firebase-1", "one_active_started_at", String(Date.now() - 30_000));
     mockFetch(async (url) => {
       if (url === "/api/one/scans/active-rich-scan") {
         return Response.json({ ok: false, status: "running", result: null });
@@ -154,7 +209,7 @@ describe("OneExperience", () => {
 
   it("shows the connected LinkedIn URL on the social intake page", async () => {
     mocks.currentUser = signedInUser();
-    window.localStorage.setItem("one_li_full", JSON.stringify(richLinkedInProfile()));
+    scopedLocal("firebase-1", "one_li_full", JSON.stringify(richLinkedInProfile()));
     mockFetch(async () => Response.json({ ok: false }, { status: 404 }));
 
     render(<OneExperience />);
@@ -162,6 +217,35 @@ describe("OneExperience", () => {
     expect(await screen.findByText(/LinkedIn profile URL/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
+  it("ignores scoped LinkedIn cache owned by another user", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("other-user", "one_li_full", JSON.stringify(richLinkedInProfile()));
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Paste your LinkedIn profile URL.")).toBeInTheDocument();
+    expect(window.localStorage.getItem("one_li_full")).toBeNull();
+  });
+
+  it("requires social preference consent only after optional socials are connected", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_li_full", JSON.stringify(richLinkedInProfile()));
+    scopedLocal("firebase-1", "one_ig_full", JSON.stringify([instagramProfile]));
+    mockFetch(async () => Response.json({ ok: false }, { status: 404 }));
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: /send one/i });
+    expect(send).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/Allow One to analyze/i));
+    await waitFor(() => expect(send).not.toBeDisabled());
   });
 
   it("routes stale completed reports with no rich profile back to LinkedIn URL capture", async () => {

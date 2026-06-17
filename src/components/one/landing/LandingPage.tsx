@@ -12,7 +12,7 @@
 import { Icons } from "../Icons";
 import { CodeBoardHero } from "./CodeBoardHero";
 
-export default function LandingPage({ onStart, error }: { onStart: () => void; error?: string }) {
+export default function LandingPage({ onStart, onGuest, error }: { onStart: () => void; onGuest: () => void; error?: string }) {
   return (
     <div className="landing">
       <section className="l-hero">
@@ -27,6 +27,9 @@ export default function LandingPage({ onStart, error }: { onStart: () => void; e
             <button className="l-cta l-cta-google" onClick={onStart}>
               {Icons.google()}
               <span>Continue with Google</span>
+            </button>
+            <button className="l-cta l-cta-guest" onClick={onGuest}>
+              <span>Continue as Guest</span>
             </button>
           </div>
           {error ? <p className="l-hero-error">{error}</p> : null}

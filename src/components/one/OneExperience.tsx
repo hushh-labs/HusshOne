@@ -30,6 +30,7 @@ import {
   makeDevUser,
   observeAuth,
   signInWithGoogle,
+  signInWithOneCustomToken,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
 import { hasUrlEnrichedLinkedInProfile, type LinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
@@ -58,7 +59,7 @@ import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
 
 type Stage = "hydrating" | "landing" | "manual" | "connect" | "precollect" | "disambiguate" | "collect" | "dashboard" | "empty" | "error" | "location" | "settings" | "pending";
 type LayerStatus = "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
-type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken">;
+type ClientUser = Pick<User, "uid" | "email" | "displayName" | "photoURL" | "getIdToken"> & Partial<Pick<User, "getIdTokenResult">>;
 /* why geolocation failed → drives the LocationFallback copy (and the ZIP extreme fallback) */
 type GeoReason = "denied" | "unavailable" | "timeout" | "unsupported";
 
@@ -118,6 +119,21 @@ function extractIdentity(user: ClientUser): Identity {
   return { name: normalizeName(user.displayName), email: normalizeEmail(user.email) };
 }
 
+async function extractIdentityWithClaims(user: ClientUser): Promise<Identity> {
+  const base = extractIdentity(user);
+  if (base.name && isValidEmail(base.email)) return base;
+  try {
+    const result = await user.getIdTokenResult?.();
+    const claims = (result?.claims ?? {}) as Record<string, unknown>;
+    return {
+      name: normalizeName(base.name || claims.name),
+      email: normalizeEmail(base.email || claims.email),
+    };
+  } catch {
+    return base;
+  }
+}
+
 /* ── persisted state (namespaced like the analytics `one_sid`) ─────────────
    localStorage survives a browser restart; sessionStorage is per-tab. We never
    store the PII result blob — only ids that are re-fetched from the server. */
@@ -161,6 +177,39 @@ function safeDel(store: "local" | "session", key: string) {
     /* non-fatal */
   }
 }
+
+type ScopedLocalEnvelope = { __oneScoped: true; uid: string; value: string };
+
+function isScopedLocalEnvelope(value: unknown): value is ScopedLocalEnvelope {
+  return !!value && typeof value === "object"
+    && (value as { __oneScoped?: unknown }).__oneScoped === true
+    && typeof (value as { uid?: unknown }).uid === "string"
+    && typeof (value as { value?: unknown }).value === "string";
+}
+
+function scopedGet(user: ClientUser | null, key: string): string | null {
+  if (!user?.uid) return null;
+  const raw = safeGet("local", key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isScopedLocalEnvelope(parsed) && parsed.uid === user.uid) return parsed.value;
+  } catch {
+    /* legacy unscoped value — drop it rather than risk cross-user reuse */
+  }
+  safeDel("local", key);
+  return null;
+}
+
+function scopedSet(user: ClientUser | null, key: string, value: string) {
+  if (!user?.uid) return;
+  safeSet("local", key, JSON.stringify({ __oneScoped: true, uid: user.uid, value } satisfies ScopedLocalEnvelope));
+}
+
+function scopedDel(_user: ClientUser | null, key: string) {
+  safeDel("local", key);
+}
+
 function clearPersisted() {
   safeDel("local", LS_LAST_SCAN);
   safeDel("local", LS_ACTIVE_SCAN);
@@ -231,11 +280,15 @@ function Manual({
   initialName,
   initialEmail,
   lockedEmail,
+  busy = false,
+  error = "",
   onContinue,
 }: {
   initialName: string;
   initialEmail: string;
   lockedEmail?: string;
+  busy?: boolean;
+  error?: string;
   onContinue: (u: Identity) => void;
 }) {
   const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -295,10 +348,11 @@ function Manual({
             </div>
           )}
           <div className="cta-block">
-            <button className="solid-cta" type="submit" disabled={!ok}>
-              Continue
+            <button className="solid-cta" type="submit" disabled={!ok || busy}>
+              {busy ? "Creating guest session..." : "Continue"}
             </button>
           </div>
+          {error ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{error}</span> : null}
         </div>
       </form>
     </div>
@@ -376,7 +430,7 @@ function ConnectInstagramInline({
   return (
     <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div className="social-url-row">
         <input
           id="instagram-url"
           className={"input" + (invalid ? " invalid" : "")}
@@ -392,7 +446,7 @@ function ConnectInstagramInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
           {busy ? "Adding..." : "Add"}
         </button>
       </div>
@@ -483,7 +537,7 @@ function ConnectThreadsInline({
   return (
     <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div className="social-url-row">
         <input
           id="threads-url"
           className={"input" + (invalid ? " invalid" : "")}
@@ -499,7 +553,7 @@ function ConnectThreadsInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
           {busy ? "Adding..." : "Add"}
         </button>
       </div>
@@ -590,7 +644,7 @@ function ConnectXInline({
   return (
     <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div className="social-url-row">
         <input
           id="x-url"
           className={"input" + (invalid ? " invalid" : "")}
@@ -606,7 +660,7 @@ function ConnectXInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized} style={{ minWidth: 116 }}>
+        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
           {busy ? "Adding..." : "Add"}
         </button>
       </div>
@@ -720,9 +774,9 @@ function PreCollect({
             </span>
           </div>
 
-          <div className="field-group" style={{ gap: 8 }}>
+          <div className="field-group pc-required-link" style={{ gap: 8 }}>
             <label htmlFor="linkedin-connected-url">LinkedIn profile URL <span style={{ color: "var(--muted)" }}>(required)</span></label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <div className="social-url-row">
               <input
                 id="linkedin-connected-url"
                 className="input"
@@ -730,7 +784,7 @@ function PreCollect({
                 readOnly
                 aria-label="Connected LinkedIn profile URL"
               />
-              <button className="ghost-btn" type="button" onClick={onLinkedInChange} style={{ minWidth: 116 }}>
+              <button className="ghost-btn" type="button" onClick={onLinkedInChange}>
                 Change
               </button>
             </div>
@@ -739,37 +793,39 @@ function PreCollect({
             </span>
           </div>
 
-          <ConnectInstagramInline
-            authUser={authUser}
-            profiles={instagramProfiles}
-            onConnected={onInstagramConnected}
-          />
-          <ConnectThreadsInline
-            authUser={authUser}
-            profiles={threadsProfiles}
-            onConnected={onThreadsConnected}
-          />
-          <ConnectXInline
-            authUser={authUser}
-            profiles={xProfiles}
-            onConnected={onXConnected}
-          />
-          <label className="field-hint" style={{ display: "flex", gap: 9, alignItems: "flex-start", paddingLeft: 0, marginTop: 2 }}>
-            <input
-              type="checkbox"
-              checked={socialPreferenceConsent}
-              onChange={(e) => onSocialPreferenceConsentChange(e.target.checked)}
-              disabled={!needsSocialConsent}
-              style={{ marginTop: 2 }}
+          <div className="pc-socials">
+            <div className="pc-section-label">Optional social links</div>
+            <ConnectInstagramInline
+              authUser={authUser}
+              profiles={instagramProfiles}
+              onConnected={onInstagramConnected}
             />
-            <span>
-              Allow One to analyze and periodically refresh visible content from connected social URLs for preference intelligence.
-              {!needsSocialConsent ? " Add Instagram, Threads, or X to enable this layer." : ""}
-            </span>
-          </label>
+            <ConnectThreadsInline
+              authUser={authUser}
+              profiles={threadsProfiles}
+              onConnected={onThreadsConnected}
+            />
+            <ConnectXInline
+              authUser={authUser}
+              profiles={xProfiles}
+              onConnected={onXConnected}
+            />
+          </div>
+          {needsSocialConsent ? (
+            <label className="pc-consent">
+              <input
+                type="checkbox"
+                checked={socialPreferenceConsent}
+                onChange={(e) => onSocialPreferenceConsentChange(e.target.checked)}
+              />
+              <span>
+                Allow One to analyze and periodically refresh visible content from connected social URLs for preference intelligence.
+              </span>
+            </label>
+          ) : null}
         </div>
 
-        <span className="magnet" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
+        <span className="magnet pc-actions" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
           <button className="cta cta-xl" onClick={submit} disabled={busy || (needsSocialConsent && !socialPreferenceConsent)}>
             {busy ? (
               <>
@@ -2367,6 +2423,9 @@ export default function OneExperience() {
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
   const [error, setError] = useState("");
+  const [manualMode, setManualMode] = useState<"auth" | "guest">("auth");
+  const [guestBusy, setGuestBusy] = useState(false);
+  const [guestError, setGuestError] = useState("");
   const [geoBusy, setGeoBusy] = useState(false); // waiting on the browser location prompt
   const [geoReason, setGeoReason] = useState<GeoReason>("denied"); // drives LocationFallback copy
   const [notice, setNotice] = useState(""); // brief confirmation line on landing (e.g. after delete)
@@ -2477,7 +2536,7 @@ export default function OneExperience() {
     // in a hidden tab, and a setInterval (not rAF) still fires (throttled) in the background.
     let startedAt = scanStartedAtRef.current;
     if (!startedAt) {
-      const persisted = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+      const persisted = Number(scopedGet(authUser, LS_ACTIVE_STARTED_AT) || "");
       startedAt = Number.isFinite(persisted) && persisted > 0 ? persisted : Date.now();
       scanStartedAtRef.current = startedAt;
     }
@@ -2495,28 +2554,72 @@ export default function OneExperience() {
       stopped = true;
       clearInterval(iv);
     };
-  }, [stage]);
+  }, [stage, authUser]);
 
-  const onManualDone = (u: Identity) => {
+  const onManualDone = async (u: Identity) => {
+    if (manualMode === "guest" && !authUser) {
+      setGuestBusy(true);
+      setGuestError("");
+      setError("");
+      track("guest_session_started");
+      try {
+        const res = await fetch("/api/one/guest-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(u),
+        });
+        const payload = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          customToken?: string;
+          identity?: Identity;
+          error?: string;
+        };
+        if (!res.ok || !payload.ok || !payload.customToken) {
+          throw new Error(payload.error || "Could not create a guest session.");
+        }
+        const user = await signInWithOneCustomToken(payload.customToken);
+        setManualMode("auth");
+        await hydrateFromUser(user, payload.identity ?? u);
+        track("guest_session_completed");
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Could not create a guest session.";
+        setGuestError(message);
+        track("guest_session_failed", { reason: message.slice(0, 120) });
+      } finally {
+        setGuestBusy(false);
+      }
+      return;
+    }
     setIdentity(u);
     // Mandatory connect gate: a user must connect LinkedIn before Send One. If they're
     // already connected (returning session), go straight to precollect.
     setStage(hasUrlEnrichedLinkedInProfile(liProfile) ? "precollect" : "connect");
   };
 
+  const onGuestStart = () => {
+    setError("");
+    setNotice("");
+    setGuestError("");
+    setGuestBusy(false);
+    setManualMode("guest");
+    setIdentity({ name: "", email: "" });
+    setStage("manual");
+    track("guest_selected");
+  };
+
   // LinkedIn connected via the MCP step → capture the full profile, persist it so a refresh
   // stays connected, and advance to Send One. This is the only way past the mandatory gate.
   const onLinkedInConnected = (full: LinkedInProfileFull) => {
     setLiProfile(full);
-    safeSet("local", LS_LI_FULL, JSON.stringify(full));
-    safeSet("local", LS_LI_CONNECTED, "1");
+    scopedSet(authUser, LS_LI_FULL, JSON.stringify(full));
+    scopedSet(authUser, LS_LI_CONNECTED, "1");
     track("linkedin_connected");
     setStage("precollect");
   };
 
   const onLinkedInChange = () => {
-    safeDel("local", LS_LI_FULL);
-    safeDel("local", LS_LI_CONNECTED);
+    scopedDel(authUser, LS_LI_FULL);
+    scopedDel(authUser, LS_LI_CONNECTED);
     setLiProfile(null);
     setStage("connect");
   };
@@ -2524,7 +2627,7 @@ export default function OneExperience() {
   const onInstagramConnected = (profile: InstagramProfileFull) => {
     setIgProfiles((prev) => {
       const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
-      safeSet("local", LS_IG_FULL, JSON.stringify(next));
+      scopedSet(authUser, LS_IG_FULL, JSON.stringify(next));
       return next;
     });
     track("instagram_connected");
@@ -2533,7 +2636,7 @@ export default function OneExperience() {
   const onThreadsConnected = (profile: ThreadsProfileFull) => {
     setThreadsProfiles((prev) => {
       const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
-      safeSet("local", LS_THREADS_FULL, JSON.stringify(next));
+      scopedSet(authUser, LS_THREADS_FULL, JSON.stringify(next));
       return next;
     });
     track("threads_connected");
@@ -2542,7 +2645,7 @@ export default function OneExperience() {
   const onXConnected = (profile: XProfileFull) => {
     setXProfiles((prev) => {
       const next = [profile, ...prev.filter((p) => p.profileUrl !== profile.profileUrl && p.username !== profile.username)].slice(0, 4);
-      safeSet("local", LS_X_FULL, JSON.stringify(next));
+      scopedSet(authUser, LS_X_FULL, JSON.stringify(next));
       return next;
     });
     track("x_connected");
@@ -2589,9 +2692,9 @@ export default function OneExperience() {
     setEmailDelivery(final.emailDelivery || null);
     setProgress(1);
     // promote the scan id to "last completed" so a later refresh restores the report
-    safeDel("local", LS_ACTIVE_SCAN);
-    safeDel("local", LS_ACTIVE_STARTED_AT);
-    if (scanRunIdRef.current) safeSet("local", LS_LAST_SCAN, scanRunIdRef.current);
+    scopedDel(authUser, LS_ACTIVE_SCAN);
+    scopedDel(authUser, LS_ACTIVE_STARTED_AT);
+    if (scanRunIdRef.current) scopedSet(authUser, LS_LAST_SCAN, scanRunIdRef.current);
     const hasReport = !!(result.report && result.report.trim());
     const hasCategorySignal = Object.values(result.categories || {}).some((list) => (list as string[]).some(POSITIVE));
     const hasRichSignal = !!(
@@ -2670,16 +2773,16 @@ export default function OneExperience() {
         return "revealed";
       }
       if (status === "failed") {
-        safeDel("local", LS_ACTIVE_SCAN);
-        safeDel("local", LS_ACTIVE_STARTED_AT);
+        scopedDel(user, LS_ACTIVE_SCAN);
+        scopedDel(user, LS_ACTIVE_STARTED_AT);
         return "failed";
       }
       if (status === "unknown") {
         unknownStreak += 1;
         if (unknownStreak >= 3) {
           // the row truly isn't there after a few tries → stop chasing it
-          safeDel("local", LS_ACTIVE_SCAN);
-          safeDel("local", LS_ACTIVE_STARTED_AT);
+          scopedDel(user, LS_ACTIVE_SCAN);
+          scopedDel(user, LS_ACTIVE_STARTED_AT);
           return "gaveup";
         }
       } else {
@@ -2698,7 +2801,7 @@ export default function OneExperience() {
     if (stage !== "collect" && stage !== "pending" && !(stage === "dashboard" && !dashboard?.report)) return;
     const onVis = () => {
       if (typeof document === "undefined" || document.visibilityState !== "visible") return;
-      const id = scanRunIdRef.current || safeGet("local", LS_ACTIVE_SCAN);
+      const id = scanRunIdRef.current || scopedGet(authUser, LS_ACTIVE_SCAN);
       if (!id || !authUser) return;
       void fetchScanStatus(authUser, id)
         .then(({ status, result, emailDelivery }) => {
@@ -2883,7 +2986,7 @@ export default function OneExperience() {
     try {
       setAuthUser(user);
       // Google is the front door again: identity comes from the Google account.
-      const id = identityOverride ?? extractIdentity(user);
+      const id = identityOverride ?? await extractIdentityWithClaims(user);
       setIdentity(id);
 
       // Rehydrate the connected LinkedIn FULL profile (pulled via the MCP connect step) so a
@@ -2891,19 +2994,19 @@ export default function OneExperience() {
       // linkedinProfile:undefined. Prefer the localStorage cache (instant), else rebuild from the
       // server (DB-backed). The presence of a profile IS the mandatory connect gate.
       let profile: LinkedInProfileFull | null = null;
-      const savedLi = safeGet("local", LS_LI_FULL);
+      const savedLi = scopedGet(user, LS_LI_FULL);
       if (savedLi) {
         try {
           profile = JSON.parse(savedLi) as LinkedInProfileFull;
           if (!hasUrlEnrichedLinkedInProfile(profile)) {
             profile = null;
-            safeDel("local", LS_LI_FULL);
-            safeDel("local", LS_LI_CONNECTED);
+            scopedDel(user, LS_LI_FULL);
+            scopedDel(user, LS_LI_CONNECTED);
           }
         } catch {
           /* corrupt cache — rebuild from the network below */
-          safeDel("local", LS_LI_FULL);
-          safeDel("local", LS_LI_CONNECTED);
+          scopedDel(user, LS_LI_FULL);
+          scopedDel(user, LS_LI_CONNECTED);
         }
       }
       if (!profile) {
@@ -2914,11 +3017,11 @@ export default function OneExperience() {
             const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profile?: LinkedInProfileFull };
             if (payload.ok && hasUrlEnrichedLinkedInProfile(payload.profile)) {
               profile = payload.profile;
-              safeSet("local", LS_LI_FULL, JSON.stringify(profile));
-              safeSet("local", LS_LI_CONNECTED, "1");
+              scopedSet(user, LS_LI_FULL, JSON.stringify(profile));
+              scopedSet(user, LS_LI_CONNECTED, "1");
             } else {
-              safeDel("local", LS_LI_FULL);
-              safeDel("local", LS_LI_CONNECTED);
+              scopedDel(user, LS_LI_FULL);
+              scopedDel(user, LS_LI_CONNECTED);
             }
           }
         } catch {
@@ -2929,15 +3032,15 @@ export default function OneExperience() {
       else setLiProfile(null);
 
       let instagramProfiles: InstagramProfileFull[] = [];
-      const savedIg = safeGet("local", LS_IG_FULL);
+      const savedIg = scopedGet(user, LS_IG_FULL);
       if (savedIg) {
         try {
           const parsed = JSON.parse(savedIg) as unknown;
           instagramProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasInstagramProfile).slice(0, 4);
-          if (instagramProfiles.length) safeSet("local", LS_IG_FULL, JSON.stringify(instagramProfiles));
-          else safeDel("local", LS_IG_FULL);
+          if (instagramProfiles.length) scopedSet(user, LS_IG_FULL, JSON.stringify(instagramProfiles));
+          else scopedDel(user, LS_IG_FULL);
         } catch {
-          safeDel("local", LS_IG_FULL);
+          scopedDel(user, LS_IG_FULL);
         }
       }
       if (!instagramProfiles.length) {
@@ -2949,7 +3052,7 @@ export default function OneExperience() {
             instagramProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
               .filter(hasInstagramProfile)
               .slice(0, 4);
-            if (instagramProfiles.length) safeSet("local", LS_IG_FULL, JSON.stringify(instagramProfiles));
+            if (instagramProfiles.length) scopedSet(user, LS_IG_FULL, JSON.stringify(instagramProfiles));
           }
         } catch {
           /* optional social context — ignore transient/offline failures */
@@ -2958,15 +3061,15 @@ export default function OneExperience() {
       setIgProfiles(instagramProfiles);
 
       let connectedThreadsProfiles: ThreadsProfileFull[] = [];
-      const savedThreads = safeGet("local", LS_THREADS_FULL);
+      const savedThreads = scopedGet(user, LS_THREADS_FULL);
       if (savedThreads) {
         try {
           const parsed = JSON.parse(savedThreads) as unknown;
           connectedThreadsProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasThreadsProfile).slice(0, 4);
-          if (connectedThreadsProfiles.length) safeSet("local", LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
-          else safeDel("local", LS_THREADS_FULL);
+          if (connectedThreadsProfiles.length) scopedSet(user, LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
+          else scopedDel(user, LS_THREADS_FULL);
         } catch {
-          safeDel("local", LS_THREADS_FULL);
+          scopedDel(user, LS_THREADS_FULL);
         }
       }
       if (!connectedThreadsProfiles.length) {
@@ -2978,7 +3081,7 @@ export default function OneExperience() {
             connectedThreadsProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
               .filter(hasThreadsProfile)
               .slice(0, 4);
-            if (connectedThreadsProfiles.length) safeSet("local", LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
+            if (connectedThreadsProfiles.length) scopedSet(user, LS_THREADS_FULL, JSON.stringify(connectedThreadsProfiles));
           }
         } catch {
           /* optional social context — ignore transient/offline failures */
@@ -2987,15 +3090,15 @@ export default function OneExperience() {
       setThreadsProfiles(connectedThreadsProfiles);
 
       let connectedXProfiles: XProfileFull[] = [];
-      const savedX = safeGet("local", LS_X_FULL);
+      const savedX = scopedGet(user, LS_X_FULL);
       if (savedX) {
         try {
           const parsed = JSON.parse(savedX) as unknown;
           connectedXProfiles = (Array.isArray(parsed) ? parsed : [parsed]).filter(hasXProfile).slice(0, 4);
-          if (connectedXProfiles.length) safeSet("local", LS_X_FULL, JSON.stringify(connectedXProfiles));
-          else safeDel("local", LS_X_FULL);
+          if (connectedXProfiles.length) scopedSet(user, LS_X_FULL, JSON.stringify(connectedXProfiles));
+          else scopedDel(user, LS_X_FULL);
         } catch {
-          safeDel("local", LS_X_FULL);
+          scopedDel(user, LS_X_FULL);
         }
       }
       if (!connectedXProfiles.length) {
@@ -3007,7 +3110,7 @@ export default function OneExperience() {
             connectedXProfiles = (payload.ok && Array.isArray(payload.profiles) ? payload.profiles : [])
               .filter(hasXProfile)
               .slice(0, 4);
-            if (connectedXProfiles.length) safeSet("local", LS_X_FULL, JSON.stringify(connectedXProfiles));
+            if (connectedXProfiles.length) scopedSet(user, LS_X_FULL, JSON.stringify(connectedXProfiles));
           }
         } catch {
           /* optional social context — ignore transient/offline failures */
@@ -3024,6 +3127,7 @@ export default function OneExperience() {
         : !linkedInConnected
           ? "connect"
           : "precollect";
+      if (baseStage === "manual") setManualMode("auth");
 
       // The URL-enriched LinkedIn profile is now mandatory before normal scan
       // recovery. Old users may still have one_active_scan/one_last_scan from the
@@ -3032,9 +3136,9 @@ export default function OneExperience() {
       // Keep ?scan= email deep-links as explicit report-open requests.
       const pending = safeGet("session", SS_PENDING);
       if (baseStage === "connect") {
-        safeDel("local", LS_ACTIVE_SCAN);
-        safeDel("local", LS_ACTIVE_STARTED_AT);
-        if (!pending) safeDel("local", LS_LAST_SCAN);
+        scopedDel(user, LS_ACTIVE_SCAN);
+        scopedDel(user, LS_ACTIVE_STARTED_AT);
+        if (!pending) scopedDel(user, LS_LAST_SCAN);
         if (!pending) {
           setStage("connect");
           return;
@@ -3042,12 +3146,12 @@ export default function OneExperience() {
       }
 
       // (a) a scan was in flight (localStorage → survives refresh AND app close)
-      const inFlight = safeGet("local", LS_ACTIVE_SCAN);
+      const inFlight = scopedGet(user, LS_ACTIVE_SCAN);
       if (inFlight) {
         scanRunIdRef.current = inFlight;
         // Resume the timer from the scan's TRUE start (persisted) so the bar shows the real
         // elapsed instead of restarting at ~3%. Fall back to now only if we have no record.
-        const startedAt = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+        const startedAt = Number(scopedGet(user, LS_ACTIVE_STARTED_AT) || "");
         scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
         collectStart.current = performance.now();
         setPhase1LayerStatus("running");
@@ -3065,7 +3169,7 @@ export default function OneExperience() {
       }
 
       // (b) an email deep-link (?scan=) or last completed scan → completed-only fetch
-      const restoreId = pending || safeGet("local", LS_LAST_SCAN);
+      const restoreId = pending || scopedGet(user, LS_LAST_SCAN);
       if (restoreId) {
         scanRunIdRef.current = restoreId;
         const recovered = await tryRecoverCompleted(user, restoreId);
@@ -3075,14 +3179,14 @@ export default function OneExperience() {
           // route back to Send One to re-run on the new intelligence. (An explicit email
           // deep-link ?scan= is a request for that specific report → still open it.)
           if (!pending && recovered.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
-            safeDel("local", LS_LAST_SCAN);
+            scopedDel(user, LS_LAST_SCAN);
             setStage(baseStage);
             return;
           }
           await revealResult({ result: recovered.result, audit: null, emailDelivery: recovered.emailDelivery });
           return;
         }
-        if (!pending) safeDel("local", LS_LAST_SCAN); // stale/expired id
+        if (!pending) scopedDel(user, LS_LAST_SCAN); // stale/expired id
       }
 
       if (baseStage === "connect") {
@@ -3110,19 +3214,19 @@ export default function OneExperience() {
             // a cold reopen re-seeds the elapsed timer from a day-old createdAt and shows the
             // eternal "composing your report" screen (observed: 1358:09 / 92%).
             if (isStaleRunning("running", createdMs)) {
-              safeDel("local", LS_ACTIVE_SCAN);
-              safeDel("local", LS_ACTIVE_STARTED_AT);
-              safeDel("local", LS_LAST_SCAN);
+              scopedDel(user, LS_ACTIVE_SCAN);
+              scopedDel(user, LS_ACTIVE_STARTED_AT);
+              scopedDel(user, LS_LAST_SCAN);
               setError("That scan didn't finish. Start a new one when you're ready.");
               setStage("error");
               return;
             }
             scanRunIdRef.current = payload.scanRunId;
-            safeSet("local", LS_ACTIVE_SCAN, payload.scanRunId);
+            scopedSet(user, LS_ACTIVE_SCAN, payload.scanRunId);
             // Seed the timer from the server's scan createdAt so a cold reopen (no local
             // state) still shows the true elapsed, then persist it for subsequent refreshes.
             scanStartedAtRef.current = Number.isFinite(createdMs) ? createdMs : Date.now();
-            safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
+            scopedSet(user, LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current));
             collectStart.current = performance.now();
             setPhase1LayerStatus("running");
             setPreferenceLayer("running");
@@ -3138,12 +3242,12 @@ export default function OneExperience() {
           } else if (payload?.scanRunId && payload.status === "completed" && payload.result) {
             // intelligence changed since this scan → re-run on the new layer, not restore
             if (payload.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
-              safeDel("local", LS_LAST_SCAN);
+              scopedDel(user, LS_LAST_SCAN);
               setStage(baseStage);
               return;
             }
             scanRunIdRef.current = payload.scanRunId;
-            safeSet("local", LS_LAST_SCAN, payload.scanRunId);
+            scopedSet(user, LS_LAST_SCAN, payload.scanRunId);
             await revealResult({ result: payload.result, audit: null, emailDelivery: payload.emailDelivery ?? null });
             return;
           }
@@ -3252,6 +3356,8 @@ export default function OneExperience() {
   const onAuth = async () => {
     setError("");
     setNotice("");
+    setManualMode("auth");
+    setGuestError("");
     // Dev mode (no Firebase) keeps the fake-user path so local UI work doesn't need OAuth.
     if (!isFirebaseClientConfigured()) {
       if (shouldAllowDevAuth()) {
@@ -3334,8 +3440,8 @@ export default function OneExperience() {
           scanRunIdRef.current = msg.scanRunId;
           // recover this run after a refresh OR app close — persist id + the absolute start
           // so the resumed timer shows the true elapsed (not a reset-to-0% bar).
-          safeSet("local", LS_ACTIVE_SCAN, msg.scanRunId);
-          safeSet("local", LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current || Date.now()));
+          scopedSet(authUser, LS_ACTIVE_SCAN, msg.scanRunId);
+          scopedSet(authUser, LS_ACTIVE_STARTED_AT, String(scanStartedAtRef.current || Date.now()));
           openProgressiveDashboard(msg.scanRunId);
           track("phase1_stream_started", { scanRunId: msg.scanRunId });
         }
@@ -3387,14 +3493,14 @@ export default function OneExperience() {
         // gaveup but the scan is still tracked (recovery just timed out — not a vanished
         // row, which resilientRecover would have cleared) → it's still running. Show the
         // calm pending screen and KEEP it resumable; the email delivers it.
-        if (safeGet("local", LS_ACTIVE_SCAN)) {
+        if (scopedGet(authUser, LS_ACTIVE_SCAN)) {
           setPhase1LayerStatus("pending");
           if (scanRunIdRef.current) openProgressiveDashboard(scanRunIdRef.current);
           return;
         }
       }
-      safeDel("local", LS_ACTIVE_SCAN); // nothing to resurrect as "collecting"
-      safeDel("local", LS_ACTIVE_STARTED_AT);
+      scopedDel(authUser, LS_ACTIVE_SCAN); // nothing to resurrect as "collecting"
+      scopedDel(authUser, LS_ACTIVE_STARTED_AT);
       setError(e instanceof Error ? e.message : "One could not complete the scan.");
       setStage("error");
     } finally {
@@ -3551,8 +3657,8 @@ export default function OneExperience() {
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
     if (!hasUrlEnrichedLinkedInProfile(liProfile)) {
-      safeDel("local", LS_LI_FULL);
-      safeDel("local", LS_LI_CONNECTED);
+      scopedDel(authUser, LS_LI_FULL);
+      scopedDel(authUser, LS_LI_CONNECTED);
       setLiProfile(null);
       setError("");
       setStage("connect");
@@ -3561,10 +3667,10 @@ export default function OneExperience() {
     // A scan is already running (e.g. user landed back on precollect after a recovery
     // timeout) → RESUME it instead of POSTing a duplicate. "Scan again"/"Start over"
     // clear LS_ACTIVE_SCAN first, so an intentional fresh scan still starts cleanly.
-    const active = safeGet("local", LS_ACTIVE_SCAN);
+    const active = scopedGet(authUser, LS_ACTIVE_SCAN);
     if (active && authUser) {
       scanRunIdRef.current = active;
-      const startedAt = Number(safeGet("local", LS_ACTIVE_STARTED_AT) || "");
+      const startedAt = Number(scopedGet(authUser, LS_ACTIVE_STARTED_AT) || "");
       scanStartedAtRef.current = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
       collectStart.current = performance.now();
       setError("");
@@ -3575,7 +3681,7 @@ export default function OneExperience() {
           setPhase1LayerStatus("failed");
           setError("That scan didn't finish. Start a new one when you're ready.");
           setStage("error");
-        } else if (outcome === "gaveup" && safeGet("local", LS_ACTIVE_SCAN)) {
+        } else if (outcome === "gaveup" && scopedGet(authUser, LS_ACTIVE_SCAN)) {
           setPhase1LayerStatus("pending");
           openProgressiveDashboard(active);
         }
@@ -3619,9 +3725,9 @@ export default function OneExperience() {
     pollStopRef.current = true;
     scanRunIdRef.current = null;
     scanStartedAtRef.current = 0;
-    safeDel("local", LS_LAST_SCAN);
-    safeDel("local", LS_ACTIVE_SCAN);
-    safeDel("local", LS_ACTIVE_STARTED_AT);
+    scopedDel(authUser, LS_LAST_SCAN);
+    scopedDel(authUser, LS_ACTIVE_SCAN);
+    scopedDel(authUser, LS_ACTIVE_STARTED_AT);
     safeDel("local", LS_DISCOVERY);
     setDashboard(null);
     resetProgressiveLayers();
@@ -3667,6 +3773,9 @@ export default function OneExperience() {
     scanRunIdRef.current = null;
     setAuthUser(null);
     setIdentity({ name: "", email: "" });
+    setManualMode("auth");
+    setGuestBusy(false);
+    setGuestError("");
     setLiProfile(null);
     setIgProfiles([]);
     setThreadsProfiles([]);
@@ -3716,6 +3825,9 @@ export default function OneExperience() {
       scanRunIdRef.current = null;
       setAuthUser(null);
       setIdentity({ name: "", email: "" });
+      setManualMode("auth");
+      setGuestBusy(false);
+      setGuestError("");
       setLiProfile(null);
       setIgProfiles([]);
       setThreadsProfiles([]);
@@ -3778,7 +3890,7 @@ export default function OneExperience() {
             {Icons.check(14)} {notice}
           </div>
         ) : null}
-        <LandingPage onStart={onAuth} error={error} />
+        <LandingPage onStart={onAuth} onGuest={onGuestStart} error={error} />
       </main>
     );
   }
@@ -3803,6 +3915,8 @@ export default function OneExperience() {
         initialName={identity.name}
         initialEmail={identity.email}
         lockedEmail={authUser?.email ?? undefined}
+        busy={guestBusy}
+        error={guestError}
         onContinue={onManualDone}
       />
     );

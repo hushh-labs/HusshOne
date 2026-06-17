@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyOneRequest } from "@/lib/auth/verify";
 import type { OneDashboardResult } from "@/lib/ria/types";
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -258,6 +259,39 @@ describe("POST /api/one/research", () => {
 
     const research = await import("@/lib/research/client");
     expect(research.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("accepts a guest custom-token user when the guest owns the requested email and LinkedIn anchor", async () => {
+    vi.mocked(verifyOneRequest).mockResolvedValueOnce({
+      uid: "guest:scan-owner",
+      email: "guest@example.com",
+      name: "Guest User",
+      picture: null,
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Guest User",
+        email: "guest@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+        linkedinProfile: { ...linkedinProfile, email: "guest@example.com", name: "Guest User" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await readStream(response);
+
+    const db = await import("@/lib/db/scan-store");
+    expect(db.upsertOneUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "guest:scan-owner",
+        email: "guest@example.com",
+        name: "Guest User",
+      }),
+    );
   });
 
   it("rejects OAuth-lite LinkedIn profiles so existing users return to URL capture", async () => {

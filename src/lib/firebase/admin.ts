@@ -37,11 +37,12 @@ export async function verifyFirebaseIdToken(idToken: string) {
  * token has no `email` by default, and the research route checks email === verifiedEmail.
  * Requires the service account to have the "Service Account Token Creator" role.
  */
-export async function createOneCustomToken(uid: string, claims: { email?: string; name?: string }): Promise<string> {
+export async function createOneCustomToken(uid: string, claims: { email?: string; name?: string; provider?: string }): Promise<string> {
   const app = initializeFirebaseAdmin();
   const developerClaims: Record<string, string> = {};
   if (claims.email) developerClaims.email = claims.email;
   if (claims.name) developerClaims.name = claims.name;
+  if (claims.provider) developerClaims.provider = claims.provider;
   return getAuth(app).createCustomToken(uid, developerClaims);
 }
 
