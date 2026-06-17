@@ -2513,17 +2513,25 @@ function ConnectLinkedIn({
     try {
       const authorization = await getFirebaseBearer(authUser as User);
       const optionalTasks: Promise<void>[] = [];
+      const runOptionalTask = (platform: "instagram" | "threads" | "x", task: Promise<void>) => {
+        optionalTasks.push(
+          task.catch((error) => {
+            const message = error instanceof Error ? error.message : `We could not read this ${platform} profile.`;
+            track(`${platform}_connect_failed`, { reason: message.slice(0, 120) });
+          }),
+        );
+      };
       if (normalizedInstagram) {
         track("instagram_connect_started");
-        optionalTasks.push(enrichInstagram(authorization, normalizedInstagram));
+        runOptionalTask("instagram", enrichInstagram(authorization, normalizedInstagram));
       }
       if (normalizedThreads) {
         track("threads_connect_started");
-        optionalTasks.push(enrichThreads(authorization, normalizedThreads));
+        runOptionalTask("threads", enrichThreads(authorization, normalizedThreads));
       }
       if (normalizedX) {
         track("x_connect_started");
-        optionalTasks.push(enrichX(authorization, normalizedX));
+        runOptionalTask("x", enrichX(authorization, normalizedX));
       }
       const res = await fetch("/api/linkedin/enrich-url", {
         method: "POST",
@@ -2536,12 +2544,17 @@ function ConnectLinkedIn({
       if (!res.ok || !payload.ok || !payload.profile) {
         throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
       }
-      await Promise.all(optionalTasks);
+      if (optionalTasks.length) {
+        await Promise.race([
+          Promise.allSettled(optionalTasks),
+          new Promise((resolve) => setTimeout(resolve, 300)),
+        ]);
+      }
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
       const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
-      track("profile_connect_failed", { reason: message.slice(0, 120) });
+      track("linkedin_connect_failed", { reason: message.slice(0, 120) });
       setErr(message);
       setPhase("error");
     }
