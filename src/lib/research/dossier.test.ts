@@ -279,7 +279,7 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
 
     expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");
     expect(q).toContain("Source hierarchy");
-    expect(q).toContain("LinkedIn/user-provided JSON = locked ground truth");
+    expect(q).toContain("user-provided JSON, including LinkedIn when present = locked ground truth");
     expect(q).toContain("SUBJECT_INTELLIGENCE_CONTEXT_JSON");
     expect(q).toContain("ONE INTELLIGENCE OPERATING PROTOCOL");
     expect(q).toContain("LinkedIn ground truth");

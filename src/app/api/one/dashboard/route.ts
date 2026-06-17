@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { trace } from "@opentelemetry/api";
 import type { Prisma } from "@prisma/client";
-import { verifyOneRequest } from "@/lib/auth/verify";
-import { isValidEmail, normalizeEmail, normalizeName } from "@/lib/auth/identity";
+import { isGuestOneUser, oneUserProvider, verifyOneRequest } from "@/lib/auth/verify";
+import {
+  isValidEmail,
+  normalizeEmail,
+  normalizeName,
+  normalizeLinkedInUrl,
+} from "@/lib/auth/identity";
+import { appendLinkedInConfirmedProfile, validateLinkedInProfileInput } from "@/lib/one/linkedin-input";
 import { createConsentAndScan, completeScanRun, failScanRun, upsertOneUser } from "@/lib/db/scan-store";
 import { buildTemporaryDashboard, fetchDashboardIntelligence } from "@/lib/ria/client";
 import { fetchShadowReport, mapShadowReport } from "@/lib/ria/shadow";
@@ -74,7 +80,31 @@ function statusCodeOf(error: unknown) {
   return null;
 }
 
-function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): OneSubjectInput {
+function parseConfirmedProfiles(value: unknown): OneSubjectInput["confirmedProfiles"] {
+  if (!Array.isArray(value)) return undefined;
+  const out: NonNullable<OneSubjectInput["confirmedProfiles"]> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const p = item as Record<string, unknown>;
+    const rawUrl = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
+    if (!rawUrl) continue;
+    const url = /linkedin\.com/i.test(rawUrl) ? normalizeLinkedInUrl(rawUrl) || rawUrl : rawUrl;
+    out.push({
+      url,
+      platform: typeof p.platform === "string" ? p.platform.trim().slice(0, 60) : "",
+      handle: typeof p.handle === "string" ? p.handle.trim().slice(0, 120) : "",
+      category: typeof p.category === "string" ? p.category.trim().slice(0, 60) : "",
+    });
+    if (out.length >= 12) break;
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeInput(
+  body: Record<string, unknown>,
+  verifiedEmail: string,
+  options: { requireLinkedIn: boolean },
+): OneSubjectInput {
   const name = normalizeName(body.name).slice(0, NAME_MAX);
   const email = normalizeEmail(body.email || verifiedEmail);
   const latitude = numberOrUndefined(body.latitude);
@@ -89,7 +119,7 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Valid email is required"), { statusCode: 400 });
   }
   if (email !== verifiedEmail) {
-    throw Object.assign(new Error("Signed-in Google email does not match the requested subject"), { statusCode: 403 });
+    throw Object.assign(new Error("Signed-in account email does not match the requested subject"), { statusCode: 403 });
   }
   if (body.consentAttestation !== true) {
     throw Object.assign(new Error("Consent attestation is required"), { statusCode: 400 });
@@ -101,6 +131,9 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     throw Object.assign(new Error("Browser coordinates or zip code are required"), { statusCode: 400 });
   }
 
+  const linkedinProfile = validateLinkedInProfileInput(body.linkedinProfile, options);
+  const confirmedProfiles = appendLinkedInConfirmedProfile(parseConfirmedProfiles(body.confirmedProfiles), linkedinProfile);
+
   return {
     name,
     email,
@@ -108,6 +141,8 @@ function normalizeInput(body: Record<string, unknown>, verifiedEmail: string): O
     longitude,
     zipCode,
     phone: phone || undefined,
+    confirmedProfiles,
+    linkedinProfile,
     consentAttestation: true,
     purpose: "self_audit",
   };
@@ -220,13 +255,14 @@ export async function POST(request: Request) {
   try {
     const verified = await verifyOneRequest(request.headers.get("authorization"));
     firebaseUid = verified.uid;
-    input = normalizeInput(await parseBody(request), verified.email);
+    input = normalizeInput(await parseBody(request), verified.email, { requireLinkedIn: isGuestOneUser(verified) });
     mode = typeof input.latitude === "number" && typeof input.longitude === "number" ? "precise" : "limited";
     const user = await upsertOneUser({
       firebaseUid: verified.uid,
       email: input.email,
       name: input.name || verified.name,
-      photoUrl: verified.picture,
+      photoUrl: input.linkedinProfile?.pictureUrl ?? verified.picture,
+      provider: oneUserProvider(verified),
     });
     userId = user?.id ?? null;
     const scan = await createConsentAndScan({

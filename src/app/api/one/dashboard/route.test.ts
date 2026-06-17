@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyOneRequest } from "@/lib/auth/verify";
 import type { OneDashboardResult } from "@/lib/ria/types";
 
 vi.mock("@/lib/auth/verify", () => ({
+  isGuestOneUser: (user: { uid: string; provider?: string | null }) => user.provider === "guest" || user.uid.startsWith("guest:"),
+  oneUserProvider: (user: { uid: string; provider?: string | null }) =>
+    user.provider === "guest" || user.uid.startsWith("guest:") ? "guest" : user.provider === "dev" || user.uid === "dev-one-user" ? "dev" : "google",
   verifyOneRequest: vi.fn(async () => ({
     uid: "firebase-1",
     email: "ankit@example.com",
     name: "Ankit Kumar Singh",
     picture: null,
+    provider: "google",
   })),
 }));
 
@@ -118,6 +123,27 @@ const validBody = {
   purpose: "self_audit",
 };
 
+const linkedinProfile = {
+  sub: "ankit-kumar-singh",
+  name: "Ankit Kumar Singh",
+  givenName: "Ankit",
+  familyName: "Kumar Singh",
+  email: "ankit@example.com",
+  emailVerified: false,
+  locale: null,
+  pictureUrl: "https://media.licdn.com/profile.jpg",
+  profileUrl: "https://www.linkedin.com/in/ankit-kumar-singh",
+  headline: "Founding Engineer at Hushh",
+  source: "scraper",
+  verifications: [],
+  grantedScopes: ["scraper:linkedin-profile-url"],
+  about: "Builder at Hushh.",
+  experience: [{ title: "Founding Engineer", company: "Hushh Technologies LLC", current: true }],
+  education: [],
+  skills: ["AI"],
+  certifications: [],
+};
+
 async function readStream(response: Response) {
   const text = await response.text();
   const lines = text
@@ -149,6 +175,76 @@ describe("POST /api/one/dashboard (Hushh Shadow streaming)", () => {
     const notifications = await import("@/lib/notifications/scan-email");
     expect(notifications.sendScanResultEmails).toHaveBeenCalledWith(
       expect.objectContaining({ scanRunId: "scan-1", audit: null, result: expect.objectContaining({ source: "shadow" }) }),
+    );
+  });
+
+  it("allows Google users to stream without LinkedIn", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(makeRequest(validBody));
+
+    expect(response.status).toBe(200);
+    const { final } = await readStream(response);
+    expect(final.ok).toBe(true);
+  });
+
+  it("rejects guest users without LinkedIn before streaming", async () => {
+    vi.mocked(verifyOneRequest).mockResolvedValueOnce({
+      uid: "guest:dashboard",
+      email: "guest@example.com",
+      name: "Guest User",
+      picture: null,
+      provider: null,
+    });
+    const { POST } = await import("./route");
+    const response = await POST(makeRequest({ ...validBody, name: "Guest User", email: "guest@example.com" }));
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const body = await response.json();
+    expect(body.error).toContain("LinkedIn profile URL is required");
+
+    const db = await import("@/lib/db/scan-store");
+    expect(db.createConsentAndScan).not.toHaveBeenCalled();
+  });
+
+  it("accepts guest users with rich LinkedIn and persists the guest provider", async () => {
+    vi.mocked(verifyOneRequest).mockResolvedValueOnce({
+      uid: "guest:dashboard",
+      email: "guest@example.com",
+      name: "Guest User",
+      picture: null,
+      provider: "guest",
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        ...validBody,
+        name: "Guest User",
+        email: "guest@example.com",
+        linkedinProfile: { ...linkedinProfile, name: "Guest User", email: "guest@example.com" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await readStream(response);
+
+    const db = await import("@/lib/db/scan-store");
+    expect(db.upsertOneUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "guest:dashboard",
+        email: "guest@example.com",
+        provider: "guest",
+      }),
+    );
+    const input = vi.mocked(db.createConsentAndScan).mock.calls[0]?.[0]?.input as {
+      linkedinProfile?: { profileUrl?: string };
+      confirmedProfiles?: Array<{ platform?: string; url?: string }>;
+    };
+    expect(input.linkedinProfile?.profileUrl).toBe("https://www.linkedin.com/in/ankit-kumar-singh");
+    expect(input.confirmedProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ platform: "LinkedIn", url: "https://www.linkedin.com/in/ankit-kumar-singh" }),
+      ]),
     );
   });
 

@@ -3,11 +3,15 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import type { OneDashboardResult } from "@/lib/ria/types";
 
 vi.mock("@/lib/auth/verify", () => ({
+  isGuestOneUser: (user: { uid: string; provider?: string | null }) => user.provider === "guest" || user.uid.startsWith("guest:"),
+  oneUserProvider: (user: { uid: string; provider?: string | null }) =>
+    user.provider === "guest" || user.uid.startsWith("guest:") ? "guest" : user.provider === "dev" || user.uid === "dev-one-user" ? "dev" : "google",
   verifyOneRequest: vi.fn(async () => ({
     uid: "firebase-1",
     email: "ankit@example.com",
     name: "Ankit Kumar Singh",
     picture: null,
+    provider: "google",
   })),
 }));
 
@@ -240,7 +244,7 @@ describe("POST /api/one/research", () => {
     );
   });
 
-  it("requires LinkedIn URL enrichment before starting Phase-1", async () => {
+  it("allows Google users to start Phase-1 without LinkedIn", async () => {
     const { POST } = await import("./route");
     const response = await POST(
       makeRequest({
@@ -252,10 +256,67 @@ describe("POST /api/one/research", () => {
         purpose: "self_audit",
       }),
     );
+
+    expect(response.status).toBe(200);
+    await readStream(response);
+
+    const research = await import("@/lib/research/client");
+    expect(research.startResearch).toHaveBeenCalledWith(expect.not.stringContaining("LINKEDIN_ENRICHED_PROFILE_JSON"), "fast");
+    const question = vi.mocked(research.startResearch).mock.calls[0]?.[0] as string;
+    expect(question).toContain('"linkedinProfile": null');
+  });
+
+  it("requires rich LinkedIn before a provider-guest user can start Phase-1", async () => {
+    vi.mocked(verifyOneRequest).mockResolvedValueOnce({
+      uid: "firebase-guest",
+      email: "guest@example.com",
+      name: "Guest User",
+      picture: null,
+      provider: "guest",
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Guest User",
+        email: "guest@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+      }),
+    );
     const json = (await response.json()) as { error?: string };
 
     expect(response.status).toBe(400);
-    expect(json.error).toContain("Paste your LinkedIn profile URL");
+    expect(json.error).toContain("LinkedIn profile URL is required");
+
+    const research = await import("@/lib/research/client");
+    expect(research.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("requires rich LinkedIn before a guest uid-prefix user can start Phase-1", async () => {
+    vi.mocked(verifyOneRequest).mockResolvedValueOnce({
+      uid: "guest:scan-owner",
+      email: "guest@example.com",
+      name: "Guest User",
+      picture: null,
+      provider: null,
+    });
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Guest User",
+        email: "guest@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+      }),
+    );
+    const json = (await response.json()) as { error?: string };
+
+    expect(response.status).toBe(400);
+    expect(json.error).toContain("LinkedIn profile URL is required");
 
     const research = await import("@/lib/research/client");
     expect(research.startResearch).not.toHaveBeenCalled();
@@ -267,6 +328,7 @@ describe("POST /api/one/research", () => {
       email: "guest@example.com",
       name: "Guest User",
       picture: null,
+      provider: "guest",
     });
     const { POST } = await import("./route");
     const response = await POST(
@@ -290,6 +352,7 @@ describe("POST /api/one/research", () => {
         firebaseUid: "guest:scan-owner",
         email: "guest@example.com",
         name: "Guest User",
+        provider: "guest",
       }),
     );
   });

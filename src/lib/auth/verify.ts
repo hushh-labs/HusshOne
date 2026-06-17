@@ -8,6 +8,8 @@ export interface VerifiedOneUser {
   provider?: string | null;
 }
 
+export type OneAuthProvider = "guest" | "dev" | "google";
+
 function bearerToken(authHeader: string | null) {
   if (!authHeader?.startsWith("Bearer ")) return "";
   return authHeader.slice("Bearer ".length).trim();
@@ -46,4 +48,14 @@ export async function verifyOneRequest(authHeader: string | null): Promise<Verif
     if (error instanceof Error && "statusCode" in error) throw error;
     throw Object.assign(new Error("Invalid Firebase session"), { statusCode: 401 });
   }
+}
+
+export function isGuestOneUser(user: Pick<VerifiedOneUser, "uid" | "provider">): boolean {
+  return user.provider === "guest" || user.uid.startsWith("guest:");
+}
+
+export function oneUserProvider(user: Pick<VerifiedOneUser, "uid" | "provider">): OneAuthProvider {
+  if (isGuestOneUser(user)) return "guest";
+  if (user.provider === "dev" || user.uid === "dev-one-user") return "dev";
+  return "google";
 }

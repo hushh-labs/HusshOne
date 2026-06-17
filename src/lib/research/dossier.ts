@@ -146,12 +146,12 @@ ${subjectInputPromptJson(input)}
 
 function intelligenceOperatingProtocol(): string {
   return `ONE INTELLIGENCE OPERATING PROTOCOL:
-- Source hierarchy: (1) LinkedIn/user-provided JSON = locked ground truth for identity and self-declared career/profile facts; (2) public web evidence = citations and enrichment; (3) inference = clearly labelled, low/medium/high confidence, never stated as fact.
+- Source hierarchy: (1) user-provided JSON, including LinkedIn when present = locked ground truth for identity and self-declared profile facts; (2) public web evidence = citations and enrichment; (3) inference = clearly labelled, low/medium/high confidence, never stated as fact.
   - Optional social-profile JSON is supporting context only. Use Instagram/Threads handles, bios, and public/visible post metadata as search seeds and corroboration clues, not as proof of identity, employment, education, or private activity.
-- Do not re-open, fetch, reverse-search, or cite signed LinkedIn/media URLs. LinkedIn is already provided as data. Spend search effort on public corroboration, adjacent footprint, contradictions, and useful new findings.
-- Reject same-name people unless they connect to the LinkedIn JSON, confirmed profiles, email local-part, employer/school timeline, or another strong anchor.
+- Do not re-open, fetch, reverse-search, or cite signed LinkedIn/media URLs when LinkedIn data is already provided. Spend search effort on public corroboration, adjacent footprint, contradictions, and useful new findings.
+- Reject same-name people unless they connect to the user-provided JSON, confirmed profiles, email local-part, employer/school timeline, or another strong anchor.
 - For every important claim, include source type label: LinkedIn ground truth, public web evidence, or inference. Prefer "unknown" over guessing.
-- If public results conflict with LinkedIn ground truth, report the contradiction and confidence instead of silently overwriting the ground truth.
+- If public results conflict with provided ground truth, report the contradiction and confidence instead of silently overwriting the ground truth.
 - Privacy/safety boundary: use lawful public web and consented inputs only. Never expose secrets, leaked values, private messages, exact home address, private family/minor details, tokens, cookies, or non-consented private account data.`;
 }
 
@@ -241,9 +241,11 @@ ${spine.current ? `  • CURRENT (who they are today): ${spine.current}\n` : ""}
       ? `IDENTITY IS ALREADY CONFIRMED — do NOT re-investigate who this is.
 The subject is the exact person at this LinkedIn profile: ${linkedinAnchor.url}
 Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.phone}.` : ""} ${location}.${otherAnchorsLine}
+${contextBlock}
 Read this ONE LinkedIn profile once to lock the spine (current employer + title, education, location, vanity handle), then STOP confirming identity. Do not disambiguate or investigate same-name people — anything not clearly THIS person, simply ignore it.`
       : `SUBJECT — resolve identity from these, then gather findings:
-Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.phone}.` : ""} ${location}.${otherAnchorsLine}`;
+Name: ${input.name}. Email: ${input.email}.${input.phone ? ` Contact: ${input.phone}.` : ""} ${location}.${otherAnchorsLine}
+${contextBlock}`;
 
   // When we have a parsed LinkedIn spine, the budget becomes a MECHANICAL, capped seed plan
   // (name × one org per query) so the agent spends — not discovers — its searches. Otherwise
@@ -268,9 +270,9 @@ ${identityBlock}
 ${searchBudget}
 
 DELIVER a premium, evidence-backed markdown report with ONLY these sections:
-1. Who they are / Executive Snapshot — 2–4 lines anchored to LinkedIn ground truth, public corroboration, and overall confidence.
+1. Who they are / Executive Snapshot — 2–4 lines anchored to user-provided ground truth (LinkedIn when present), public corroboration, and overall confidence.
 2. Public Profiles & Handles — clearly-theirs profiles only: platform · URL · source label · confidence · why it matches.
-3. Career, Education & Notable Projects — LinkedIn career graph + public corroboration + notable public work/projects.
+3. Career, Education & Notable Projects — provided career graph when present + public corroboration + notable public work/projects.
 4. News, Media & Public Mentions — articles, press, interviews, talks, public-record mentions: title · URL · date · context · confidence.
 5. Public Network & Associations — notable public companies, schools, collaborators, communities, investors/advisors/mentors if public; confidence-labelled.
 6. Evidence Ledger — table with claim · source label (LinkedIn ground truth / public web evidence / inference) · source URL if public · date/accessed context · confidence · contradiction/verification note.

@@ -32,7 +32,7 @@ vi.mock("@/lib/firebase/client", () => ({
   }),
   signInWithGoogle: vi.fn(async () => mocks.currentUser),
   signInWithOneCustomToken: vi.fn(async () => ({
-    uid: "guest-1",
+    uid: "guest:1",
     email: null,
     displayName: null,
     photoURL: null,
@@ -53,7 +53,21 @@ function signedInUser() {
     displayName: "Ankit Kumar Singh",
     photoURL: null,
     getIdToken: async () => "token",
-    getIdTokenResult: async () => ({ claims: { email: "ankit@example.com", name: "Ankit Kumar Singh" } }),
+    getIdTokenResult: async () => ({
+      signInProvider: "google.com",
+      claims: { email: "ankit@example.com", name: "Ankit Kumar Singh", firebase: { sign_in_provider: "google.com" } },
+    }),
+  };
+}
+
+function guestSignedInUser() {
+  return {
+    uid: "guest:cached",
+    email: null,
+    displayName: null,
+    photoURL: null,
+    getIdToken: async () => "guest-token",
+    getIdTokenResult: async () => ({ claims: { email: "guest@example.com", name: "Guest User", provider: "guest" } }),
   };
 }
 
@@ -147,6 +161,7 @@ describe("OneExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
     expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(screen.getByText(/LinkedIn is required for guest sessions/i)).toBeInTheDocument();
     expect(screen.getByLabelText("LinkedIn profile URL")).toBeInTheDocument();
     expect(screen.getByLabelText(/Instagram profile URL/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Threads profile URL/i)).toBeInTheDocument();
@@ -154,8 +169,8 @@ describe("OneExperience", () => {
     expect(vi.mocked(signInWithOneCustomToken)).toHaveBeenCalledWith("guest-custom-token");
   });
 
-  it("routes stale local active scans to social URL intake when no rich profile exists", async () => {
-    mocks.currentUser = signedInUser();
+  it("routes guest stale local active scans to social URL intake when no rich profile exists", async () => {
+    mocks.currentUser = guestSignedInUser();
     window.localStorage.setItem("one_active_scan", "stale-scan");
     window.localStorage.setItem("one_active_started_at", String(Date.now() - 60_000));
     window.localStorage.setItem("one_last_scan", "old-completed");
@@ -174,8 +189,8 @@ describe("OneExperience", () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain("/api/one/scans/stale-scan");
   });
 
-  it("does not ask the server for latest running scans before social URL intake", async () => {
-    mocks.currentUser = signedInUser();
+  it("does not ask the server for latest running scans before guest social URL intake", async () => {
+    mocks.currentUser = guestSignedInUser();
     const fetchMock = mockFetch(async (url) => {
       if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
       if (url === "/api/one/scans/latest") {
@@ -189,6 +204,42 @@ describe("OneExperience", () => {
     expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
     expect(screen.queryByText(/One is composing your report/i)).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain("/api/one/scans/latest");
+  });
+
+  it("routes Google users with no LinkedIn straight to precollect", async () => {
+    mocks.currentUser = signedInUser();
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/latest") return Response.json({ ok: false }, { status: 404 });
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
+    expect(screen.getByLabelText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /send one/i })).not.toBeDisabled();
+    expect(screen.queryByText("Add your social profile URLs.")).not.toBeInTheDocument();
+  });
+
+  it("lets Google users optionally add LinkedIn from precollect", async () => {
+    mocks.currentUser = signedInUser();
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/latest") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/linkedin/enrich-url") return Response.json({ ok: true, profile: richLinkedInProfile() });
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    fireEvent.change(await screen.findByLabelText(/LinkedIn profile URL/i), {
+      target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^add$/i })[0]);
+
+    expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
+    expect(screen.getByText(/LinkedIn is connected as richer career context/i)).toBeInTheDocument();
   });
 
   it("still resumes an active scan after a rich URL-enriched LinkedIn profile exists", async () => {
@@ -224,7 +275,7 @@ describe("OneExperience", () => {
   });
 
   it("can connect optional socials from the first social URL intake before LinkedIn unlocks Send One", async () => {
-    mocks.currentUser = signedInUser();
+    mocks.currentUser = guestSignedInUser();
     mockFetch(async (url) => {
       if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
       if (url === "/api/instagram/enrich-url") {
@@ -265,7 +316,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
     expect(window.localStorage.getItem("one_li_full")).toBeNull();
   });
 
@@ -284,7 +335,7 @@ describe("OneExperience", () => {
     await waitFor(() => expect(send).not.toBeDisabled());
   });
 
-  it("routes stale completed reports with no rich profile back to social URL intake", async () => {
+  it("routes stale completed reports with no rich profile back to Google precollect", async () => {
     mocks.currentUser = signedInUser();
     window.localStorage.setItem("one_last_scan", "old-completed");
     mockFetch(async (url) => {
@@ -302,7 +353,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
     expect(screen.queryByText(/Your deep research dossier/i)).not.toBeInTheDocument();
     expect(window.localStorage.getItem("one_last_scan")).toBeNull();
   });
