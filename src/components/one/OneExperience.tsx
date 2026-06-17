@@ -2420,18 +2420,91 @@ function ConnectLinkedIn({
   type Phase = "idle" | "fetching" | "connected" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
+  const [instagramUrl, setInstagramUrl] = useState("");
+  const [threadsUrl, setThreadsUrl] = useState("");
+  const [xUrl, setXUrl] = useState("");
   const [touched, setTouched] = useState(false);
+  const [socialTouched, setSocialTouched] = useState({ instagram: false, threads: false, x: false });
   const [err, setErr] = useState("");
 
   const normalized = normalizeLinkedInUrl(url);
   const invalid = touched && !normalized;
+  const normalizedInstagram = normalizeInstagramUrl(instagramUrl);
+  const normalizedThreads = normalizeThreadsUrl(threadsUrl);
+  const normalizedX = normalizeXUrl(xUrl);
+  const invalidInstagram = socialTouched.instagram && !!instagramUrl && !normalizedInstagram;
+  const invalidThreads = socialTouched.threads && !!threadsUrl && !normalizedThreads;
+  const invalidX = socialTouched.x && !!xUrl && !normalizedX;
+
+  const enrichInstagram = async (authorization: string, profileUrl: string) => {
+    const res = await fetch("/api/instagram/enrich-url", {
+      method: "POST",
+      headers: { Authorization: authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: profileUrl }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as {
+      ok?: boolean; profile?: InstagramProfileFull | null; error?: string; code?: string; access?: InstagramAccessInfo;
+    };
+    if (res.status === 202 && payload.code === "instagram_access_pending") {
+      track("instagram_connect_pending", { state: payload.access?.state ?? "pending" });
+      return;
+    }
+    if (!res.ok || !payload.ok || !hasInstagramProfile(payload.profile)) {
+      throw new Error(payload.error || "We could not read this Instagram profile.");
+    }
+    onInstagramConnected(payload.profile);
+  };
+
+  const enrichThreads = async (authorization: string, profileUrl: string) => {
+    const res = await fetch("/api/threads/enrich-url", {
+      method: "POST",
+      headers: { Authorization: authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: profileUrl }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as {
+      ok?: boolean; profile?: ThreadsProfileFull | null; error?: string; code?: string; access?: ThreadsAccessInfo;
+    };
+    if (res.status === 202 && payload.code === "threads_access_pending") {
+      track("threads_connect_pending", { state: payload.access?.state ?? "pending" });
+      return;
+    }
+    if (!res.ok || !payload.ok || !hasThreadsProfile(payload.profile)) {
+      throw new Error(payload.error || "We could not read this Threads profile.");
+    }
+    onThreadsConnected(payload.profile);
+  };
+
+  const enrichX = async (authorization: string, profileUrl: string) => {
+    const res = await fetch("/api/x/enrich-url", {
+      method: "POST",
+      headers: { Authorization: authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: profileUrl }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as {
+      ok?: boolean; profile?: XProfileFull | null; error?: string; code?: string; access?: XAccessInfo;
+    };
+    if (res.status === 202 && payload.code === "x_access_pending") {
+      track("x_connect_pending", { state: payload.access?.state ?? "pending" });
+      return;
+    }
+    if (!res.ok || !payload.ok || !hasXProfile(payload.profile)) {
+      throw new Error(payload.error || "We could not read this X profile.");
+    }
+    onXConnected(payload.profile);
+  };
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     setTouched(true);
+    setSocialTouched({ instagram: true, threads: true, x: true });
     setErr("");
     if (!normalized) {
       setErr("Paste a valid LinkedIn personal profile URL.");
+      setPhase("error");
+      return;
+    }
+    if ((instagramUrl && !normalizedInstagram) || (threadsUrl && !normalizedThreads) || (xUrl && !normalizedX)) {
+      setErr("Fix invalid optional profile URLs or leave them blank.");
       setPhase("error");
       return;
     }
@@ -2439,6 +2512,19 @@ function ConnectLinkedIn({
     track("linkedin_connect_started");
     try {
       const authorization = await getFirebaseBearer(authUser as User);
+      const optionalTasks: Promise<void>[] = [];
+      if (normalizedInstagram) {
+        track("instagram_connect_started");
+        optionalTasks.push(enrichInstagram(authorization, normalizedInstagram));
+      }
+      if (normalizedThreads) {
+        track("threads_connect_started");
+        optionalTasks.push(enrichThreads(authorization, normalizedThreads));
+      }
+      if (normalizedX) {
+        track("x_connect_started");
+        optionalTasks.push(enrichX(authorization, normalizedX));
+      }
       const res = await fetch("/api/linkedin/enrich-url", {
         method: "POST",
         headers: { Authorization: authorization, "Content-Type": "application/json" },
@@ -2450,11 +2536,12 @@ function ConnectLinkedIn({
       if (!res.ok || !payload.ok || !payload.profile) {
         throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
       }
+      await Promise.all(optionalTasks);
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
       const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
-      track("linkedin_connect_failed", { reason: message.slice(0, 120) });
+      track("profile_connect_failed", { reason: message.slice(0, 120) });
       setErr(message);
       setPhase("error");
     }
@@ -2507,21 +2594,81 @@ function ConnectLinkedIn({
 
           <div className="pc-socials">
             <div className="pc-section-label">Optional social context</div>
-            <ConnectInstagramInline
-              authUser={authUser}
-              profiles={instagramProfiles}
-              onConnected={onInstagramConnected}
-            />
-            <ConnectThreadsInline
-              authUser={authUser}
-              profiles={threadsProfiles}
-              onConnected={onThreadsConnected}
-            />
-            <ConnectXInline
-              authUser={authUser}
-              profiles={xProfiles}
-              onConnected={onXConnected}
-            />
+            <div className="field-group" style={{ gap: 8 }}>
+              <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+              <input
+                id="instagram-url"
+                className={"input" + (invalidInstagram ? " invalid" : "")}
+                placeholder="https://www.instagram.com/username/"
+                value={instagramProfiles[0]?.profileUrl ?? instagramUrl}
+                readOnly={!!instagramProfiles[0]}
+                onChange={(e) => {
+                  setInstagramUrl(e.target.value);
+                  if (err) setErr("");
+                }}
+                onBlur={() => setSocialTouched((prev) => ({ ...prev, instagram: true }))}
+                autoComplete="url"
+                inputMode="url"
+                aria-invalid={invalidInstagram}
+              />
+              <span className="field-hint">
+                {instagramProfiles[0] ? (
+                  <>{Icons.check(12)} @{instagramProfiles[0].username} added</>
+                ) : (
+                  "Direct public profile link only."
+                )}
+              </span>
+            </div>
+            <div className="field-group" style={{ gap: 8 }}>
+              <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+              <input
+                id="threads-url"
+                className={"input" + (invalidThreads ? " invalid" : "")}
+                placeholder="https://www.threads.com/@username"
+                value={threadsProfiles[0]?.profileUrl ?? threadsUrl}
+                readOnly={!!threadsProfiles[0]}
+                onChange={(e) => {
+                  setThreadsUrl(e.target.value);
+                  if (err) setErr("");
+                }}
+                onBlur={() => setSocialTouched((prev) => ({ ...prev, threads: true }))}
+                autoComplete="url"
+                inputMode="url"
+                aria-invalid={invalidThreads}
+              />
+              <span className="field-hint">
+                {threadsProfiles[0] ? (
+                  <>{Icons.check(12)} @{threadsProfiles[0].username} added</>
+                ) : (
+                  "Direct public profile link only."
+                )}
+              </span>
+            </div>
+            <div className="field-group" style={{ gap: 8 }}>
+              <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+              <input
+                id="x-url"
+                className={"input" + (invalidX ? " invalid" : "")}
+                placeholder="https://x.com/username"
+                value={xProfiles[0]?.profileUrl ?? xUrl}
+                readOnly={!!xProfiles[0]}
+                onChange={(e) => {
+                  setXUrl(e.target.value);
+                  if (err) setErr("");
+                }}
+                onBlur={() => setSocialTouched((prev) => ({ ...prev, x: true }))}
+                autoComplete="url"
+                inputMode="url"
+                aria-invalid={invalidX}
+              />
+              <span className="field-hint">
+                {xProfiles[0] ? (
+                  <>{Icons.check(12)} @{xProfiles[0].username} added</>
+                ) : (
+                  "Direct public X/Twitter profile link only."
+                )}
+              </span>
+            </div>
           </div>
 
           <div className="cta-block">
@@ -2541,12 +2688,12 @@ function ConnectLinkedIn({
                       marginRight: 8,
                     }}
                   />
-                  Reading profile…
+                  Connecting profiles…
                 </>
               ) : (
                 <>
-                  {Icons.linkedin()}
-                  <span style={{ marginLeft: 8 }}>Use LinkedIn profile</span>
+                  {Icons.spark()}
+                  <span style={{ marginLeft: 8 }}>Continue with profiles</span>
                 </>
               )}
             </button>
