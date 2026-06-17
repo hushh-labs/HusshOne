@@ -152,6 +152,18 @@ describe("OneExperience", () => {
     expect(screen.queryByText("Paste your LinkedIn profile URL.")).not.toBeInTheDocument();
   });
 
+  it("shows the connected LinkedIn URL on the social intake page", async () => {
+    mocks.currentUser = signedInUser();
+    window.localStorage.setItem("one_li_full", JSON.stringify(richLinkedInProfile()));
+    mockFetch(async () => Response.json({ ok: false }, { status: 404 }));
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
+    expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
   it("routes stale completed reports with no rich profile back to LinkedIn URL capture", async () => {
     mocks.currentUser = signedInUser();
     window.localStorage.setItem("one_last_scan", "old-completed");
