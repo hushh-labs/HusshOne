@@ -4,6 +4,14 @@ import type { DashboardCategoryMap, LocationMode, OneDashboardResult, OneSubject
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { INTELLIGENCE_VERSION } from "./version";
 
+const SOCIAL_PROMPT_JSON_CHAR_LIMIT = 12_000;
+const SOCIAL_PROMPT_POST_LIMIT = 6;
+const SOCIAL_PROMPT_TINY_POST_LIMIT = 2;
+const SOCIAL_PROMPT_TEXT_LIMIT = 360;
+const SOCIAL_SUMMARY_TEXT_LIMIT = 160;
+const SOCIAL_VISIBLE_TEXT_LIMIT = 8;
+const SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT = 3;
+
 function emptyCategories(): DashboardCategoryMap {
   return {
     newsAndMedia: [],
@@ -85,26 +93,125 @@ function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
   return JSON.stringify(normalized, null, 2);
 }
 
-function socialProfilesPromptJson(input: OneSubjectInput): string {
-  const profiles = (input.socialProfiles ?? []).map((profile) => ({
+type PromptSocialProfile = NonNullable<OneSubjectInput["socialProfiles"]>[number];
+
+function trimString(value: unknown, max = SOCIAL_PROMPT_TEXT_LIMIT): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (!trimmed) return null;
+  return trimmed.length > max ? `${trimmed.slice(0, Math.max(0, max - 1)).trim()}…` : trimmed;
+}
+
+function stringArray(value: unknown, limit: number, max = SOCIAL_PROMPT_TEXT_LIMIT): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => trimString(entry, max)).filter((entry): entry is string => Boolean(entry)).slice(0, limit);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function countSocialPosts(profile: PromptSocialProfile): number {
+  if ("recentPublicPosts" in profile && Array.isArray(profile.recentPublicPosts)) return profile.recentPublicPosts.length;
+  if ("recentThreads" in profile && Array.isArray(profile.recentThreads)) return profile.recentThreads.length;
+  if ("timelineItems" in profile && Array.isArray(profile.timelineItems)) return profile.timelineItems.length;
+  return 0;
+}
+
+function compactSocialItem(item: unknown, textLimit: number): Record<string, unknown> {
+  const source = record(item);
+  const mediaUrls = Array.isArray(source.mediaUrls) ? source.mediaUrls : [];
+  const externalLinks = stringArray(source.externalLinks, 3, 500);
+  return {
+    url: trimString(source.url, 500),
+    kind: trimString(source.kind, 40) ?? trimString(source.tab, 40) ?? null,
+    text:
+      trimString(source.caption, textLimit) ??
+      trimString(source.text, textLimit) ??
+      trimString(source.contentSeed, textLimit) ??
+      trimString(source.visibleText, textLimit),
+    timestamp: trimString(source.timestamp, 80),
+    hasMedia: mediaUrls.length > 0 || Boolean(source.thumbnailUrl || source.feedPhotoUrl || source.primaryPhotoUrl),
+    mediaCount: mediaUrls.length || undefined,
+    externalLinks: externalLinks.length ? externalLinks : undefined,
+    replyCount: trimString(source.replyCount, 40),
+    repostCount: trimString(source.repostCount, 40),
+    likeCount: trimString(source.likeCount, 40),
+    viewCount: trimString(source.viewCount, 40),
+    visibleLabels: stringArray(source.visibleLabels, 8, 80),
+    isReply: source.isReply === true || undefined,
+  };
+}
+
+function compactSocialItems(profile: PromptSocialProfile, limit: number, textLimit: number): Record<string, unknown>[] {
+  if (limit <= 0) return [];
+  const raw =
+    "recentPublicPosts" in profile && Array.isArray(profile.recentPublicPosts)
+      ? profile.recentPublicPosts
+      : "recentThreads" in profile && Array.isArray(profile.recentThreads)
+        ? profile.recentThreads
+        : "timelineItems" in profile && Array.isArray(profile.timelineItems)
+          ? profile.timelineItems
+          : [];
+  return raw.slice(0, limit).map((item) => compactSocialItem(item, textLimit));
+}
+
+function compactSocialProfile(
+  profile: PromptSocialProfile,
+  options: { postLimit: number; textLimit: number; visibleTextLimit: number },
+): Record<string, unknown> {
+  const postCount = countSocialPosts(profile);
+  const sampleItems = compactSocialItems(profile, options.postLimit, options.textLimit);
+  return {
     platform: profile.platform,
     username: profile.username,
-    displayName: profile.displayName,
-    bio: profile.bio,
-    avatarUrl: profile.avatarUrl,
-    externalUrl: profile.externalUrl,
+    displayName: trimString(profile.displayName, 120),
+    bio: trimString(profile.bio, options.textLimit),
+    externalUrl: trimString(profile.externalUrl, 500),
     profileUrl: profile.profileUrl,
     isVerified: profile.isVerified ?? null,
     isPrivate: profile.isPrivate ?? null,
     stats: profile.stats ?? null,
-    highlights: "highlights" in profile ? profile.highlights ?? [] : [],
-    recentPublicPosts: "recentPublicPosts" in profile ? profile.recentPublicPosts ?? [] : [],
-    recentThreads: "recentThreads" in profile ? profile.recentThreads ?? [] : [],
-    visibleProfileText: profile.visibleProfileText ?? [],
+    visibleProfileText: stringArray(profile.visibleProfileText, options.visibleTextLimit, options.textLimit),
+    sampleVisibleItems: sampleItems,
+    promptBudget: {
+      totalVisibleItems: postCount,
+      includedVisibleItems: sampleItems.length,
+      omittedVisibleItems: Math.max(0, postCount - sampleItems.length),
+      mediaUrlsOmitted: true,
+    },
     source: profile.source,
     connectedAt: profile.connectedAt ?? null,
-  }));
-  return JSON.stringify(profiles, null, 2);
+  };
+}
+
+function compactSocialProfiles(
+  input: OneSubjectInput,
+  options: { postLimit: number; textLimit: number; visibleTextLimit: number },
+): Record<string, unknown>[] {
+  return (input.socialProfiles ?? []).map((profile) => compactSocialProfile(profile, options));
+}
+
+function socialProfilesPromptJson(input: OneSubjectInput): string {
+  const full = JSON.stringify(
+    compactSocialProfiles(input, {
+      postLimit: SOCIAL_PROMPT_POST_LIMIT,
+      textLimit: SOCIAL_PROMPT_TEXT_LIMIT,
+      visibleTextLimit: SOCIAL_VISIBLE_TEXT_LIMIT,
+    }),
+    null,
+    2,
+  );
+  if (full.length <= SOCIAL_PROMPT_JSON_CHAR_LIMIT) return full;
+  return JSON.stringify(
+    compactSocialProfiles(input, {
+      postLimit: SOCIAL_PROMPT_TINY_POST_LIMIT,
+      textLimit: SOCIAL_SUMMARY_TEXT_LIMIT,
+      visibleTextLimit: SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT,
+    }),
+    null,
+    2,
+  );
 }
 
 function subjectInputPromptJson(input: OneSubjectInput): string {
@@ -123,7 +230,11 @@ function subjectInputPromptJson(input: OneSubjectInput): string {
     },
     confirmedProfiles: input.confirmedProfiles ?? [],
     linkedinProfile: input.linkedinProfile ? JSON.parse(linkedInProfilePromptJson(input.linkedinProfile)) : null,
-    socialProfiles: input.socialProfiles ?? [],
+    socialProfiles: compactSocialProfiles(input, {
+      postLimit: 0,
+      textLimit: SOCIAL_SUMMARY_TEXT_LIMIT,
+      visibleTextLimit: SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT,
+    }),
   };
   return JSON.stringify(payload, null, 2);
 }

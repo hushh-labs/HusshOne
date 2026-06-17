@@ -27,6 +27,12 @@ function extractSocialPromptJson(question: string): Array<Record<string, unknown
   return JSON.parse(match![1]) as Array<Record<string, unknown>>;
 }
 
+function extractSubjectPromptJson(question: string): Record<string, unknown> {
+  const match = question.match(/SUBJECT_INTELLIGENCE_CONTEXT_JSON[\s\S]*?```json\n([\s\S]*?)\n```/);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]) as Record<string, unknown>;
+}
+
 describe("buildPersonDossierQuestion", () => {
   it("defuses a LinkedIn anchor into a load-reducer (identity pre-confirmed, budgeted, lean)", () => {
     const url = "https://www.linkedin.com/in/ankit-kumar-singh-001";
@@ -340,9 +346,11 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
       platform: "Threads",
       username: "threads",
       profileUrl: "https://www.threads.com/@threads",
-      recentThreads: [{ url: "https://www.threads.com/@threads/post/Cabc123", text: "Visible post", contentSeed: "Visible post", feedPhotoUrl: "https://cdn.example.com/feed.jpg", likeCount: "126" }],
+      sampleVisibleItems: [{ url: "https://www.threads.com/@threads/post/Cabc123", text: "Visible post", hasMedia: true, likeCount: "126" }],
       source: "scraper",
     });
+    expect(JSON.stringify(social)).not.toContain("feedPhotoUrl");
+    expect(JSON.stringify(social)).not.toContain("https://cdn.example.com/feed.jpg");
     expect(q).toContain("Optional social-profile JSON is supporting context only");
     expect(q).toContain("Instagram/Threads handles");
     expect(q).toContain("supporting cross-platform context only");
@@ -350,6 +358,67 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
     expect(q).toContain("Treat this JSON as LOCKED GROUND TRUTH");
     expect(q).not.toContain("li_at");
     expect(q).not.toContain("session.pkl");
+  });
+
+  it("keeps large social payloads under the Deep Research question limit without changing LinkedIn ground truth", () => {
+    const input = scraperInput();
+    input.socialProfiles = [
+      {
+        platform: "Instagram",
+        username: "sundarpichai",
+        displayName: "Sundar Pichai",
+        bio: "CEO of Google and Alphabet.",
+        avatarUrl: "https://cdn.example.com/avatar.jpg",
+        externalUrl: "https://google.com/",
+        profileUrl: "https://www.instagram.com/sundarpichai/",
+        isVerified: true,
+        isPrivate: false,
+        stats: { posts: "400", followers: "5M", following: "100" },
+        recentPublicPosts: Array.from({ length: 120 }, (_, index) => ({
+          url: `https://www.instagram.com/p/${index}/`,
+          kind: "post",
+          caption: `Long visible caption ${index} `.repeat(40),
+          mediaUrls: [`https://cdn.example.com/full-resolution-${index}.jpg`],
+          likeCount: String(1000 + index),
+        })),
+        source: "scraper",
+      },
+      {
+        platform: "Threads",
+        username: "sundarpichai",
+        displayName: "Sundar Pichai",
+        bio: "Google.",
+        avatarUrl: null,
+        externalUrl: null,
+        profileUrl: "https://www.threads.com/@sundarpichai",
+        isVerified: true,
+        isPrivate: false,
+        stats: { followers: "1M", threads: "300" },
+        recentThreads: Array.from({ length: 120 }, (_, index) => ({
+          url: `https://www.threads.com/@sundarpichai/post/${index}`,
+          text: `Long visible thread ${index} `.repeat(40),
+          mediaUrls: [`https://cdn.example.com/thread-${index}.jpg`],
+          likeCount: String(500 + index),
+        })),
+        source: "scraper",
+      },
+    ];
+
+    const q = buildPersonDossierQuestion(input);
+    const linkedin = extractLinkedInPromptJson(q);
+    const subject = extractSubjectPromptJson(q);
+    const social = extractSocialPromptJson(q);
+
+    expect(q.length).toBeLessThan(40_000);
+    expect(linkedin.experience).toEqual(input.linkedinProfile?.experience);
+    expect(JSON.stringify(subject)).not.toContain("recentPublicPosts");
+    expect(JSON.stringify(subject)).not.toContain("recentThreads");
+    expect(JSON.stringify(social)).not.toContain("full-resolution-119");
+    expect(social[0].promptBudget).toMatchObject({
+      totalVisibleItems: 120,
+      omittedVisibleItems: expect.any(Number),
+      mediaUrlsOmitted: true,
+    });
   });
 });
 

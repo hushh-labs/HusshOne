@@ -344,6 +344,14 @@ function statusCodeOf(error: unknown) {
   return null;
 }
 
+function researchStartMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : "";
+  if (/body\/question must NOT have more than 40000 characters/i.test(raw)) {
+    return "One had too much source context to start the scan. Please try again.";
+  }
+  return raw || "One could not start the research";
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -463,9 +471,10 @@ export async function POST(request: Request) {
     scanRunId = scan.scanRunId;
   } catch (error) {
     const status = statusCodeOf(error) ?? 500;
-    const message = error instanceof Error ? error.message : "One could not start the research";
+    const rawMessage = error instanceof Error ? error.message : String(error || "");
+    const message = researchStartMessage(error);
     console[status >= 500 ? "error" : "warn"](
-      JSON.stringify({ event: "one.research.precheck_failed", status, message }),
+      JSON.stringify({ event: "one.research.precheck_failed", status, message, rawMessage }),
     );
     return NextResponse.json({ ok: false, error: message }, { status: status >= 400 ? status : 500 });
   }
