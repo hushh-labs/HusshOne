@@ -217,7 +217,8 @@ describe("POST /api/one/research", () => {
     expect(question).toContain("SOCIAL_ENRICHED_PROFILES_JSON");
     expect(question).toContain('"username": "ankit_ya_i_am"');
     expect(question).toContain('"platform": "Threads"');
-    expect(question).toContain('"recentThreads"');
+    expect(question).toContain('"sampleVisibleItems"');
+    expect(question).not.toContain('"recentThreads"');
     expect(question).toContain("supporting cross-platform context only");
     expect(question).toContain("Treat this JSON as LOCKED GROUND TRUTH");
 
@@ -242,6 +243,30 @@ describe("POST /api/one/research", () => {
         expect.objectContaining({ platform: "Threads", url: "https://www.threads.com/@threads" }),
       ]),
     );
+  });
+
+  it("does not expose raw Deep Research question-size validation errors to the UI", async () => {
+    const research = await import("@/lib/research/client");
+    vi.mocked(research.startResearch).mockRejectedValueOnce(
+      Object.assign(new Error("body/question must NOT have more than 40000 characters"), { statusCode: 502 }),
+    );
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Ankit Kumar Singh",
+        email: "ankit@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+        linkedinProfile,
+      }),
+    );
+    const json = (await response.json()) as { error?: string };
+
+    expect(response.status).toBe(502);
+    expect(json.error).toBe("One had too much source context to start the scan. Please try again.");
+    expect(json.error).not.toContain("body/question");
   });
 
   it("allows Google users to start Phase-1 without LinkedIn", async () => {
