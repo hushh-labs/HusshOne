@@ -256,7 +256,7 @@ function mapThreadsResponseToOutcome(response: ThreadsScraperResponse, normalize
   return { status: "profile", ...mapThreadsResponseToProfile(response, normalizedUrl), normalizedUrl, access };
 }
 
-export async function scrapeThreadsProfileUrl(inputUrl: unknown): Promise<ThreadsEnrichmentOutcome> {
+export async function scrapeThreadsProfileUrl(inputUrl: unknown, opts: { maxPosts?: number } = {}): Promise<ThreadsEnrichmentOutcome> {
   const normalizedUrl = normalizeThreadsUrl(inputUrl);
   if (!normalizedUrl) {
     throw new ThreadsScraperError("Provide a valid Threads profile URL.", 400, "invalid_threads_url");
@@ -278,7 +278,7 @@ export async function scrapeThreadsProfileUrl(inputUrl: unknown): Promise<Thread
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url: normalizedUrl }),
+      body: JSON.stringify({ url: normalizedUrl, ...(opts.maxPosts ? { maxPosts: opts.maxPosts } : {}) }),
       signal: controller.signal,
     });
     const data = (await res.json().catch(() => null)) as ThreadsScraperResponse | { error?: string } | null;

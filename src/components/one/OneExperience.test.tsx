@@ -252,8 +252,9 @@ describe("OneExperience", () => {
     render(<OneExperience />);
 
     expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /linkedin/i })).toBeInTheDocument();
-    expect(screen.queryByLabelText(/LinkedIn profile URL/i)).not.toBeInTheDocument();
+    // LinkedIn is recommended for Google users and its URL field auto-opens (low-friction nudge).
+    expect(screen.getByText(/Recommended — One reads your real career/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/LinkedIn profile URL/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send one/i })).not.toBeDisabled();
     expect(screen.queryByText("Add your social profile URLs.")).not.toBeInTheDocument();
   });
@@ -269,14 +270,14 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /linkedin/i }));
+    // The LinkedIn field auto-opens for Google users — no need to expand the connector first.
     fireEvent.change(await screen.findByLabelText(/LinkedIn profile URL/i), {
       target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
     });
     fireEvent.click(screen.getByRole("button", { name: /add linkedin/i }));
 
     expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
-    expect(screen.getByText(/LinkedIn is connected as richer career context/i)).toBeInTheDocument();
+    expect(screen.getByText(/One now reads your real career, not just your name/i)).toBeInTheDocument();
   });
 
   it("still resumes an active scan after a rich URL-enriched LinkedIn profile exists", async () => {

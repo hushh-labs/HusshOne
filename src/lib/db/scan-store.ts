@@ -3,6 +3,8 @@ import type { Prisma } from "@prisma/client";
 import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type { PreferenceEvidence } from "@/lib/social-intelligence/preference-profile";
+import { extractSocialArchive } from "@/lib/social-intelligence/archive";
+import type { SocialProfileFull } from "@/lib/ria/types";
 import { getPrismaClient } from "./prisma";
 
 const USER_NOTIFICATION_TYPE = "scan_user_full_result";
@@ -515,7 +517,9 @@ export async function indexSocialPreferenceEvidence(
             platform,
             assetHash,
             sourceUrl: item.mediaUrl,
+            mediaType: "image",
             cacheUri: null,
+            analysisStatus: "pending",
             analysis: safeJson({
               status: "pending",
               provider: "vertex_gemini_cloud_vision",
@@ -525,17 +529,9 @@ export async function indexSocialPreferenceEvidence(
               scanRunId: input.scanRunId || null,
             }),
           },
-          update: {
-            sourceUrl: item.mediaUrl,
-            analysis: safeJson({
-              status: "pending",
-              provider: "vertex_gemini_cloud_vision",
-              source: "preference_v2_fast_pass",
-              preferenceVersion: input.version,
-              sourceEvidenceIds: [item.id],
-              scanRunId: input.scanRunId || null,
-            }),
-          },
+          // Preserve any completed analysis — only refresh the source URL on re-index so the
+          // media worker's results are never reset to pending.
+          update: { sourceUrl: item.mediaUrl },
         });
         mediaAssets += 1;
       }
@@ -543,6 +539,442 @@ export async function indexSocialPreferenceEvidence(
     return { contentItems, mediaAssets };
   } catch {
     return null;
+  }
+}
+
+/* ── v3 preference archive: full 1024-item capture + read path + media-asset queue ───────────
+   The deep-scrape worker calls indexSocialArchive with freshly scraped 1024-deep profiles; the
+   synthesis reads back the archive; the media worker drains pending SocialMediaAsset rows. Every
+   function is defensive (missing table/column or any error → null/empty, never breaks a scan). */
+
+export interface IndexSocialArchiveResult {
+  contentItems: number;
+  mediaAssets: number;
+  perPlatform: Record<string, { items: number; media: number }>;
+}
+
+/** Persist the FULL archive (up to 1024 visible items/profile + their media assets). Media rows
+ *  are created `pending`; an existing row's completed analysis is preserved on re-index. */
+export async function indexSocialArchive(input: {
+  firebaseUid: string;
+  scanRunId?: string | null;
+  version: string;
+  profiles: SocialProfileFull[];
+  maxItemsPerProfile?: number;
+}): Promise<IndexSocialArchiveResult | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const archive = extractSocialArchive(input.profiles, { maxItemsPerProfile: input.maxItemsPerProfile });
+    let contentItems = 0;
+    for (const row of archive.content) {
+      try {
+        await prisma.socialContentItem.upsert({
+          where: { userId_platform_itemId: { userId: user.id, platform: row.platform, itemId: row.itemId } },
+          create: {
+            userId: user.id,
+            platform: row.platform,
+            publicId: row.publicId,
+            itemId: row.itemId,
+            itemUrl: row.itemUrl,
+            itemType: row.itemType,
+            text: row.text,
+            timestamp: parseDate(row.timestamp),
+            ...(row.media ? { media: safeJson(row.media) } : {}),
+            ...(row.metrics ? { metrics: safeJson(row.metrics) } : {}),
+            features: safeJson({ indexVersion: input.version, source: "preference_v3_archive", scanRunId: input.scanRunId || null }),
+          },
+          update: {
+            publicId: row.publicId,
+            itemUrl: row.itemUrl,
+            itemType: row.itemType,
+            text: row.text,
+            timestamp: parseDate(row.timestamp),
+            ...(row.media ? { media: safeJson(row.media) } : {}),
+            ...(row.metrics ? { metrics: safeJson(row.metrics) } : {}),
+          },
+        });
+        contentItems += 1;
+      } catch {
+        /* skip a malformed row, keep indexing the rest */
+      }
+    }
+    let mediaAssets = 0;
+    for (const asset of archive.media) {
+      try {
+        await prisma.socialMediaAsset.upsert({
+          where: { userId_platform_assetHash: { userId: user.id, platform: asset.platform, assetHash: asset.assetHash } },
+          create: {
+            userId: user.id,
+            platform: asset.platform,
+            assetHash: asset.assetHash,
+            sourceUrl: asset.sourceUrl,
+            mediaType: asset.mediaType,
+            analysisStatus: "pending",
+            analysis: safeJson({ status: "pending", source: "preference_v3_archive", scanRunId: input.scanRunId || null }),
+          },
+          // Preserve completed analysis on re-index — only refresh the source URL + media type.
+          update: { sourceUrl: asset.sourceUrl, mediaType: asset.mediaType },
+        });
+        mediaAssets += 1;
+      } catch {
+        /* skip */
+      }
+    }
+    return { contentItems, mediaAssets, perPlatform: archive.perPlatform };
+  } catch {
+    return null;
+  }
+}
+
+export interface ArchiveDepthSummary {
+  perPlatform: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number; mediaFailed: number }>;
+  totals: { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number };
+}
+
+/** Per-platform archive depth for the dashboard + synthesis gating (how many items indexed,
+ *  how much media analyzed vs pending). */
+export async function getArchiveDepthSummary(firebaseUid: string): Promise<ArchiveDepthSummary | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const empty = () => ({ items: 0, mediaTotal: 0, mediaAnalyzed: 0, mediaPending: 0, mediaFailed: 0 });
+    const [contentGroups, mediaGroups] = await Promise.all([
+      prisma.socialContentItem.groupBy({ by: ["platform"], where: { userId: user.id }, _count: { _all: true } }),
+      prisma.socialMediaAsset.groupBy({ by: ["platform", "analysisStatus"], where: { userId: user.id }, _count: { _all: true } }),
+    ]);
+    const perPlatform: ArchiveDepthSummary["perPlatform"] = {};
+    for (const group of contentGroups) {
+      (perPlatform[group.platform] ??= empty()).items = group._count._all;
+    }
+    for (const group of mediaGroups) {
+      const bucket = (perPlatform[group.platform] ??= empty());
+      bucket.mediaTotal += group._count._all;
+      if (group.analysisStatus === "completed") bucket.mediaAnalyzed += group._count._all;
+      else if (group.analysisStatus === "failed") bucket.mediaFailed += group._count._all;
+      else bucket.mediaPending += group._count._all; // pending | processing | skipped
+    }
+    const totals = Object.values(perPlatform).reduce(
+      (acc, p) => ({
+        items: acc.items + p.items,
+        mediaTotal: acc.mediaTotal + p.mediaTotal,
+        mediaAnalyzed: acc.mediaAnalyzed + p.mediaAnalyzed,
+        mediaPending: acc.mediaPending + p.mediaPending,
+      }),
+      { items: 0, mediaTotal: 0, mediaAnalyzed: 0, mediaPending: 0 },
+    );
+    return { perPlatform, totals };
+  } catch {
+    return null;
+  }
+}
+
+export interface ArchiveContentRecord {
+  platform: string;
+  publicId: string;
+  itemId: string;
+  itemUrl: string;
+  itemType: string;
+  text: string | null;
+  timestamp: string | null;
+  media: unknown;
+  metrics: unknown;
+}
+
+/** Read indexed content items back for synthesis (newest first). */
+export async function getSocialContentItems(
+  firebaseUid: string,
+  opts: { platform?: string; limit?: number } = {},
+): Promise<ArchiveContentRecord[]> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return [];
+    const rows = await prisma.socialContentItem.findMany({
+      where: { userId: user.id, ...(opts.platform ? { platform: opts.platform } : {}) },
+      orderBy: [{ timestamp: "desc" }, { lastSeenAt: "desc" }],
+      take: Math.max(1, Math.min(opts.limit ?? 1024, 4096)),
+    });
+    return rows.map((r) => ({
+      platform: r.platform,
+      publicId: r.publicId,
+      itemId: r.itemId,
+      itemUrl: r.itemUrl,
+      itemType: r.itemType,
+      text: r.text,
+      timestamp: r.timestamp ? r.timestamp.toISOString() : null,
+      media: r.media,
+      metrics: r.metrics,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface PendingMediaAsset {
+  id: string;
+  platform: string;
+  assetHash: string;
+  sourceUrl: string;
+  mediaType: string;
+}
+
+/** Claim a batch of unanalyzed media assets for the media worker. */
+export async function getPendingMediaAssets(firebaseUid: string, opts: { limit?: number } = {}): Promise<PendingMediaAsset[]> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return [];
+    const rows = await prisma.socialMediaAsset.findMany({
+      where: { userId: user.id, analysisStatus: "pending" },
+      orderBy: { lastSeenAt: "desc" },
+      take: Math.max(1, Math.min(opts.limit ?? 32, 256)),
+    });
+    return rows.map((r) => ({ id: r.id, platform: r.platform, assetHash: r.assetHash, sourceUrl: r.sourceUrl, mediaType: r.mediaType }));
+  } catch {
+    return [];
+  }
+}
+
+/** Persist a media-analysis result (or failure) for one asset. */
+export async function updateMediaAssetAnalysis(input: {
+  assetId: string;
+  analysisStatus: "processing" | "completed" | "failed" | "skipped";
+  analysis?: unknown;
+  analysisModel?: string | null;
+  analysisVersion?: string | null;
+  analysisError?: string | null;
+}): Promise<boolean> {
+  const prisma = getPrismaClient();
+  if (!prisma) return false;
+  try {
+    await prisma.socialMediaAsset.update({
+      where: { id: input.assetId },
+      data: {
+        analysisStatus: input.analysisStatus,
+        ...(input.analysis !== undefined ? { analysis: safeJson(input.analysis) } : {}),
+        ...(input.analysisModel !== undefined ? { analysisModel: input.analysisModel } : {}),
+        ...(input.analysisVersion !== undefined ? { analysisVersion: input.analysisVersion } : {}),
+        ...(input.analysisError !== undefined ? { analysisError: input.analysisError } : {}),
+        ...(input.analysisStatus === "completed" || input.analysisStatus === "failed" ? { lastAnalyzedAt: new Date() } : {}),
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ── SocialRefreshJob queue: deep-scrape + recompute jobs drained by the worker ─────────────── */
+
+export interface ClaimedRefreshJob {
+  id: string;
+  firebaseUid: string | null;
+  platform: string;
+  publicId: string;
+  metadata: unknown;
+  attempts: number;
+}
+
+/** Sentinel "platform" for a preference-recompute job (reuses the SocialRefreshJob queue). */
+export const PREFERENCE_RECOMPUTE_PLATFORM = "__recompute__";
+
+/** Enqueue (or re-arm) one deep-archive refresh job per connected platform. */
+export async function enqueueSocialRefreshJobs(input: {
+  firebaseUid: string;
+  jobs: Array<{ platform: string; publicId: string; metadata?: unknown; priority?: number }>;
+}): Promise<number> {
+  const prisma = getPrismaClient();
+  if (!prisma) return 0;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return 0;
+    let count = 0;
+    for (const job of input.jobs) {
+      try {
+        const existing = await prisma.socialRefreshJob.findFirst({
+          where: { userId: user.id, platform: job.platform, publicId: job.publicId },
+          select: { id: true },
+        });
+        if (existing) {
+          await prisma.socialRefreshJob.update({
+            where: { id: existing.id },
+            data: {
+              status: "queued",
+              nextRunAt: new Date(),
+              lockedAt: null,
+              lastError: null,
+              ...(job.metadata !== undefined ? { metadata: safeJson(job.metadata) } : {}),
+              ...(typeof job.priority === "number" ? { priority: job.priority } : {}),
+            },
+          });
+        } else {
+          await prisma.socialRefreshJob.create({
+            data: {
+              userId: user.id,
+              platform: job.platform,
+              publicId: job.publicId,
+              status: "queued",
+              priority: job.priority ?? 0,
+              ...(job.metadata !== undefined ? { metadata: safeJson(job.metadata) } : {}),
+            },
+          });
+        }
+        count += 1;
+      } catch {
+        /* skip a bad job, enqueue the rest */
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/** Atomically claim due queued jobs (optimistic lock; safe under the worker's low concurrency).
+ *  `opts.platforms` / `opts.excludePlatforms` partition deep-scrape jobs from recompute jobs. */
+export async function claimSocialRefreshJobs(
+  limit = 4,
+  opts: { platforms?: string[]; excludePlatforms?: string[] } = {},
+): Promise<ClaimedRefreshJob[]> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const now = new Date();
+    const candidates = await prisma.socialRefreshJob.findMany({
+      where: {
+        status: "queued",
+        nextRunAt: { lte: now },
+        ...(opts.platforms ? { platform: { in: opts.platforms } } : {}),
+        ...(opts.excludePlatforms ? { platform: { notIn: opts.excludePlatforms } } : {}),
+      },
+      orderBy: [{ priority: "desc" }, { nextRunAt: "asc" }],
+      take: Math.max(1, Math.min(limit, 32)),
+      include: { user: { select: { firebaseUid: true } } },
+    });
+    const claimed: ClaimedRefreshJob[] = [];
+    for (const job of candidates) {
+      try {
+        const res = await prisma.socialRefreshJob.updateMany({
+          where: { id: job.id, status: "queued" },
+          data: { status: "processing", lockedAt: now, attempts: { increment: 1 } },
+        });
+        if (res.count === 1) {
+          claimed.push({
+            id: job.id,
+            firebaseUid: job.user?.firebaseUid ?? null,
+            platform: job.platform,
+            publicId: job.publicId,
+            metadata: job.metadata,
+            attempts: job.attempts + 1,
+          });
+        }
+      } catch {
+        /* lost the race for this row */
+      }
+    }
+    return claimed;
+  } catch {
+    return [];
+  }
+}
+
+/** Claim a global batch of unanalyzed media assets for the Scheduler-driven media worker. Marks each
+ *  "processing" so concurrent invocations don't double-pay. Returns the owner's firebaseUid too. */
+export async function claimPendingMediaAssetsGlobal(
+  limit = 8,
+): Promise<Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string }>> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const candidates = await prisma.socialMediaAsset.findMany({
+      where: { analysisStatus: "pending" },
+      orderBy: { lastSeenAt: "desc" },
+      take: Math.max(1, Math.min(limit, 64)),
+      include: { user: { select: { firebaseUid: true } } },
+    });
+    const claimed: Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string }> = [];
+    for (const asset of candidates) {
+      try {
+        const res = await prisma.socialMediaAsset.updateMany({
+          where: { id: asset.id, analysisStatus: "pending" },
+          data: { analysisStatus: "processing" },
+        });
+        if (res.count === 1) {
+          claimed.push({
+            id: asset.id,
+            firebaseUid: asset.user?.firebaseUid ?? null,
+            platform: asset.platform,
+            assetHash: asset.assetHash,
+            sourceUrl: asset.sourceUrl,
+            mediaType: asset.mediaType,
+          });
+        }
+      } catch {
+        /* lost the race */
+      }
+    }
+    return claimed;
+  } catch {
+    return [];
+  }
+}
+
+/** Completed media analyses for one user — input to preference synthesis. */
+export async function getCompletedMediaAnalyses(
+  firebaseUid: string,
+  opts: { limit?: number } = {},
+): Promise<Array<{ platform: string; assetHash: string; sourceUrl: string; analysis: unknown }>> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return [];
+    const rows = await prisma.socialMediaAsset.findMany({
+      where: { userId: user.id, analysisStatus: "completed" },
+      orderBy: { lastAnalyzedAt: "desc" },
+      take: Math.max(1, Math.min(opts.limit ?? 1024, 4096)),
+    });
+    return rows.map((r) => ({ platform: r.platform, assetHash: r.assetHash, sourceUrl: r.sourceUrl, analysis: r.analysis }));
+  } catch {
+    return [];
+  }
+}
+
+export async function completeSocialRefreshJob(id: string): Promise<void> {
+  const prisma = getPrismaClient();
+  if (!prisma) return;
+  try {
+    await prisma.socialRefreshJob.update({ where: { id }, data: { status: "completed", lockedAt: null, lastError: null } });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Mark a job failed; retry with backoff until the attempt ceiling, then give up. */
+export async function failSocialRefreshJob(id: string, error: string, retryInMs = 5 * 60_000): Promise<void> {
+  const prisma = getPrismaClient();
+  if (!prisma) return;
+  try {
+    const job = await prisma.socialRefreshJob.findUnique({ where: { id }, select: { attempts: true } });
+    const giveUp = (job?.attempts ?? 0) >= 5;
+    await prisma.socialRefreshJob.update({
+      where: { id },
+      data: {
+        status: giveUp ? "failed" : "queued",
+        lockedAt: null,
+        lastError: error.slice(0, 500),
+        nextRunAt: new Date(Date.now() + retryInMs),
+      },
+    });
+  } catch {
+    /* ignore */
   }
 }
 

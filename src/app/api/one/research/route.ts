@@ -13,7 +13,7 @@ import {
   normalizeXUrl,
   xHandleFromUrl,
 } from "@/lib/auth/identity";
-import { createConsentAndScan, completeScanRun, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
+import { createConsentAndScan, completeScanRun, enqueueSocialRefreshJobs, failScanRun, recordScanDeadline, upsertOneUser } from "@/lib/db/scan-store";
 import { startResearch, pollResearch, type ResearchDepth } from "@/lib/research/client";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { finalizeResearch } from "@/lib/research/finalize";
@@ -486,6 +486,19 @@ export async function POST(request: Request) {
       userAgent: request.headers.get("user-agent"),
     });
     scanRunId = scan.scanRunId;
+    // v3 preference track: enqueue a deep-archive (1024-item) refresh job per connected social
+    // platform, drained by the background archive/media worker. Fire-and-forget — the mandatory
+    // Phase-1 scan must never be blocked or failed by optional preference enrichment.
+    if (input.socialPreferenceConsent === true && input.socialProfiles?.length) {
+      const jobs = input.socialProfiles
+        .filter((profile) => profile && profile.profileUrl && profile.username)
+        .map((profile) => ({
+          platform: profile.platform.trim().toLowerCase(),
+          publicId: profile.username,
+          metadata: { url: profile.profileUrl, maxPosts: 1024, scanRunId },
+        }));
+      if (jobs.length) void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs }).catch(() => 0);
+    }
   } catch (error) {
     const status = statusCodeOf(error) ?? 500;
     const rawMessage = error instanceof Error ? error.message : String(error || "");

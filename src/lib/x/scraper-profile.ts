@@ -307,7 +307,7 @@ function mapXResponseToOutcome(response: XScraperResponse, normalizedUrl: string
   return { status: "profile", ...mapXResponseToProfile(response, normalizedUrl), normalizedUrl, access };
 }
 
-export async function scrapeXProfileUrl(inputUrl: unknown): Promise<XEnrichmentOutcome> {
+export async function scrapeXProfileUrl(inputUrl: unknown, opts: { maxPosts?: number } = {}): Promise<XEnrichmentOutcome> {
   const normalizedUrl = normalizeXUrl(inputUrl);
   if (!normalizedUrl) {
     throw new XScraperError("Provide a valid X profile URL.", 400, "invalid_x_url");
@@ -329,7 +329,7 @@ export async function scrapeXProfileUrl(inputUrl: unknown): Promise<XEnrichmentO
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url: normalizedUrl, maxPosts: Number(process.env.X_PROMPT_POST_LIMIT || "300") || 300 }),
+      body: JSON.stringify({ url: normalizedUrl, maxPosts: opts.maxPosts ?? (Number(process.env.X_PROMPT_POST_LIMIT || "300") || 300) }),
       signal: controller.signal,
     });
     const data = (await res.json().catch(() => null)) as XScraperResponse | { error?: string } | null;

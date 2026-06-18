@@ -144,7 +144,7 @@ function mapPosts(value: unknown): InstagramPublicPost[] {
       comments: strOrNull(rec.comments, 40),
       visibleText: strOrNull(rec.visibleText, 300),
     });
-    if (out.length >= 120) break;
+    if (out.length >= 1024) break;
   }
   return out;
 }
@@ -274,6 +274,7 @@ function mapInstagramResponseToOutcome(response: InstagramScraperResponse, norma
 
 export async function scrapeInstagramProfileUrl(
   inputUrl: unknown,
+  opts: { maxPosts?: number } = {},
 ): Promise<InstagramEnrichmentOutcome> {
   const normalizedUrl = normalizeInstagramUrl(inputUrl);
   if (!normalizedUrl) {
@@ -296,7 +297,7 @@ export async function scrapeInstagramProfileUrl(
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url: normalizedUrl }),
+      body: JSON.stringify({ url: normalizedUrl, ...(opts.maxPosts ? { maxPosts: opts.maxPosts } : {}) }),
       signal: controller.signal,
     });
     const data = (await res.json().catch(() => null)) as InstagramScraperResponse | { error?: string } | null;

@@ -12,6 +12,21 @@ const SOCIAL_SUMMARY_TEXT_LIMIT = 160;
 const SOCIAL_VISIBLE_TEXT_LIMIT = 8;
 const SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT = 3;
 
+// Hard ceiling for the assembled Phase-1 question, kept safely below the Deep Research
+// API's `body/question` 40k-char limit. The prompt is escalated through PROMPT_BUDGET_TIERS
+// (trimming social context first, then verbose LinkedIn prose — NEVER the instructions or the
+// identity ground truth) until it fits. This is the runtime guard; the only prior protection
+// was the external API's after-the-fact 400.
+const QUESTION_CHAR_LIMIT = 38_000;
+// LinkedIn stays LOCKED GROUND TRUTH — these only bound runaway free-text prose / list lengths
+// so one enormous profile can't blow the budget. Generous enough that normal profiles are intact.
+const LI_ABOUT_LIMIT = 1_200;
+const LI_DESCRIPTION_LIMIT = 300;
+const LI_EXPERIENCE_LIMIT = 12;
+const LI_EDUCATION_LIMIT = 8;
+const LI_SKILLS_LIMIT = 40;
+const LI_CERTS_LIMIT = 20;
+
 function emptyCategories(): DashboardCategoryMap {
   return {
     newsAndMedia: [],
@@ -67,8 +82,42 @@ export function structuredSpine(li?: LinkedInProfileFull): { current: string; pa
   return { current, past };
 }
 
-function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
-  const normalized = {
+interface LinkedInPromptOptions {
+  aboutLimit?: number;
+  descriptionLimit?: number;
+  experienceLimit?: number;
+  educationLimit?: number;
+  skillsLimit?: number;
+  certsLimit?: number;
+}
+
+function clampText(value: string | null | undefined, max: number): string | null {
+  if (typeof value !== "string") return value ?? null;
+  return value.length > max ? `${value.slice(0, Math.max(0, max - 1)).trimEnd()}…` : value;
+}
+
+/** Normalize the LinkedIn profile for the prompt. Defaults keep a normal profile fully intact;
+ *  the bounds only kick in for runaway free-text (About / role descriptions) or absurdly long
+ *  lists, and the tightest budget tier passes smaller caps so one giant profile can't blow 40k.
+ *  Identity ground truth (name/email/url/headline/verifications/source) is never trimmed. */
+function compactLinkedInForPrompt(li: LinkedInProfileFull, opts: LinkedInPromptOptions = {}) {
+  const aboutLimit = opts.aboutLimit ?? LI_ABOUT_LIMIT;
+  const descriptionLimit = opts.descriptionLimit ?? LI_DESCRIPTION_LIMIT;
+  const experienceLimit = opts.experienceLimit ?? LI_EXPERIENCE_LIMIT;
+  const educationLimit = opts.educationLimit ?? LI_EDUCATION_LIMIT;
+  const skillsLimit = opts.skillsLimit ?? LI_SKILLS_LIMIT;
+  const certsLimit = opts.certsLimit ?? LI_CERTS_LIMIT;
+  const trimDescription = <T extends { description?: string }>(item: T): T => {
+    if (typeof item.description !== "string") return item;
+    if (descriptionLimit <= 0) {
+      const copy = { ...item };
+      delete copy.description;
+      return copy;
+    }
+    if (item.description.length <= descriptionLimit) return item;
+    return { ...item, description: clampText(item.description, descriptionLimit) ?? undefined } as T;
+  };
+  return {
     sub: li.sub,
     name: li.name,
     givenName: li.givenName,
@@ -80,17 +129,20 @@ function linkedInProfilePromptJson(li: LinkedInProfileFull): string {
     profileUrl: li.profileUrl,
     headline: li.headline,
     location: li.location ?? null,
-    about: li.about ?? null,
-    experience: li.experience ?? [],
-    education: li.education ?? [],
-    skills: li.skills ?? [],
-    certifications: li.certifications ?? [],
+    about: li.about ? clampText(li.about, aboutLimit) : null,
+    experience: (li.experience ?? []).slice(0, experienceLimit).map(trimDescription),
+    education: (li.education ?? []).slice(0, educationLimit).map(trimDescription),
+    skills: (li.skills ?? []).slice(0, skillsLimit),
+    certifications: (li.certifications ?? []).slice(0, certsLimit),
     profileStats: li.profileStats ?? null,
     verifications: li.verifications ?? [],
     grantedScopes: li.grantedScopes ?? [],
     source: li.source ?? "oauth",
   };
-  return JSON.stringify(normalized, null, 2);
+}
+
+function linkedInProfilePromptJson(li: LinkedInProfileFull, opts?: LinkedInPromptOptions): string {
+  return JSON.stringify(compactLinkedInForPrompt(li, opts), null, 2);
 }
 
 type PromptSocialProfile = NonNullable<OneSubjectInput["socialProfiles"]>[number];
@@ -192,20 +244,17 @@ function compactSocialProfiles(
   return (input.socialProfiles ?? []).map((profile) => compactSocialProfile(profile, options));
 }
 
-function socialProfilesPromptJson(input: OneSubjectInput): string {
-  const full = JSON.stringify(
-    compactSocialProfiles(input, {
-      postLimit: SOCIAL_PROMPT_POST_LIMIT,
-      textLimit: SOCIAL_PROMPT_TEXT_LIMIT,
-      visibleTextLimit: SOCIAL_VISIBLE_TEXT_LIMIT,
-    }),
-    null,
-    2,
-  );
-  if (full.length <= SOCIAL_PROMPT_JSON_CHAR_LIMIT) return full;
+type SocialPromptBudget = { postLimit: number; textLimit: number; visibleTextLimit: number };
+
+function socialProfilesPromptJson(input: OneSubjectInput, budget: SocialPromptBudget): string {
+  const rendered = JSON.stringify(compactSocialProfiles(input, budget), null, 2);
+  if (rendered.length <= SOCIAL_PROMPT_JSON_CHAR_LIMIT) return rendered;
+  // Within-tier safety net: even at this tier's budget the block is over the social ceiling
+  // (many rich profiles), so collapse to the tiny shape. The whole-question tier loop will
+  // escalate further if needed.
   return JSON.stringify(
     compactSocialProfiles(input, {
-      postLimit: SOCIAL_PROMPT_TINY_POST_LIMIT,
+      postLimit: Math.min(budget.postLimit, SOCIAL_PROMPT_TINY_POST_LIMIT),
       textLimit: SOCIAL_SUMMARY_TEXT_LIMIT,
       visibleTextLimit: SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT,
     }),
@@ -213,6 +262,35 @@ function socialProfilesPromptJson(input: OneSubjectInput): string {
     2,
   );
 }
+
+/** Ordered budgets the Phase-1 question escalates through to stay under QUESTION_CHAR_LIMIT.
+ *  Earlier tiers are richest; each step trims SOCIAL context first (posts → tiny → metadata-only),
+ *  and only the last tier tightens verbose LinkedIn prose. Tier 0 reproduces the prior default. */
+interface PromptBudgetTier {
+  social: SocialPromptBudget;
+  linkedIn: LinkedInPromptOptions;
+}
+
+const PROMPT_BUDGET_TIERS: PromptBudgetTier[] = [
+  {
+    social: { postLimit: SOCIAL_PROMPT_POST_LIMIT, textLimit: SOCIAL_PROMPT_TEXT_LIMIT, visibleTextLimit: SOCIAL_VISIBLE_TEXT_LIMIT },
+    linkedIn: {},
+  },
+  {
+    social: { postLimit: SOCIAL_PROMPT_TINY_POST_LIMIT, textLimit: SOCIAL_SUMMARY_TEXT_LIMIT, visibleTextLimit: SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT },
+    linkedIn: {},
+  },
+  {
+    social: { postLimit: 0, textLimit: SOCIAL_SUMMARY_TEXT_LIMIT, visibleTextLimit: SOCIAL_SUMMARY_VISIBLE_TEXT_LIMIT },
+    linkedIn: {},
+  },
+  {
+    // Last resort for a pathologically large LinkedIn profile: metadata-only social + tight LinkedIn
+    // prose. Identity fields stay; only About/role descriptions and list lengths shrink.
+    social: { postLimit: 0, textLimit: SOCIAL_SUMMARY_TEXT_LIMIT, visibleTextLimit: 0 },
+    linkedIn: { aboutLimit: 600, descriptionLimit: 0, experienceLimit: 8, educationLimit: 5, skillsLimit: 20, certsLimit: 8 },
+  },
+];
 
 function subjectInputPromptJson(input: OneSubjectInput): string {
   const payload = {
@@ -229,7 +307,17 @@ function subjectInputPromptJson(input: OneSubjectInput): string {
       },
     },
     confirmedProfiles: input.confirmedProfiles ?? [],
-    linkedinProfile: input.linkedinProfile ? JSON.parse(linkedInProfilePromptJson(input.linkedinProfile)) : null,
+    // Reference only — the FULL normalized LinkedIn profile is emitted once below in
+    // LINKEDIN_ENRICHED_PROFILE_JSON. Duplicating it here was the main 40k-overflow driver.
+    linkedinProfile: input.linkedinProfile
+      ? {
+          name: input.linkedinProfile.name,
+          headline: input.linkedinProfile.headline ?? null,
+          profileUrl: input.linkedinProfile.profileUrl ?? null,
+          location: input.linkedinProfile.location ?? null,
+          note: "Full normalized LinkedIn profile is provided once in LINKEDIN_ENRICHED_PROFILE_JSON below.",
+        }
+      : null,
     socialProfiles: compactSocialProfiles(input, {
       postLimit: 0,
       textLimit: SOCIAL_SUMMARY_TEXT_LIMIT,
@@ -239,14 +327,14 @@ function subjectInputPromptJson(input: OneSubjectInput): string {
   return JSON.stringify(payload, null, 2);
 }
 
-function renderSubjectIntelligenceContext(input: OneSubjectInput): string {
+function renderSubjectIntelligenceContext(input: OneSubjectInput, tier: PromptBudgetTier = PROMPT_BUDGET_TIERS[0]): string {
   const li = input.linkedinProfile;
   const socials = input.socialProfiles ?? [];
   const linkedInBlock = li
-    ? `\n\nLINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${linkedInProfilePromptJson(li)}\n\`\`\`\nTreat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About.`
+    ? `\n\nLINKEDIN_ENRICHED_PROFILE_JSON (complete normalized LinkedIn profile; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${linkedInProfilePromptJson(li, tier.linkedIn)}\n\`\`\`\nTreat this JSON as LOCKED GROUND TRUTH for identity, career, education, skills, profile context, and self-declared About.`
     : "";
   const socialBlock = socials.length
-    ? `\n\nSOCIAL_ENRICHED_PROFILES_JSON (optional public profile context; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${socialProfilesPromptJson(input)}\n\`\`\`\nTreat these profiles as supporting cross-platform context only. Do not treat social bios, avatars, follower counts, posts, or handles as identity/career ground truth unless public web evidence corroborates them.`
+    ? `\n\nSOCIAL_ENRICHED_PROFILES_JSON (optional public profile context; raw scraper/session/cookie data intentionally excluded):\n\`\`\`json\n${socialProfilesPromptJson(input, tier.social)}\n\`\`\`\nTreat these profiles as supporting cross-platform context only. Do not treat social bios, avatars, follower counts, posts, or handles as identity/career ground truth unless public web evidence corroborates them.`
     : "";
 
   return `SUBJECT_INTELLIGENCE_CONTEXT_JSON (all currently consented inputs available to One; secret/session/raw-scraper fields intentionally excluded):
@@ -328,12 +416,12 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
     ? `PROFESSIONAL SPINE — from ${spineSource} (the authoritative career graph; do NOT re-derive it from the profile URL):
 ${spine.current ? `  • CURRENT (who they are today): ${spine.current}\n` : ""}${spine.past.length ? `  • FORMER (newest→oldest; NEVER write any of these up as the present job): ${spine.past.join(", ")}\n` : ""}For each entry the search seed is the ORGANISATION in it (ignore role words like "Intern"/"Mentee"). Use ONLY these organisations as seeds — never invent or add employers, schools, or handles not listed here.`
     : "";
-  const contextBlock = renderSubjectIntelligenceContext(input);
   const statedLocation = li?.location ? `- Stated location (from their LinkedIn): ${li.location}` : "";
   const liSpine = fetchableLinkedIn
     ? "Read that ONE public /in/ profile once to confirm the spine, then STOP confirming identity and spend the ENTIRE remaining budget ENRICHING the sections below for THIS person."
     : `Do NOT open, fetch, or "verify" any LinkedIn URL — LinkedIn is bot-blocked here and the link above is an opaque redirect that does not resolve, so any attempt is wasted budget. ${haveSpine ? "The parsed spine above IS the locked spine — take those organisations as your literal search seeds" : "Use the verified facts above as the spine"} and spend the ENTIRE remaining budget ENRICHING the sections below for THIS one confirmed person.${haveSpine ? " When you report a role, label it CURRENT vs FORMER exactly as parsed; if a search result conflicts, the headline wins." : ""}`;
-  const identityBlock = li
+  const buildIdentityBlock = (contextBlock: string): string =>
+    li
     ? [
         "IDENTITY IS SOLVED — verified ground truth from the subject's OWN authenticated LinkedIn. Never re-confirm who this is and never disambiguate same-name people; anything not clearly THIS exact person, ignore.",
         "VERIFIED FACTS (treat as locked ground truth):",
@@ -371,7 +459,12 @@ ${contextBlock}`;
 Use as many targeted searches as needed within fast-depth constraints, then synthesize. Discard same-name strangers; never chase broad disambiguation.`
       : `FAST-MODE ADAPTIVE SEARCH STRATEGY — prioritize accuracy, intelligence, and pace. Use enough targeted web searches to resolve the high-confidence public footprint, seeded from name, email local-part, confirmed profiles, employer/school/city context, then stop when marginal signal drops. Favor depth on this one confirmed person over breadth; surface only real, current results.`;
 
-  return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1. Today is ${today}.
+  // Assemble the full question at a given budget tier. The bulky, variable parts (LinkedIn +
+  // social JSON) live inside identityBlock; the protocol, search budget, and DELIVER sections are
+  // fixed instructions and must never be trimmed.
+  const assemble = (tier: PromptBudgetTier): string => {
+    const identityBlock = buildIdentityBlock(renderSubjectIntelligenceContext(input, tier));
+    return `CONSENT-BASED PUBLIC INTELLIGENCE — PHASE 1. Today is ${today}.
 The subject consented to a self-audit of their OWN public online footprint. Use only lawful, publicly accessible information.
 
 ${intelligenceOperatingProtocol()}
@@ -389,6 +482,16 @@ DELIVER a premium, evidence-backed markdown report with ONLY these sections:
 6. Evidence Ledger — table with claim · source label (LinkedIn ground truth / public web evidence / inference) · source URL if public · date/accessed context · confidence · contradiction/verification note.
 
 FINAL QUALITY BAR: this is the first thing the user sees. Be precise, high-confidence, useful, and calm. Unknown beats guessing. Every non-obvious claim needs evidence or a clear LinkedIn-ground-truth/inference label. Keep it strictly about THIS person.`;
+  };
+
+  // Escalate through the budget tiers until the question fits under the DR API limit. The first
+  // tier is the richest (= prior default); later tiers trim social context, then verbose LinkedIn
+  // prose — instructions and identity ground truth are preserved at every tier.
+  for (const tier of PROMPT_BUDGET_TIERS) {
+    const question = assemble(tier);
+    if (question.length <= QUESTION_CHAR_LIMIT) return question;
+  }
+  return assemble(PROMPT_BUDGET_TIERS[PROMPT_BUDGET_TIERS.length - 1]);
 }
 
 /* ── Progressive Tier-2 ("deep") batches ───────────────────────────────────

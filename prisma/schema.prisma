@@ -124,19 +124,28 @@ model SocialContentItem {
 // Safe media-analysis metadata. Never store cookies, localStorage, browser
 // secrets, or private fetch material here.
 model SocialMediaAsset {
-  id          String   @id @default(uuid()) @db.Uuid
-  userId      String   @db.Uuid
-  platform    String
-  assetHash   String
-  sourceUrl   String
-  cacheUri    String?
-  analysis    Json?
-  firstSeenAt DateTime @default(now())
-  lastSeenAt  DateTime @updatedAt
-  user        OneUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @db.Uuid
+  platform       String
+  assetHash      String
+  sourceUrl      String
+  mediaType      String    @default("image") // image | video | thumbnail
+  cacheUri       String?
+  analysis       Json?
+  // Queryable analysis lifecycle (v3 media worker). The JSON `analysis` holds the rich result;
+  // these columns let the worker scan/claim pending rows by column instead of parsing JSON.
+  analysisStatus String    @default("pending") // pending | processing | completed | failed | skipped
+  analysisVersion String?
+  analysisModel  String?
+  analysisError  String?
+  lastAnalyzedAt DateTime?
+  firstSeenAt    DateTime  @default(now())
+  lastSeenAt     DateTime  @updatedAt
+  user           OneUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, platform, assetHash])
   @@index([userId, platform])
+  @@index([analysisStatus, lastSeenAt])
 }
 
 // Queue/lock row for keeping connected socials fresh after the first scan.

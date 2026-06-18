@@ -5,4 +5,4 @@
    recovered scan whose stamp !== this is treated as stale and the user is routed
    back to the social/profile intake screen to re-run on the new intelligence.
    See .claude/skills/intelligence-release. */
-export const INTELLIGENCE_VERSION = "2026-06-18-preference-v2-30q";
+export const INTELLIGENCE_VERSION = "2026-06-18-full-social-media-v3";

@@ -420,6 +420,103 @@ describe("scraper (URL-enrichment) profile → Phase-1 prompt", () => {
       mediaUrlsOmitted: true,
     });
   });
+
+  it("emits the full LinkedIn profile exactly once — the subject block carries only a reference", () => {
+    const q = buildPersonDossierQuestion(scraperInput());
+    // The verbose About is the full-profile fingerprint; with the duplicate copy removed it must
+    // appear exactly once (inside LINKEDIN_ENRICHED_PROFILE_JSON), never again in the subject block.
+    const aboutNeedle = "CSSF- and FSCA-compliant AML/KYC frameworks";
+    expect(q.split(aboutNeedle).length - 1).toBe(1);
+    const subject = extractSubjectPromptJson(q);
+    const ref = subject.linkedinProfile as Record<string, unknown>;
+    expect(ref.profileUrl).toBe("https://www.linkedin.com/in/anilsachdev");
+    expect(ref.note).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
+    expect(ref).not.toHaveProperty("experience");
+    expect(ref).not.toHaveProperty("about");
+    expect(ref).not.toHaveProperty("skills");
+  });
+
+  it("keeps a huge LinkedIn + multiple rich socials under the 40k question limit with instructions intact", () => {
+    const input = scraperInput();
+    input.linkedinProfile = {
+      ...input.linkedinProfile!,
+      about: "Operating philosophy and regulated-markets thesis. ".repeat(800), // ~40k chars raw
+      experience: Array.from({ length: 30 }, (_, i) => ({
+        title: `Executive Role ${i}`,
+        company: `Holding Company ${i}`,
+        description: `Led cross-functional regulated programs in cycle ${i}. `.repeat(40),
+        endDate: String(2024 - i),
+      })),
+      skills: Array.from({ length: 80 }, (_, i) => `Capability ${i}`),
+      certifications: Array.from({ length: 40 }, (_, i) => ({ name: `Certification ${i}`, authority: "Authority" })),
+    };
+    input.socialProfiles = [
+      {
+        platform: "Instagram",
+        username: "mega_ig",
+        displayName: "Mega",
+        bio: "Builder",
+        avatarUrl: null,
+        externalUrl: null,
+        profileUrl: "https://www.instagram.com/mega_ig/",
+        isVerified: false,
+        isPrivate: false,
+        stats: { posts: "1024", followers: "5M", following: "100" },
+        recentPublicPosts: Array.from({ length: 200 }, (_, i) => ({
+          url: `https://www.instagram.com/p/${i}/`,
+          kind: "post",
+          caption: `Caption ${i} `.repeat(60),
+          mediaUrls: [`https://cdn.example.com/${i}.jpg`],
+        })),
+        source: "scraper",
+      },
+      {
+        platform: "Threads",
+        username: "mega_th",
+        displayName: "Mega",
+        bio: "Builder",
+        avatarUrl: null,
+        externalUrl: null,
+        profileUrl: "https://www.threads.com/@mega_th",
+        isVerified: false,
+        isPrivate: false,
+        stats: { followers: "1M", threads: "1024" },
+        recentThreads: Array.from({ length: 200 }, (_, i) => ({
+          url: `https://www.threads.com/@mega_th/post/${i}`,
+          text: `Thread ${i} `.repeat(60),
+        })),
+        source: "scraper",
+      },
+      {
+        platform: "X",
+        username: "mega_x",
+        handle: "mega_x",
+        displayName: "Mega",
+        bio: "Builder",
+        avatarUrl: null,
+        bannerUrl: null,
+        externalUrl: null,
+        profileUrl: "https://x.com/mega_x",
+        isVerified: false,
+        isPrivate: false,
+        stats: { followers: "1M" },
+        timelineItems: Array.from({ length: 200 }, (_, i) => ({
+          url: `https://x.com/mega_x/status/${i}`,
+          text: `Post ${i} `.repeat(60),
+        })),
+        source: "scraper",
+      },
+    ];
+
+    const q = buildPersonDossierQuestion(input);
+    expect(q.length).toBeLessThan(40_000);
+    // fixed instructions + ground-truth anchor are never trimmed at any tier
+    expect(q).toContain("ONE INTELLIGENCE OPERATING PROTOCOL");
+    expect(q).toContain("DELIVER a premium");
+    expect(q).toContain("Evidence Ledger");
+    expect(q).toContain("LINKEDIN_ENRICHED_PROFILE_JSON");
+    expect(q).toContain("IDENTITY IS SOLVED");
+  });
 });
 
 describe("deep batch prompts", () => {

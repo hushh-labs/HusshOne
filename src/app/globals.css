@@ -1397,6 +1397,16 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--ink-2);
   background: #f2f2f2;
 }
+/* Recommended (LinkedIn for Google sign-in): an inviting accent, not a warning — nudges the
+   user to add it without making it feel mandatory. */
+.connector-row.recommended .connector-status {
+  color: var(--ink-2);
+  background: var(--pastel-blue);
+  border-color: rgba(143,182,255,0.36);
+}
+.connector-row.recommended {
+  border-color: rgba(143,182,255,0.42);
+}
 .connector-chevron {
   display: grid;
   place-items: center;

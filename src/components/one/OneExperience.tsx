@@ -121,18 +121,28 @@ function ConnectorDisclosure({
   subtitle,
   state,
   required,
+  defaultOpen = false,
   children,
 }: {
   platform: ConnectorPlatform;
   title: string;
   subtitle: string;
-  state: "connected" | "required" | "optional" | "pending";
+  state: "connected" | "required" | "optional" | "recommended" | "pending";
   required?: boolean;
+  defaultOpen?: boolean;
   children: ReactElement;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const statusLabel =
-    state === "connected" ? "Connected" : state === "pending" ? "Pending" : required ? "Required" : "Optional";
+    state === "connected"
+      ? "Connected"
+      : state === "pending"
+        ? "Pending"
+        : state === "recommended"
+          ? "Recommended"
+          : required
+            ? "Required"
+            : "Optional";
   return (
     <section className={`connector-row connector-row-${platform} ${open ? "open" : ""} ${state}`}>
       <button
@@ -987,7 +997,7 @@ function ConnectLinkedInInline({
           ) : null}
         </div>
         <span className="field-hint">
-          {Icons.check(12)} {required ? "LinkedIn is required for guest sessions." : "LinkedIn is connected as richer career context."}
+          {Icons.check(12)} {required ? "LinkedIn is required for guest sessions." : "LinkedIn connected — One now reads your real career, not just your name."}
         </span>
       </div>
     );
@@ -1017,7 +1027,7 @@ function ConnectLinkedInInline({
       <span className="field-hint">
         {required
           ? "Use your personal profile link, not a company, jobs, feed, or search page."
-          : "LinkedIn adds richer career context, but Google identity can start One."}
+          : "Recommended: paste your /in/ link and One reads your real career, education, and skills — far sharper than your name alone. Still optional — you can send One without it."}
       </span>
       {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
     </form>
@@ -1129,7 +1139,9 @@ function PreCollect({
             <span className="field-hint">
               {hasLinkedIn
                 ? `One will research the real you from your verified LinkedIn${verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}.`
-                : "Tap a connector to add it. Google identity can start One; LinkedIn adds richer career context."}
+                : requiresLinkedIn
+                  ? "Add your LinkedIn connector below to unlock One. Instagram, Threads, and X are optional context."
+                  : "You're in with Google. Paste your LinkedIn URL below for a sharper, more personal result — One reads your real career, education, and skills in seconds. It's optional, but it makes One understand you, not just your name."}
             </span>
           </div>
 
@@ -1138,9 +1150,18 @@ function PreCollect({
             <ConnectorDisclosure
               platform="linkedin"
               title="LinkedIn"
-              subtitle={hasLinkedIn ? "Career context connected" : requiresLinkedIn ? "Required for guest sessions" : "Optional career anchor"}
-              state={hasLinkedIn ? "connected" : requiresLinkedIn ? "required" : "optional"}
+              subtitle={
+                hasLinkedIn
+                  ? "Career context connected"
+                  : requiresLinkedIn
+                    ? "Required for guest sessions"
+                    : "Recommended — One reads your real career, not just your name"
+              }
+              state={hasLinkedIn ? "connected" : requiresLinkedIn ? "required" : "recommended"}
               required={requiresLinkedIn}
+              // For Google users LinkedIn is optional, but it sharpens everything — so open the
+              // field by default to gently invite it without forcing it.
+              defaultOpen={!hasLinkedIn}
             >
               <ConnectLinkedInInline
                 authUser={authUser}
