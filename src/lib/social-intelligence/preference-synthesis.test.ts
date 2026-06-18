@@ -406,7 +406,8 @@ describe("toRenderablePreferenceProfile", () => {
     expect(first.updatedFrom).toBe("media_pass");
     expect(renderable.archiveDepth).toBe(depth);
     expect(renderable.preferenceStatus).toBe("partial");
-    expect(renderable.summary).toContain("684 posts");
+    expect(renderable.summary).toContain("read on");
+    expect(renderable.summary).toContain("your taste");
   });
 });
 

@@ -395,7 +395,7 @@ describe("OneExperience", () => {
     render(<OneExperience />);
 
     expect(
-      await screen.findByText(/One is still analyzing your social patterns — 6\/30 answered so far/i, undefined, { timeout: 7000 }),
+      await screen.findByText(/Reading the through-lines in what you share — 6 of 30 understood so far/i, undefined, { timeout: 7000 }),
     ).toBeInTheDocument();
     // Building state hides the full layer (no per-question summary copy renders yet).
     expect(screen.queryByText("One answered 30/30 preference questions.")).not.toBeInTheDocument();

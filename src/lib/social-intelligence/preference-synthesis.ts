@@ -559,6 +559,22 @@ export interface SynthesizeInput {
 
 const CONFIDENCE_SCORE: Record<SynthConfidence, number> = { low: 0.35, medium: 0.65, high: 0.9 };
 
+function prettyPlatform(platform: string): string {
+  const s = platform.trim();
+  if (!s) return s;
+  if (s.toLowerCase() === "x") return "X";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** "Instagram, Threads and X" — for warm, human-readable copy (not a scrape list). */
+export function prettyPlatformList(platforms: string[]): string {
+  const names = [...new Set(platforms.map(prettyPlatform).filter(Boolean))];
+  if (!names.length) return "your socials";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export interface ArchiveDepthLike {
   perPlatform: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number; mediaFailed: number }>;
   totals: { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number };
@@ -677,7 +693,7 @@ export function toRenderablePreferenceProfile(
     version: result.version,
     synthesisModel: result.model,
     preferenceStatus: opts.preferenceStatus,
-    summary: `One answered ${answeredTotal}/${result.answers.length} preference questions from ${result.context.contentItems} posts and ${result.context.mediaAnalyzed} analyzed media across ${result.context.platforms.join(", ") || "your socials"}.`,
+    summary: `One has a read on ${answeredTotal} of ${result.answers.length} sides of your taste — drawn from how you show up across ${prettyPlatformList(result.context.platforms)}.`,
     generatedAt: opts.generatedAt,
     updatedFrom: {
       platforms: result.context.platforms,

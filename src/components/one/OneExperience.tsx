@@ -1676,22 +1676,22 @@ function PreferenceIntelligence({
           }
         : status === "failed"
           ? {
-              title: "Preference intelligence needs another run.",
-              body: "The main dossier can continue while this layer is retried later.",
+              title: "One needs another moment with this.",
+              body: "Your dossier carries on while One revisits your taste.",
             }
           : status === "pending"
             ? {
-                title: "Preference intelligence is queued.",
-                body: "One will keep this layer warm while the dossier continues.",
+                title: "One will get to your taste shortly.",
+                body: "It stays warm while the rest of your dossier comes together.",
               }
             : {
-                title: "One is reading your social patterns.",
-                body: "Visible posts, captions, media, links, and counters are being clustered into preference signals.",
+                title: "One is getting to know you.",
+                body: "Reading the through-lines in what you share to understand your taste.",
               };
     return (
       <section className={`pref-intel pref-intel-loading pref-intel-${status}`}>
         <div>
-          <p className="eyebrow">Social preference intelligence</p>
+          <p className="eyebrow">What One understands about you</p>
           <h2>{copy.title}</h2>
           <p>{copy.body}</p>
         </div>
@@ -1721,9 +1721,9 @@ function PreferenceIntelligence({
     return (
       <section className="pref-intel pref-intel-loading pref-intel-running">
         <div>
-          <p className="eyebrow">Social preference intelligence</p>
-          <h2>One is building your preference intelligence.</h2>
-          <p>One is still analyzing your social patterns — {answeredTotal}/30 answered so far.</p>
+          <p className="eyebrow">What One understands about you</p>
+          <h2>One is getting to know your taste.</h2>
+          <p>Reading the through-lines in what you share — {answeredTotal} of 30 understood so far.</p>
         </div>
         <span className="pref-spinner" aria-hidden="true" />
       </section>
@@ -1742,18 +1742,18 @@ function PreferenceIntelligence({
   const generatedAt = typeof profile.generatedAt === "string" && !Number.isNaN(Date.parse(profile.generatedAt)) ? profile.generatedAt : null;
   const metrics = questionAnswers.length
     ? [
-        ["answers", `${(questionCoverage?.answered ?? 0) + (questionCoverage?.inferred ?? 0)}/${questionCoverage?.total ?? questionAnswers.length}`],
+        ["understood", `${(questionCoverage?.answered ?? 0) + (questionCoverage?.inferred ?? 0)}/${questionCoverage?.total ?? questionAnswers.length}`],
         ["confirm", questionCoverage?.needsConfirmation ?? 0],
-        ["unknown", questionCoverage?.unknown ?? 0],
-        ["media", asCount(updatedFrom.mediaAssets)],
-        ["items", asCount(updatedFrom.indexedItems)],
+        ["open", questionCoverage?.unknown ?? 0],
+        ["images", asCount(updatedFrom.mediaAssets)],
+        ["posts", asCount(updatedFrom.indexedItems)],
       ]
     : [
-        ["items", asCount(updatedFrom.indexedItems)],
-        ["media", asCount(updatedFrom.mediaAssets)],
+        ["posts", asCount(updatedFrom.indexedItems)],
+        ["images", asCount(updatedFrom.mediaAssets)],
         ["links", asCount(updatedFrom.externalLinks)],
         ["signals", topSignals.length],
-        ["selected", asCount(selection?.selectedEvidenceCount)],
+        ["highlights", asCount(selection?.selectedEvidenceCount)],
       ];
   const domainLabel = (domain: string) =>
     domain
@@ -1784,16 +1784,17 @@ function PreferenceIntelligence({
         };
       });
   const statusLabel = (statusValue: string) => statusValue.replace(/_/g, " ");
+  const prettyPlatform = (p: string) => (p?.toLowerCase() === "x" ? "X" : p ? p.charAt(0).toUpperCase() + p.slice(1) : p);
 
   return (
     <section className="pref-intel">
       <div className="pref-top">
         <div>
-          <p className="eyebrow">Social preference intelligence</p>
+          <p className="eyebrow">What One understands about you</p>
           <h2>{profile.summary || "One is building your preference intelligence."}</h2>
           <p>
-            {generatedAt ? `Updated ${new Date(generatedAt).toLocaleString()}` : "Updated recently"} from{" "}
-            {platforms.join(", ") || "connected socials"}.
+            Read from your {platforms.length ? platforms.map(prettyPlatform).join(", ") : "connected socials"}
+            {generatedAt ? ` · refreshed ${new Date(generatedAt).toLocaleString()}` : ""}.
           </p>
         </div>
         <div className="pref-metrics" aria-label="Preference intelligence metrics">
@@ -1807,20 +1808,21 @@ function PreferenceIntelligence({
       </div>
 
       {(() => {
-        // v3 archive depth strip — e.g. "instagram 684/1024 · 512/684 media". Present only on the
-        // v3 synthesis profile; the v2 fast pass omits it.
+        // What One has read per platform — phrased warmly ("Instagram · 67 posts · 81 images"),
+        // not as a scrape ledger. Present only on the v3 profile; the v2 fast pass omits it.
         const depth = (profile as { archiveDepth?: { perPlatform?: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number }> } }).archiveDepth;
         const v3Status = (profile as { preferenceStatus?: string }).preferenceStatus;
         const rows = depth?.perPlatform ? Object.entries(depth.perPlatform).filter(([, d]) => d.items || d.mediaTotal) : [];
         if (!rows.length) return null;
         return (
-          <div className="pref-depth" aria-label="Archive depth">
+          <div className="pref-depth" aria-label="What One has read">
             {rows.map(([platform, d]) => (
               <span key={platform} className="pref-depth-pill">
-                <b>{platform}</b> {d.items}/1024{d.mediaTotal ? ` · ${d.mediaAnalyzed}/${d.mediaTotal} media` : ""}
+                <b>{prettyPlatform(platform)}</b> {d.items} {d.items === 1 ? "post" : "posts"}
+                {d.mediaAnalyzed ? ` · ${d.mediaAnalyzed} ${d.mediaAnalyzed === 1 ? "image" : "images"}` : ""}
               </span>
             ))}
-            {v3Status === "partial" ? <span className="pref-depth-pill pref-depth-partial">analyzing media…</span> : null}
+            {v3Status === "partial" ? <span className="pref-depth-pill pref-depth-partial">still reading…</span> : null}
           </div>
         );
       })()}
