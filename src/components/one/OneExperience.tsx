@@ -2894,6 +2894,25 @@ export default function OneExperience() {
     setPreferenceProfile(undefined);
   };
 
+  const isStaleIntelligenceResult = (result: OneDashboardResult | null | undefined) =>
+    Boolean(result && result.intelligenceVersion !== INTELLIGENCE_VERSION);
+
+  const routeToFreshStartForCurrentVersion = (user: ClientUser | null, nextStage?: Stage) => {
+    if (user) {
+      scopedDel(user, LS_LAST_SCAN);
+      scopedDel(user, LS_ACTIVE_SCAN);
+      scopedDel(user, LS_ACTIVE_STARTED_AT);
+    }
+    scanRunIdRef.current = null;
+    setDashboard(null);
+    setAudit(null);
+    setEmailDelivery(null);
+    setError("");
+    resetProgressiveLayers();
+    const linkedInConnected = hasUrlEnrichedLinkedInProfile(liProfile);
+    setStage(nextStage ?? (requiresLinkedIn && !linkedInConnected ? "connect" : "precollect"));
+  };
+
   // reflect baked accent/motion defaults into CSS chrome (replaces the Tweaks panel)
   useEffect(() => {
     const root = document.documentElement;
@@ -3253,6 +3272,10 @@ export default function OneExperience() {
         status = "error"; // network blip → treat as still running, keep polling
       }
       if (status === "completed" && result) {
+        if (isStaleIntelligenceResult(result)) {
+          routeToFreshStartForCurrentVersion(user);
+          return { outcome: "gaveup" };
+        }
         await revealResult({ result, audit: null, emailDelivery });
         return { outcome: "revealed" };
       }
@@ -3289,7 +3312,13 @@ export default function OneExperience() {
       if (!id || !authUser) return;
       void fetchScanStatus(authUser, id)
         .then(({ status, result, emailDelivery }) => {
-          if (status === "completed" && result) void revealResult({ result, audit: null, emailDelivery });
+          if (status === "completed" && result) {
+            if (isStaleIntelligenceResult(result)) {
+              routeToFreshStartForCurrentVersion(authUser);
+              return;
+            }
+            void revealResult({ result, audit: null, emailDelivery });
+          }
         })
         .catch(() => undefined);
     };
@@ -3661,12 +3690,8 @@ export default function OneExperience() {
           // Intelligence layer changed since this scan → don't show the stale report;
           // route back to Send One to re-run on the new intelligence. (An explicit email
           // deep-link ?scan= is a request for that specific report → still open it.)
-          if (!pending && recovered.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
-            scopedDel(user, LS_LAST_SCAN);
-            scopedDel(user, LS_ACTIVE_SCAN);
-            scopedDel(user, LS_ACTIVE_STARTED_AT);
-            resetProgressiveLayers();
-            setStage(baseStage);
+          if (!pending && isStaleIntelligenceResult(recovered.result)) {
+            routeToFreshStartForCurrentVersion(user, baseStage);
             return;
           }
           await revealResult({ result: recovered.result, audit: null, emailDelivery: recovered.emailDelivery });
@@ -3727,12 +3752,8 @@ export default function OneExperience() {
             }
           } else if (payload?.scanRunId && payload.status === "completed" && payload.result) {
             // intelligence changed since this scan → re-run on the new layer, not restore
-            if (payload.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
-              scopedDel(user, LS_LAST_SCAN);
-              scopedDel(user, LS_ACTIVE_SCAN);
-              scopedDel(user, LS_ACTIVE_STARTED_AT);
-              resetProgressiveLayers();
-              setStage(baseStage);
+            if (isStaleIntelligenceResult(payload.result)) {
+              routeToFreshStartForCurrentVersion(user, baseStage);
               return;
             }
             scanRunIdRef.current = payload.scanRunId;

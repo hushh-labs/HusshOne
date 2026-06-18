@@ -398,4 +398,30 @@ describe("OneExperience", () => {
     expect(window.localStorage.getItem("one_last_scan")).toBeNull();
     expect(window.localStorage.getItem("one_ig_full")).not.toBeNull();
   });
+
+  it("routes stale active scan recovery back to precollect instead of revealing the old dashboard", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_active_scan", "active-old");
+    scopedLocal("firebase-1", "one_active_started_at", String(Date.now() - 20_000));
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/active-old") {
+        return Response.json({
+          ok: true,
+          status: "completed",
+          result: { intelligenceVersion: "old-version", report: "# Old active", categories: {} },
+          emailDelivery: null,
+        });
+      }
+      if (url === "/api/one/scans/latest") return Response.json({ ok: false }, { status: 404 });
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
+    expect(screen.queryByText(/Your deep research dossier/i)).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("one_active_scan")).toBeNull();
+    expect(window.localStorage.getItem("one_active_started_at")).toBeNull();
+  });
 });
