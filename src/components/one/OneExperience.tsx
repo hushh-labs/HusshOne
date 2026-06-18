@@ -50,6 +50,7 @@ import type {
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import { SHADOW_ESTIMATED_MS, SHADOW_PHASES, isStaleRunning, oneVoiceScanningAt, shadowPhaseIndex } from "@/lib/ria/progress";
 import { INTELLIGENCE_VERSION } from "@/lib/research/version";
+import { buildPreferenceSummary, prettyPlatform } from "@/lib/social-intelligence/preference-presentation";
 import { track, getSessionId } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
@@ -1784,14 +1785,20 @@ function PreferenceIntelligence({
         };
       });
   const statusLabel = (statusValue: string) => statusValue.replace(/_/g, " ");
-  const prettyPlatform = (p: string) => (p?.toLowerCase() === "x" ? "X" : p ? p.charAt(0).toUpperCase() + p.slice(1) : p);
+  // Headline is computed at RENDER time (not the frozen profile.summary) so copy tweaks ship instantly
+  // to every user — no recompute, no version bump. Fall back to the stored summary when platforms are
+  // unknown (legacy / sparse profiles) to avoid a "your socials" downgrade.
+  const computedSummary =
+    platforms.length > 0
+      ? buildPreferenceSummary({ answeredTotal, total: questionCoverage.total ?? questionAnswers.length, platforms })
+      : null;
 
   return (
     <section className="pref-intel">
       <div className="pref-top">
         <div>
           <p className="eyebrow">What One understands about you</p>
-          <h2>{profile.summary || "One is building your preference intelligence."}</h2>
+          <h2>{computedSummary || profile.summary || "One is building your preference intelligence."}</h2>
           <p>
             Read from your {platforms.length ? platforms.map(prettyPlatform).join(", ") : "connected socials"}
             {generatedAt ? ` · refreshed ${new Date(generatedAt).toLocaleString()}` : ""}.

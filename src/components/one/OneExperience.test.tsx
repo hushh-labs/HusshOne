@@ -350,6 +350,63 @@ describe("OneExperience", () => {
     expect(screen.queryByText(/One couldn't show that/i)).not.toBeInTheDocument();
   });
 
+  it("computes the preference headline at render time, overriding a stale stored summary", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_last_scan", "completed-v3-rendertime");
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/completed-v3-rendertime") {
+        return Response.json({
+          ok: true,
+          status: "completed",
+          emailDelivery: null,
+          result: {
+            scanRunId: "completed-v3-rendertime",
+            intelligenceVersion: INTELLIGENCE_VERSION,
+            report: "# Current report",
+            categories: { goals: ["Ship AI"] },
+            preferenceStatus: "completed",
+            preferenceProfile: {
+              version: "preference-synthesis-v3",
+              generatedAt: "2026-06-18T15:00:00.000Z",
+              // Stale stored copy — the render-time headline must win over this.
+              summary: "One answered 22/30 preference questions from 107 posts.",
+              updatedFrom: { platforms: ["instagram", "x"], indexedItems: 107, mediaAssets: 100, externalLinks: 0, ocrSignals: 0 },
+              questionAnswers: [
+                {
+                  questionId: "q1",
+                  sectionId: "taste",
+                  sectionTitle: "Taste",
+                  prompt: "What does this person enjoy?",
+                  status: "inferred",
+                  answer: "Product launches and thoughtful AI demos.",
+                  confidence: { level: "medium", score: 0.65, rationale: "" },
+                  evidenceIds: [],
+                },
+              ],
+              questionCoverage: { total: 30, answered: 0, inferred: 22, needsConfirmation: 0, unknown: 8, blockedByAccess: 0 },
+              sectionSummaries: [{ sectionId: "taste", title: "Taste", summary: "", answeredCount: 1, totalCount: 1, confidence: "medium" }],
+              archiveDepth: { perPlatform: { instagram: { items: 67, mediaTotal: 100, mediaAnalyzed: 100 } }, totals: { items: 67, mediaTotal: 100, mediaAnalyzed: 100 } },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(
+      await screen.findByText(
+        "One has a read on 22 of 30 sides of your taste — drawn from how you show up across Instagram and X.",
+        undefined,
+        { timeout: 7000 },
+      ),
+    ).toBeInTheDocument();
+    // The stale stored summary must NOT render.
+    expect(screen.queryByText(/One answered 22\/30 preference questions from 107 posts/i)).not.toBeInTheDocument();
+  });
+
   it("shows the preference building state when a profile is below the 20/30 surface gate", async () => {
     mocks.currentUser = signedInUser();
     scopedLocal("firebase-1", "one_last_scan", "completed-weak-profile");

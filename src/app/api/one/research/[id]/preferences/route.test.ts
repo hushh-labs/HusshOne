@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
+import { PREFERENCE_SYNTHESIS_VERSION } from "@/lib/social-intelligence/preference-synthesis";
 
 const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   indexSocialPreferenceEvidence: vi.fn(async () => ({ contentItems: 1, mediaAssets: 1 })),
   logUserPreferenceRun: vi.fn(async () => undefined),
   saveUserPreferenceProfile: vi.fn(async () => undefined),
+  enqueueSocialRefreshJobs: vi.fn(async () => 1),
   updateDeepTier: vi.fn(async (_uid: string, _id: string, fields: Record<string, unknown>) => ({
     scanRunId: "scan-1",
     report: "# Dossier",
@@ -33,6 +35,8 @@ vi.mock("@/lib/db/scan-store", () => ({
   indexSocialPreferenceEvidence: mocks.indexSocialPreferenceEvidence,
   logUserPreferenceRun: mocks.logUserPreferenceRun,
   saveUserPreferenceProfile: mocks.saveUserPreferenceProfile,
+  enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
+  PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
   updateDeepTier: mocks.updateDeepTier,
 }));
 
@@ -449,5 +453,64 @@ describe("GET /api/one/research/[id]/preferences", () => {
     expect(json.preferenceProfile?.version).toBe("2026-06-18.social-preference-questions-v2");
     expect(json.preferenceProfile?.summary).not.toBe("Old v1 preference profile");
     expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
+  });
+
+  it("serves a current v3 profile as completed without enqueuing a recompute", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValueOnce({
+      version: PREFERENCE_SYNTHESIS_VERSION,
+      status: "completed",
+      profile: {
+        summary: "One has a read on 25 of 30 sides of your taste — drawn from how you show up across Instagram.",
+        questionCoverage: { total: 30, answered: 0, inferred: 25, needsConfirmation: 0, unknown: 5, blockedByAccess: 0 },
+        updatedFrom: { platforms: ["instagram"], indexedItems: 107, mediaAssets: 100, externalLinks: 0, ocrSignals: 0 },
+        collage: [],
+      },
+    });
+    mocks.getResearchJob.mockResolvedValueOnce({ status: "completed", normalizedResult: result, input: {} });
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { summary?: string } };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).toBe("completed");
+    expect(json.preferenceProfile?.summary).toContain("has a read on");
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+    // v3 short-circuit: never falls through to the v2 fast-pass build.
+    expect(mocks.saveUserPreferenceProfile).not.toHaveBeenCalled();
+    expect(mocks.indexSocialPreferenceEvidence).not.toHaveBeenCalled();
+  });
+
+  it("self-heals a stale v3 profile: enqueues a recompute, serves it as running, no v2 rebuild", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValueOnce({
+      version: "v3.1-deadbeefcafe", // an older synthesis hash → stale
+      status: "completed",
+      profile: {
+        summary: "stale stored summary",
+        questionCoverage: { total: 30, answered: 0, inferred: 24, needsConfirmation: 0, unknown: 6, blockedByAccess: 0 },
+        updatedFrom: { platforms: ["instagram", "x"], indexedItems: 107, mediaAssets: 100, externalLinks: 0, ocrSignals: 0 },
+        collage: [],
+      },
+    });
+    mocks.getResearchJob.mockResolvedValueOnce({ status: "completed", normalizedResult: result, input: {} });
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { summary?: string } };
+
+    expect(res.status).toBe(200);
+    // Forced "running" so the client keeps polling and upgrades once the worker rebuilds.
+    expect(json.preferenceStatus).toBe("running");
+    // Best-available data is still served meanwhile (no blank state).
+    expect(json.preferenceProfile?.summary).toBe("stale stored summary");
+    // One deduped, high-priority in-place recompute is enqueued.
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "firebase-1",
+        jobs: [expect.objectContaining({ platform: "__recompute__", publicId: "scan-1", priority: 1, metadata: { scanRunId: "scan-1" } })],
+      }),
+    );
+    // Never drops to the weaker v2 fast-pass when a v3 profile already exists.
+    expect(mocks.saveUserPreferenceProfile).not.toHaveBeenCalled();
+    expect(mocks.indexSocialPreferenceEvidence).not.toHaveBeenCalled();
   });
 });

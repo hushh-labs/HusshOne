@@ -21,6 +21,7 @@ import {
   type PreferenceQuestionSectionId,
 } from "./preference-profile";
 import type { ArchiveContentRecord } from "@/lib/db/scan-store";
+import { buildPreferenceSummary } from "./preference-presentation";
 
 function content(partial: Partial<ArchiveContentRecord>): ArchiveContentRecord {
   return {
@@ -440,5 +441,22 @@ describe("buildPreferenceCollage", () => {
     const items = Array.from({ length: 40 }, (_, i) => item(`x${i}`, `https://cdn/x${i}.jpg`));
     expect(buildPreferenceCollage(items, 24)).toHaveLength(24);
     expect(buildPreferenceCollage([item("z", null)], 24)).toEqual([]);
+  });
+});
+
+describe("PREFERENCE_SYNTHESIS_VERSION (auto-derived)", () => {
+  it("is a stable v3.1-<12 hex> hash so it bumps automatically on synthesis changes", () => {
+    expect(PREFERENCE_SYNTHESIS_VERSION).toMatch(/^v3\.1-[0-9a-f]{12}$/);
+  });
+});
+
+describe("buildPreferenceSummary", () => {
+  it("renders the warm headline from coverage + platforms", () => {
+    expect(buildPreferenceSummary({ answeredTotal: 25, total: 30, platforms: ["instagram", "threads", "x"] })).toBe(
+      "One has a read on 25 of 30 sides of your taste — drawn from how you show up across Instagram, Threads and X.",
+    );
+  });
+  it("falls back to 'your socials' when platforms are empty", () => {
+    expect(buildPreferenceSummary({ answeredTotal: 0, total: 30, platforms: [] })).toContain("your socials");
   });
 });
