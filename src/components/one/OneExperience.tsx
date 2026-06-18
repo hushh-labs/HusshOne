@@ -610,12 +610,12 @@ function ConnectInstagramInline({
           aria-invalid={invalid}
         />
         <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
-          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update Instagram" : "Add Instagram"}
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Connecting…</>) : connected ? "Update Instagram" : "Add Instagram"}
         </button>
       </div>
       {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
       {busy ? (
-        <span className="field-hint conn-busy-hint">Reading your Instagram — photos and captions. This can take a few seconds.</span>
+        <span className="field-hint conn-busy-hint">Connecting your Instagram… One reads your posts in the background after you Send One.</span>
       ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added
@@ -755,12 +755,12 @@ function ConnectThreadsInline({
           aria-invalid={invalid}
         />
         <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
-          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update Threads" : "Add Threads"}
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Connecting…</>) : connected ? "Update Threads" : "Add Threads"}
         </button>
       </div>
       {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
       {busy ? (
-        <span className="field-hint conn-busy-hint">Reading your Threads — posts and context. This can take a few seconds.</span>
+        <span className="field-hint conn-busy-hint">Connecting your Threads… One reads your posts in the background after you Send One.</span>
       ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added
@@ -900,12 +900,12 @@ function ConnectXInline({
           aria-invalid={invalid}
         />
         <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
-          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update X" : "Add X"}
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Connecting…</>) : connected ? "Update X" : "Add X"}
         </button>
       </div>
       {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
       {busy ? (
-        <span className="field-hint conn-busy-hint">Reading your X — posts, replies and links. This can take a few seconds.</span>
+        <span className="field-hint conn-busy-hint">Connecting your X… One reads your posts in the background after you Send One.</span>
       ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added

@@ -1,4 +1,4 @@
-import { normalizeXUrl } from "@/lib/auth/identity";
+import { normalizeXUrl, xHandleFromUrl } from "@/lib/auth/identity";
 
 export interface XProfileStats {
   followers?: string | null;
@@ -97,4 +97,26 @@ export function hasXProfile(profile: XProfileFull | null | undefined): profile i
   if (!profile || profile.platform !== "X" || profile.source !== "scraper") return false;
   if (!profile.username || !normalizeXUrl(profile.profileUrl)) return false;
   return true;
+}
+
+/** Minimal "connected" profile from a normalized X URL — no scrape.
+ *  Used by the connect handshake; the heavy post archive is built later in
+ *  the background deep-scrape pipeline. Returns null if the URL is not a
+ *  canonical X profile URL. */
+export function buildXHandshakeProfile(normalizedUrl: string): XProfileFull | null {
+  const handle = xHandleFromUrl(normalizedUrl);
+  if (!handle) return null;
+  return {
+    platform: "X",
+    username: handle,
+    handle,
+    displayName: null,
+    bio: null,
+    avatarUrl: null,
+    bannerUrl: null,
+    externalUrl: null,
+    profileUrl: normalizedUrl,
+    source: "scraper",
+    connectedAt: new Date().toISOString(),
+  };
 }
