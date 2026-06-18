@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
 import {
   enqueueSocialRefreshJobs,
+  getArchiveFreshness,
   getResearchJob,
   getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
@@ -32,6 +33,12 @@ export const maxDuration = 120;
  * shows a building state instead of a thin "completed" layer.
  */
 const SHOW_THRESHOLD = 20;
+
+// Freshness: when a returning user's archive hasn't been re-scraped in this many days, the read path kicks
+// a lightweight deep-scrape REFRESH (recent window) per connected platform to pull any new posts.
+const ARCHIVE_STALE_MS = (Number(process.env.ARCHIVE_STALE_DAYS) || 3) * 24 * 60 * 60 * 1000;
+const REFRESH_MAX_POSTS = Number(process.env.REFRESH_MAX_POSTS) || 240;
+const DEEP_REFRESH_PLATFORMS = new Set(["instagram", "threads", "x"]);
 
 /** answeredTotal = questionCoverage.answered + questionCoverage.inferred, robust to missing fields. */
 function answeredCoverage(coverage: unknown): number {
@@ -131,21 +138,42 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // pass. TRUST the worker's terminal status — it already encodes the floor (reveal at >=20 OR once
     // media is fully analyzed), so a sparse account's settled partial is served as "completed" and
     // never hangs the client on "building". While the worker still has it "partial", report "running".
+    const stored = (scan.input ?? {}) as Partial<OneSubjectInput>;
+
     const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
     if (v3 && v3.profile) {
       const isCurrent = v3.version === PREFERENCE_SYNTHESIS_VERSION;
-      // Lazy self-heal: a stored profile from an OLDER synthesis version is stale (the prompt/schema/
-      // sections/model/questions/collage changed → the auto-derived version hash flipped). Enqueue an
-      // in-place recompute (deduped by user+platform+publicId, higher priority than routine jobs) so the
-      // existing one-preference-recompute scheduler rebuilds it with the current version, and serve the
-      // stale profile NOW as "running" so the user still sees best-available data + the render-time
-      // headline while it upgrades (~3 min). We never drop to the weaker v2 fast-pass when a v3 profile
-      // already exists. The worker re-stamps THIS same version, so the loop converges after one pass.
       if (!isCurrent) {
+        // Lazy self-heal: a stored profile from an OLDER synthesis version is stale (the prompt/schema/
+        // sections/model/questions/collage changed → the auto-derived version hash flipped). Enqueue an
+        // in-place recompute (deduped, higher priority than routine jobs) so the one-preference-recompute
+        // scheduler rebuilds it with the current version, and serve the stale profile NOW as "running" so
+        // the user still sees best-available data + the render-time headline while it upgrades (~3 min).
+        // We never drop to the weaker v2 fast-pass when a v3 profile already exists. The worker re-stamps
+        // THIS same version, so the loop converges after one pass.
         void enqueueSocialRefreshJobs({
           firebaseUid: verified.uid,
           jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: id ?? "latest", metadata: { scanRunId: id }, priority: 1 }],
         }).catch(() => 0);
+      } else if (stored.socialPreferenceConsent === true && stored.socialProfiles?.length) {
+        // Lazy FRESHNESS refresh: a returning user whose archive hasn't been re-scraped in
+        // ARCHIVE_STALE_DAYS gets a lightweight deep-scrape refresh (recent window) per connected platform
+        // to pull any new posts. Best-effort; the current profile is still served immediately and the
+        // worker upgrades it within minutes. The !pendingWork gate + same-row dedupe prevent poll-thrash.
+        const freshness = await getArchiveFreshness(verified.uid).catch(() => null);
+        if (freshness != null && Date.now() - freshness > ARCHIVE_STALE_MS) {
+          const pendingWork = await hasPendingPreferenceWork(verified.uid).catch(() => false);
+          if (!pendingWork) {
+            const refreshJobs = stored.socialProfiles
+              .filter((p) => p && p.profileUrl && p.username && DEEP_REFRESH_PLATFORMS.has(p.platform.trim().toLowerCase()))
+              .map((p) => ({
+                platform: p.platform.trim().toLowerCase(),
+                publicId: p.username,
+                metadata: { url: p.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id, refresh: true },
+              }));
+            if (refreshJobs.length) void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs: refreshJobs }).catch(() => 0);
+          }
+        }
       }
       const v3Status = isCurrent && v3.status === "completed" ? "completed" : "running";
       const merged = result
@@ -154,7 +182,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus: v3Status, preferenceProfile: v3.profile, result: merged ?? result });
     }
 
-    const stored = (scan.input ?? {}) as Partial<OneSubjectInput>;
     if (stored.socialPreferenceConsent !== true || !stored.socialProfiles?.length) {
       const durationMs = Date.now() - startedAt;
       await logUserPreferenceRun({

@@ -673,6 +673,70 @@ export async function getArchiveDepthSummary(firebaseUid: string): Promise<Archi
   }
 }
 
+/** Epoch ms of the most recent time we indexed ANY social content for the user (lastSeenAt is bumped on
+ *  every upsert) — a migration-free "last scraped at" proxy for the freshness/refresh gate. Null when the
+ *  archive is empty (→ treated as not-stale). Uses the @@index([userId, lastSeenAt]). */
+export async function getArchiveFreshness(firebaseUid: string): Promise<number | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const agg = await prisma.socialContentItem.aggregate({ where: { userId: user.id }, _max: { lastSeenAt: true } });
+    return agg._max.lastSeenAt ? agg._max.lastSeenAt.getTime() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Periodic-sweep selector: up to `limit` users whose archive is stale (max lastSeenAt < staleBefore),
+ *  who have a valid deep social connection, and who have NO deep-scrape job already in flight — each with
+ *  the per-platform {url, publicId} needed to enqueue a refresh. Migration-free raw aggregate over the
+ *  existing index; the NOT-EXISTS-pending clause keeps it from colliding with the lazy revisit path. */
+export async function selectStaleArchiveRefreshTargets(
+  limit: number,
+  staleBeforeMs: number,
+): Promise<Array<{ firebaseUid: string; jobs: Array<{ platform: string; publicId: string; url: string }> }>> {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+  try {
+    const cutoff = new Date(staleBeforeMs);
+    const take = Math.max(1, Math.min(limit, 50));
+    const stale = await prisma.$queryRaw<Array<{ id: string; firebaseUid: string }>>`
+      SELECT u."id" AS "id", u."firebaseUid" AS "firebaseUid"
+      FROM "OneUser" u
+      WHERE EXISTS (
+          SELECT 1 FROM "SocialConnection" sc
+          WHERE sc."userId" = u."id" AND sc."sessionValid" = true AND sc."platform" IN ('instagram','threads','x'))
+        AND (SELECT MAX(ci."lastSeenAt") FROM "SocialContentItem" ci WHERE ci."userId" = u."id") < ${cutoff}
+        AND NOT EXISTS (
+          SELECT 1 FROM "SocialRefreshJob" j
+          WHERE j."userId" = u."id" AND j."platform" IN ('instagram','threads','x') AND j."status" IN ('queued','processing'))
+      LIMIT ${take}
+    `;
+    const out: Array<{ firebaseUid: string; jobs: Array<{ platform: string; publicId: string; url: string }> }> = [];
+    for (const row of stale) {
+      const conns = await prisma.socialConnection.findMany({
+        where: { userId: row.id, sessionValid: true, platform: { in: ["instagram", "threads", "x"] } },
+        select: { platform: true, publicId: true, profile: true },
+      });
+      const jobs = conns
+        .map((c) => {
+          const profileUrl =
+            c.profile && typeof c.profile === "object" && !Array.isArray(c.profile)
+              ? (c.profile as { profileUrl?: unknown }).profileUrl
+              : null;
+          return typeof profileUrl === "string" && profileUrl ? { platform: c.platform, publicId: c.publicId, url: profileUrl } : null;
+        })
+        .filter((j): j is { platform: string; publicId: string; url: string } => Boolean(j));
+      if (jobs.length) out.push({ firebaseUid: row.firebaseUid, jobs });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export interface ArchiveContentRecord {
   platform: string;
   publicId: string;
