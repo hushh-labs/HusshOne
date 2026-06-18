@@ -1,0 +1,80 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "Hushh One — Xtreme Compute Burst",
+  "description": "Personal supercomputing for Apple Silicon. When your Mac (“One Puppy”) runs out of headroom, One transparently bursts the workload to your own GCP project (GPU today, TPU next) and brings the result home — no cloud expertise required, your keys never leave your control.",
+  "url": "https://one.hushh.ai/api/one/burst",
+  "preferredTransport": "HTTP+JSON",
+  "provider": {
+    "organization": "Hushh",
+    "url": "https://hushh.ai"
+  },
+  "version": "1.0.0",
+  "iconUrl": "https://one.hushh.ai/icon.png",
+  "documentationUrl": "https://one.hushh.ai/docs/xtreme-compute-burst",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "securitySchemes": {
+    "hushhSession": {
+      "type": "http",
+      "scheme": "bearer",
+      "bearerFormat": "Firebase ID token"
+    },
+    "byocGcp": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "X-BYOC-Provider",
+      "description": "The caller supplies their own GCP service-account credential in the request body (byoc). It is used in-memory only and is never persisted by Hushh."
+    }
+  },
+  "security": [
+    {
+      "hushhSession": [],
+      "byocGcp": []
+    }
+  ],
+  "defaultInputModes": [
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json",
+    "application/x-ndjson"
+  ],
+  "skills": [
+    {
+      "id": "burst-compute",
+      "name": "Burst a workload to the cloud",
+      "description": "Decide where a workload should run (on-device vs cloud) and, when it exceeds local capacity, provision an accelerator-backed instance in the caller's GCP project, run the containerized workload, return the result, and tear the instance down.",
+      "tags": [
+        "compute",
+        "gpu",
+        "tpu",
+        "autoscale",
+        "byoc",
+        "apple-silicon",
+        "supercomputing"
+      ],
+      "examples": [
+        "My Mac is out of memory for this 70B fine-tune — burst it to a GPU.",
+        "Run this rendering job where it finishes fastest and bring back the output.",
+        "Offload this batch to my GCP project and tear it down when done."
+      ]
+    },
+    {
+      "id": "placement-advice",
+      "name": "Recommend a placement",
+      "description": "Given a workload's resource estimate and the device profile, return whether it should run on the local Mac (“One Puppy”) or burst to the cloud, with the reason.",
+      "tags": [
+        "placement",
+        "scheduling",
+        "cost",
+        "advice"
+      ],
+      "examples": [
+        "Should this job run on my Mac or in the cloud?"
+      ]
+    }
+  ]
+}

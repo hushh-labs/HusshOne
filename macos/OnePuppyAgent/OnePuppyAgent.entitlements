@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OnePuppyAgent.entitlements
+
+  Hardened-runtime, least-privilege entitlements for the One Puppy agent
+  (one-puppy-macos-agent.md §9). Keep this list minimal — Apple privacy review and the BYOC
+  security review both reward "only what you can justify".
+
+  Justifications:
+    • App Sandbox ON — the agent runs sandboxed where feasible (§9). Document any exception
+      you add below and justify it for review.
+    • network.client — the ONLY network capability needed: outbound TLS to the control plane
+      (https://one.hushh.ai). No server, no inbound listener.
+    • Keychain access group — the BYOC SA JSON and the device-id UUID live in the Keychain
+      (kSecAttrAccessibleWhenUnlockedThisDeviceOnly, never synced). Set the group to your
+      team-prefixed identifier when you wire up signing.
+
+  Container runtime note (NOT a generic entitlement): on-device execution (§7) shells the
+  host container runtime. If you adopt Apple's `container` framework or a runtime that needs
+  a privileged helper, that capability is granted to the HELPER tool (a separate, signed,
+  notarized XPC/launchd service), not broadly to this app. Running arbitrary containers is
+  generally INCOMPATIBLE with a strict App Sandbox; if a build needs the runtime in-process,
+  disable the sandbox for that build and document the exception here for review rather than
+  weakening it silently.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Sandbox on where feasible (§9). -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Outbound TLS to the control plane only. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Keychain access group for the BYOC vault + stable device id.
+         Replace $(AppIdentifierPrefix) / the group name during signing setup. -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)ai.hushh.onepuppy</string>
+    </array>
+
+    <!-- Hardened runtime is enabled at archive time (Signing & Capabilities → Hardened Runtime).
+         Do NOT add com.apple.security.cs.* exceptions (allow-jit, disable-library-validation,
+         allow-unsigned-executable-memory) unless a runtime genuinely requires them; each one
+         is a privacy-review cost and must be justified. -->
+</dict>
+</plist>
