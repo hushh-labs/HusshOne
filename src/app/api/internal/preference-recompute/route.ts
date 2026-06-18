@@ -23,7 +23,7 @@ import {
   updateDeepTier,
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
-import { synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
+import { buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
 import { PREFERENCE_QUESTIONS } from "@/lib/social-intelligence/preference-profile";
 import type { SynthesizedAnswer } from "@/lib/social-intelligence/preference-synthesis";
 
@@ -83,6 +83,13 @@ export async function POST(request: Request) {
       const synthesis = await synthesizePreferences({ contentItems, mediaAnalyses, professionalContext });
       if (!synthesis) {
         await failSocialRefreshJob(job.id, "synthesis unavailable (Vertex not configured or failed)");
+        // Floor: once retries are exhausted (failSocialRefreshJob gives up at >=5 attempts), stop the
+        // client from "building" forever — mark the preference layer failed so the UI shows a terminal
+        // "needs another run" state instead of a perpetual spinner.
+        if (job.attempts >= 5) {
+          const sid = meta.scanRunId ?? (await getLatestScanForUser(job.firebaseUid))?.id ?? null;
+          if (sid) await updateDeepTier(job.firebaseUid, sid, { preferenceStatus: "failed" }).catch(() => null);
+        }
         results.push({ id: job.id, ok: false, reason: "synthesis_unavailable" });
         continue;
       }
@@ -128,15 +135,17 @@ export async function POST(request: Request) {
       const mergedSynthesis = { ...synthesis, answers: mergedAnswers };
 
       const mediaPending = depth?.totals ? depth.totals.mediaTotal - depth.totals.mediaAnalyzed : 0;
-      // "partial" while media is still being analyzed OR coverage is below the show threshold;
-      // "completed" once the archive+media settle and enough questions are answered.
-      const preferenceStatus = mediaPending > 0 || answeredTotal < SHOW_THRESHOLD ? "partial" : "completed";
+      // Reveal when coverage crosses the show threshold (snappy, even if media still trickling) OR
+      // once media is fully analyzed — the FLOOR that prevents a sparse account from building forever.
+      // While media is still analyzing AND coverage is below the threshold, stay "partial" (building).
+      const preferenceStatus = answeredTotal >= SHOW_THRESHOLD || mediaPending <= 0 ? "completed" : "partial";
 
       // Render-compatible profile: reuses the dashboard's existing PreferenceIntelligence UI and
       // carries the live archive depth so the user sees e.g. "Instagram 684/1024 · 512 analyzed".
       const profile = toRenderablePreferenceProfile(mergedSynthesis, depth, {
         generatedAt: new Date().toISOString(),
         preferenceStatus,
+        collage: buildPreferenceCollage(contentItems, 24),
       });
 
       // Recompute the canonical counts from the rendered coverage so the log + persisted status agree.

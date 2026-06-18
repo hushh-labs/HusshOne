@@ -8,6 +8,7 @@ import {
   parseSynthesisResponse,
   synthesizePreferences,
   toRenderablePreferenceProfile,
+  buildPreferenceCollage,
   SECTION_EVIDENCE,
   PREFERENCE_SYNTH_SCHEMA,
   PREFERENCE_SYNTHESIS_VERSION,
@@ -406,5 +407,37 @@ describe("toRenderablePreferenceProfile", () => {
     expect(renderable.archiveDepth).toBe(depth);
     expect(renderable.preferenceStatus).toBe("partial");
     expect(renderable.summary).toContain("684 posts");
+  });
+});
+
+describe("buildPreferenceCollage", () => {
+  const item = (itemId: string, primaryUrl: string | null, text = "cap") => ({
+    platform: "instagram",
+    publicId: "u",
+    itemId,
+    itemUrl: `https://insta/p/${itemId}`,
+    itemType: "post",
+    text,
+    timestamp: null,
+    media: primaryUrl ? { primaryUrl, urls: [primaryUrl], assetHashes: ["h"] } : null,
+    metrics: null,
+  });
+
+  it("builds collage tiles from post media, deduped, capped, newest-first order preserved", () => {
+    const items = [
+      item("a", "https://cdn/a.jpg", "beach day"),
+      item("b", null), // no media → skipped
+      item("c", "https://cdn/a.jpg"), // duplicate image → skipped
+      item("d", "https://cdn/d.jpg"),
+    ];
+    const collage = buildPreferenceCollage(items, 24);
+    expect(collage.map((c) => c.imageUrl)).toEqual(["https://cdn/a.jpg", "https://cdn/d.jpg"]);
+    expect(collage[0]).toMatchObject({ evidenceId: "a", postUrl: "https://insta/p/a", caption: "beach day", platform: "instagram" });
+  });
+
+  it("respects the limit and tolerates missing/blank media", () => {
+    const items = Array.from({ length: 40 }, (_, i) => item(`x${i}`, `https://cdn/x${i}.jpg`));
+    expect(buildPreferenceCollage(items, 24)).toHaveLength(24);
+    expect(buildPreferenceCollage([item("z", null)], 24)).toEqual([]);
   });
 });

@@ -75,6 +75,7 @@ const mocks = vi.hoisted(() => ({
   updateDeepTier: vi.fn(async () => undefined),
   synthesizePreferences: vi.fn(),
   toRenderablePreferenceProfile: vi.fn(),
+  buildPreferenceCollage: vi.fn(() => []),
 }));
 
 vi.mock("@/lib/auth/internal", () => ({
@@ -100,6 +101,7 @@ vi.mock("@/lib/social-intelligence/preference-synthesis", () => ({
   synthesizePreferences: mocks.synthesizePreferences,
   // Faithful coverage counter over whatever merged answers the route hands us.
   toRenderablePreferenceProfile: mocks.toRenderablePreferenceProfile,
+  buildPreferenceCollage: mocks.buildPreferenceCollage,
 }));
 
 import { POST } from "./route";
@@ -167,7 +169,8 @@ describe("POST /api/internal/preference-recompute", () => {
     expect(json.results[0]).toMatchObject({ ok: true, passes: 2, answeredTotal: 6 });
   });
 
-  it("keeps status running/partial below the show threshold (answeredTotal < 20)", async () => {
+  it("keeps building (partial) while coverage < 20 AND media is still analyzing", async () => {
+    mocks.getArchiveDepthSummary.mockResolvedValue({ totals: { mediaTotal: 100, mediaAnalyzed: 40 } }); // pending 60
     // Stays at 12 even after re-passes (re-passes resolve nothing).
     mocks.synthesizePreferences
       .mockResolvedValueOnce(fullResult(12))
@@ -195,14 +198,41 @@ describe("POST /api/internal/preference-recompute", () => {
     expect(mocks.updateDeepTier).toHaveBeenCalledWith("uid-1", "scan-1", expect.objectContaining({ preferenceStatus: "completed" }));
   });
 
-  it("stays partial when media is still pending even with full coverage", async () => {
-    mocks.getArchiveDepthSummary.mockResolvedValue({ totals: { mediaTotal: 100, mediaAnalyzed: 40 } });
+  it("reveals early at >= threshold even while media is still analyzing (snappy)", async () => {
+    mocks.getArchiveDepthSummary.mockResolvedValue({ totals: { mediaTotal: 100, mediaAnalyzed: 40 } }); // pending 60
     mocks.synthesizePreferences.mockResolvedValueOnce(fullResult(28));
 
     const res = await POST(req());
     const json = (await res.json()) as { results: Array<Record<string, unknown>> };
 
-    expect(json.results[0]).toMatchObject({ preferenceStatus: "partial", mediaPending: 60 });
+    // 28 >= 20 reveals immediately even though 60 media are still pending.
+    expect(json.results[0]).toMatchObject({ preferenceStatus: "completed", answeredTotal: 28, mediaPending: 60 });
+  });
+
+  it("FLOOR: reveals the partial once media is fully analyzed even below 20 (no forever-building)", async () => {
+    mocks.getArchiveDepthSummary.mockResolvedValue({ totals: { mediaTotal: 50, mediaAnalyzed: 50 } }); // pending 0
+    mocks.synthesizePreferences
+      .mockResolvedValueOnce(fullResult(12))
+      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    // Sparse account stuck at 12/30, but media is done → reveal instead of building forever.
+    expect(json.results[0]).toMatchObject({ preferenceStatus: "completed", answeredTotal: 12 });
+    expect(mocks.saveUserPreferenceProfile).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+  });
+
+  it("FLOOR: marks the layer failed when synthesis is unavailable after retries are exhausted", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValue([{ id: "job-1", firebaseUid: "uid-1", attempts: 5, metadata: { scanRunId: "scan-1" } }]);
+    mocks.synthesizePreferences.mockResolvedValue(null);
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    expect(json.results[0]).toMatchObject({ ok: false, reason: "synthesis_unavailable" });
+    // Retries exhausted (attempts>=5) → terminal "failed" so the client stops building.
+    expect(mocks.updateDeepTier).toHaveBeenCalledWith("uid-1", "scan-1", expect.objectContaining({ preferenceStatus: "failed" }));
   });
 
   it("emits the structured log line and the run-log row", async () => {

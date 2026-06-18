@@ -1902,7 +1902,7 @@ function PreferenceIntelligence({
 
       {collage.length ? (
         <div className="pref-collage" aria-label="Preference evidence collage">
-          {collage.slice(0, 12).map((item) => (
+          {collage.slice(0, 24).map((item) => (
             <a
               key={item.evidenceId}
               href={item.postUrl ?? undefined}
@@ -3574,6 +3574,7 @@ export default function OneExperience() {
       if (preferenceStatusRef.current === "idle") setPreferenceLayer("running");
       setDashboard((prev) => (prev && !prev.preferenceStatus ? { ...prev, preferenceStatus: "running", preferenceStartedAt: Date.now() } : prev));
       track("preference_started", { scanRunId: id });
+      let lastProfile: OneDashboardResult["preferenceProfile"] | undefined;
       while (!stopped && performance.now() - startedAt < PREF_POLL_CAP_MS) {
         try {
           const authorization = await getFirebaseBearer(authUser as User);
@@ -3592,6 +3593,7 @@ export default function OneExperience() {
               setDashboard((prev) => (prev ? { ...prev, ...next } : next));
             }
             if (nextProfile) {
+              lastProfile = nextProfile;
               // Render the profile so the building UI can show progress, but only mark the layer
               // done when the SERVER says completed (it gates on the 20/30 surface threshold).
               const serverStatus: LayerStatus = payload?.preferenceStatus === "completed" ? "completed" : "running";
@@ -3622,7 +3624,16 @@ export default function OneExperience() {
         }
         await new Promise((r) => setTimeout(r, 10_000));
       }
-      if (!stopped) track("preference_poll_timeout", { scanRunId: id });
+      if (!stopped) {
+        track("preference_poll_timeout", { scanRunId: id });
+        // Client floor: if the server never reached a terminal state but we DID receive a profile,
+        // reveal it instead of freezing on the building spinner forever (belt-and-suspenders for the
+        // server-side floor + the Vertex-failure path).
+        if (lastProfile) {
+          setPreferenceLayer("completed", lastProfile);
+          setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "completed", preferenceProfile: lastProfile } : prev));
+        }
+      }
     };
     void run();
     return () => {

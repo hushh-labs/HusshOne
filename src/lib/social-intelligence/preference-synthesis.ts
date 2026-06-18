@@ -564,6 +564,49 @@ export interface ArchiveDepthLike {
   totals: { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number };
 }
 
+/** One visual tile in the preference collage — a real post image linking back to its post. */
+export interface CollageItem {
+  evidenceId: string;
+  imageUrl: string | null;
+  postUrl: string | null;
+  caption: string | null;
+  reason: string;
+  platform: string;
+  signals: string[];
+}
+
+function collageImageUrl(media: unknown): string | null {
+  const m = media && typeof media === "object" && !Array.isArray(media) ? (media as { primaryUrl?: unknown; urls?: unknown }) : null;
+  if (!m) return null;
+  if (typeof m.primaryUrl === "string" && /^https?:\/\//i.test(m.primaryUrl)) return m.primaryUrl;
+  const urls = Array.isArray(m.urls) ? m.urls : [];
+  const first = urls.find((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u));
+  return first ?? null;
+}
+
+/** Build a visual collage of the user's real post images (newest-first, deduped) to show under the
+ *  preference layer. Pure — reads ArchiveContentRecord.media; safe on missing/expired media. */
+export function buildPreferenceCollage(contentItems: ArchiveContentRecord[], limit = 24): CollageItem[] {
+  const out: CollageItem[] = [];
+  const seen = new Set<string>();
+  for (const item of contentItems) {
+    const imageUrl = collageImageUrl(item.media);
+    if (!imageUrl || seen.has(imageUrl)) continue;
+    seen.add(imageUrl);
+    out.push({
+      evidenceId: item.itemId,
+      imageUrl,
+      postUrl: item.itemUrl || null,
+      caption: item.text ? item.text.replace(/\s+/g, " ").trim().slice(0, 140) || null : null,
+      reason: "",
+      platform: item.platform,
+      signals: [],
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 /** A subset-compatible UserPreferenceProfile the dashboard can render, carrying the v3 answers,
  *  coverage, section summaries, and the live archive depth. Stored as JSON; the client reads it as
  *  `preferenceProfile`. */
@@ -575,7 +618,7 @@ export interface RenderablePreferenceProfile {
   generatedAt: string;
   updatedFrom: { platforms: string[]; indexedItems: number; mediaAssets: number; externalLinks: number; ocrSignals: number };
   topSignals: never[];
-  collage: never[];
+  collage: CollageItem[];
   questionAnswers: Array<Record<string, unknown>>;
   questionCoverage: { total: number; answered: number; inferred: number; needsConfirmation: number; unknown: number; blockedByAccess: number };
   sectionSummaries: Array<{ sectionId: string; title: string; summary: string; answeredCount: number; totalCount: number; confidence: "low" | "medium" | "high" }>;
@@ -585,7 +628,7 @@ export interface RenderablePreferenceProfile {
 export function toRenderablePreferenceProfile(
   result: PreferenceSynthesisResult,
   depth: ArchiveDepthLike | null,
-  opts: { generatedAt: string; preferenceStatus: "partial" | "completed" },
+  opts: { generatedAt: string; preferenceStatus: "partial" | "completed"; collage?: CollageItem[] },
 ): RenderablePreferenceProfile {
   const byId = new Map(PREFERENCE_QUESTIONS.map((q) => [q.id, q]));
   const questionAnswers = result.answers.map((a) => {
@@ -644,7 +687,7 @@ export function toRenderablePreferenceProfile(
       ocrSignals: 0,
     },
     topSignals: [],
-    collage: [],
+    collage: opts.collage ?? [],
     questionAnswers,
     questionCoverage,
     sectionSummaries,

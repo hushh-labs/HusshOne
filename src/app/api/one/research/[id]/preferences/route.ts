@@ -126,11 +126,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     }
 
     // v3 upgrade: once the Vertex synthesis worker has produced a profile it supersedes the v2 fast
-    // pass. While still "partial" (media analyzing) report "running" so the client keeps polling.
+    // pass. TRUST the worker's terminal status — it already encodes the floor (reveal at >=20 OR once
+    // media is fully analyzed), so a sparse account's settled partial is served as "completed" and
+    // never hangs the client on "building". While the worker still has it "partial", report "running".
     const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
     if (v3 && v3.version === PREFERENCE_SYNTHESIS_VERSION && v3.profile) {
-      const answeredTotal = answeredCoverage((v3.profile as { questionCoverage?: unknown }).questionCoverage);
-      const v3Status = v3.status === "completed" && answeredTotal >= SHOW_THRESHOLD ? "completed" : "running";
+      const v3Status = v3.status === "completed" ? "completed" : "running";
       const merged = result
         ? await updateDeepTier(verified.uid, id, { preferenceStatus: v3Status, preferenceProfile: v3.profile })
         : null;
