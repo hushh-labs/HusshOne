@@ -168,3 +168,21 @@ export async function getOwnedBurstJob(firebaseUid: string, burstJobId: string) 
     return null;
   }
 }
+
+/* Owner-scoped status read used by the Puppy result callback: returns just enough to
+   authorize and route the report. Null when unset/unowned. */
+export async function getOwnedBurstJobStatus(firebaseUid: string, burstJobId: string) {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    return await prisma.burstJob.findFirst({
+      where: { id: burstJobId, userId: user.id },
+      select: { id: true, status: true, placement: true },
+    });
+  } catch (error) {
+    if (isMissingSchema(error)) return null;
+    return null;
+  }
+}
