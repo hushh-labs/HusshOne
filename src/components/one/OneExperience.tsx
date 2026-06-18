@@ -54,7 +54,6 @@ import { buildPreferenceSummary, prettyPlatform } from "@/lib/social-intelligenc
 import { track, getSessionId } from "@/lib/analytics/track";
 import { Icons } from "./Icons";
 import { CanvasField } from "./CanvasField";
-import { ParticleMorph } from "./ParticleMorph";
 import LandingPage from "./landing/LandingPage";
 import DossierReport from "./DossierReport";
 import ErrorBoundary, { reportClientError } from "./ErrorBoundary";
@@ -4720,11 +4719,11 @@ export default function OneExperience() {
 
   return (
     <main className="stage">
-      {stage === "manual" || stage === "connect" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" || stage === "pending" ? (
-        <ParticleMorph motion={MOTION} />
-      ) : stage === "precollect" ? null /* clean white connectors screen — no ambient orb */ : (
+      {/* The identity orb appears ONLY during the scan + dossier moments; every intake / utility
+          screen stays clean white (Apple-minimal). */}
+      {stage === "collect" || stage === "dashboard" || stage === "disambiguate" ? (
         <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={false} />
-      )}
+      ) : null}
 
       <div className="brandbar">
         <div className="wordmark">
