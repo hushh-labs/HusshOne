@@ -44,6 +44,7 @@ import type {
   OneDashboardResult,
   OneSafeFinding,
   OneSourceCard,
+  SocialProfileFull,
   PersonAuditStatus,
 } from "@/lib/ria/types";
 import type { ScanEmailDeliverySummary } from "@/lib/notifications/types";
@@ -86,6 +87,7 @@ const ACCENT = "#111113";
    dossier) instead of the Shadow structured scan. Server routes mirror the
    /dashboard + /scans recovery protocol, so the rest of the flow is unchanged. */
 const RESEARCH_MODE = process.env.NEXT_PUBLIC_ONE_RESEARCH_MODE === "true";
+const SOCIAL_REFRESH_TIMEOUT_MS = 2500;
 /* Phase-0 candidate discovery (the "is this you?" pivot cards + 4-✓ gate) is now
    DORMANT — Phase-0 identity is anchored by the user's pasted LinkedIn URL instead.
    Flip this on to revive the old discover/disambiguation flow (kept intact behind it). */
@@ -1411,13 +1413,24 @@ function PreferenceIntelligence({
     );
   }
 
-  const metrics = [
-    ["items", profile.updatedFrom.indexedItems],
-    ["media", profile.updatedFrom.mediaAssets],
-    ["links", profile.updatedFrom.externalLinks],
-    ["signals", profile.topSignals.length],
-    ["selected", profile.selection?.selectedEvidenceCount ?? 0],
-  ];
+  const questionAnswers = Array.isArray(profile.questionAnswers) ? profile.questionAnswers : [];
+  const questionCoverage = profile.questionCoverage;
+  const sectionSummaries = Array.isArray(profile.sectionSummaries) ? profile.sectionSummaries : [];
+  const metrics = questionAnswers.length
+    ? [
+        ["answers", `${(questionCoverage?.answered ?? 0) + (questionCoverage?.inferred ?? 0)}/${questionCoverage?.total ?? questionAnswers.length}`],
+        ["confirm", questionCoverage?.needsConfirmation ?? 0],
+        ["unknown", questionCoverage?.unknown ?? 0],
+        ["media", profile.updatedFrom.mediaAssets],
+        ["items", profile.updatedFrom.indexedItems],
+      ]
+    : [
+        ["items", profile.updatedFrom.indexedItems],
+        ["media", profile.updatedFrom.mediaAssets],
+        ["links", profile.updatedFrom.externalLinks],
+        ["signals", profile.topSignals.length],
+        ["selected", profile.selection?.selectedEvidenceCount ?? 0],
+      ];
   const domainLabel = (domain: string) =>
     domain
       .split("_")
@@ -1432,6 +1445,26 @@ function PreferenceIntelligence({
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
     : [];
+  const sectionRows = sectionSummaries.length
+    ? sectionSummaries.map((summary) => ({
+        summary,
+        answers: questionAnswers.filter((answer) => answer.sectionId === summary.sectionId),
+      }))
+    : [...new Set(questionAnswers.map((answer) => answer.sectionId))].map((sectionId) => {
+        const answers = questionAnswers.filter((answer) => answer.sectionId === sectionId);
+        return {
+          summary: {
+            sectionId,
+            title: answers[0]?.sectionTitle ?? domainLabel(sectionId),
+            summary: "",
+            answeredCount: answers.filter((answer) => answer.status === "answered" || answer.status === "inferred").length,
+            totalCount: answers.length,
+            confidence: "low" as const,
+          },
+          answers,
+        };
+      });
+  const statusLabel = (statusValue: string) => statusValue.replace(/_/g, " ");
 
   return (
     <section className="pref-intel">
@@ -1452,6 +1485,39 @@ function PreferenceIntelligence({
           ))}
         </div>
       </div>
+
+      {questionAnswers.length ? (
+        <div className="pref-question-sections" aria-label="Preference question answers">
+          {sectionRows.map(({ summary, answers }) => (
+            <article className="pref-question-section" key={summary.sectionId}>
+              <div className="pref-question-head">
+                <div>
+                  <span>{summary.title}</span>
+                  <strong>
+                    {summary.answeredCount}/{summary.totalCount} evidence-backed
+                  </strong>
+                </div>
+                <em>{summary.confidence} confidence</em>
+              </div>
+              {summary.summary ? <p>{summary.summary}</p> : null}
+              <div className="pref-question-list">
+                {answers.map((answer) => (
+                  <div className={`pref-question-row pref-question-${answer.status}`} key={answer.questionId}>
+                    <div>
+                      <span>{answer.prompt}</span>
+                      <strong>{answer.answer || (answer.unknownReason === "unsafe_to_infer" ? "Needs your confirmation." : "Not enough reliable evidence yet.")}</strong>
+                    </div>
+                    <small>
+                      {statusLabel(answer.status)} · {answer.confidence.level} · {Math.round(answer.confidence.score * 100)}%
+                      {answer.evidenceIds.length ? ` · ${answer.evidenceIds.length} evidence` : ""}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
 
       {profile.selection ? (
         <div className="pref-tracking" aria-label="Preference selection tracking">
@@ -3002,6 +3068,83 @@ export default function OneExperience() {
     });
   };
 
+  const refreshConnectedSocialProfilesForScan = async (authorization: string): Promise<SocialProfileFull[]> => {
+    let nextIg = igProfiles;
+    let nextThreads = threadsProfiles;
+    let nextX = xProfiles;
+    let changed = false;
+    const tasks: Promise<void>[] = [];
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, SOCIAL_REFRESH_TIMEOUT_MS));
+    const refreshOne = async <TProfile extends SocialProfileFull>(
+      platform: "instagram" | "threads" | "x",
+      profileUrl: string,
+      endpoint: string,
+      isProfile: (profile: TProfile | null | undefined) => profile is TProfile,
+      apply: (profile: TProfile) => void,
+    ) => {
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { Authorization: authorization, "Content-Type": "application/json" },
+          body: JSON.stringify({ url: profileUrl }),
+        });
+        if (res.status === 202) {
+          track(`${platform}_refresh_pending_for_scan`);
+          return;
+        }
+        const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profile?: unknown; error?: string };
+        const profile = payload.profile as TProfile | null | undefined;
+        if (!res.ok || !payload.ok || !isProfile(profile)) throw new Error(payload.error || `Could not refresh ${platform}`);
+        apply(profile);
+        changed = true;
+        track(`${platform}_refresh_for_scan_completed`);
+      } catch (error) {
+        track(`${platform}_refresh_for_scan_failed`, {
+          reason: error instanceof Error ? error.message.slice(0, 120) : "unknown",
+        });
+      }
+    };
+
+    for (const profile of igProfiles) {
+      const url = normalizeInstagramUrl(profile.profileUrl);
+      if (!url) continue;
+      tasks.push(
+        refreshOne("instagram", url, "/api/instagram/enrich-url", hasInstagramProfile, (fresh) => {
+          nextIg = [fresh, ...nextIg.filter((p) => p.profileUrl !== fresh.profileUrl && p.username !== fresh.username)].slice(0, 4);
+        }),
+      );
+    }
+    for (const profile of threadsProfiles) {
+      const url = normalizeThreadsUrl(profile.profileUrl);
+      if (!url) continue;
+      tasks.push(
+        refreshOne("threads", url, "/api/threads/enrich-url", hasThreadsProfile, (fresh) => {
+          nextThreads = [fresh, ...nextThreads.filter((p) => p.profileUrl !== fresh.profileUrl && p.username !== fresh.username)].slice(0, 4);
+        }),
+      );
+    }
+    for (const profile of xProfiles) {
+      const url = normalizeXUrl(profile.profileUrl);
+      if (!url) continue;
+      tasks.push(
+        refreshOne("x", url, "/api/x/enrich-url", hasXProfile, (fresh) => {
+          nextX = [fresh, ...nextX.filter((p) => p.profileUrl !== fresh.profileUrl && p.username !== fresh.username)].slice(0, 4);
+        }),
+      );
+    }
+
+    if (tasks.length) await Promise.race([Promise.allSettled(tasks).then(() => undefined), timeout]);
+    if (changed) {
+      setIgProfiles(nextIg);
+      setThreadsProfiles(nextThreads);
+      setXProfiles(nextX);
+      scopedSet(authUser, LS_IG_FULL, JSON.stringify(nextIg));
+      scopedSet(authUser, LS_THREADS_FULL, JSON.stringify(nextThreads));
+      scopedSet(authUser, LS_X_FULL, JSON.stringify(nextX));
+    }
+    return [...nextIg, ...nextThreads, ...nextX];
+  };
+
   // Settings is a signed-in overlay stage; remember where we came from for "Done".
   const goToSettings = () => {
     if (stage === "settings") return;
@@ -3520,6 +3663,9 @@ export default function OneExperience() {
           // deep-link ?scan= is a request for that specific report → still open it.)
           if (!pending && recovered.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
             scopedDel(user, LS_LAST_SCAN);
+            scopedDel(user, LS_ACTIVE_SCAN);
+            scopedDel(user, LS_ACTIVE_STARTED_AT);
+            resetProgressiveLayers();
             setStage(baseStage);
             return;
           }
@@ -3583,6 +3729,9 @@ export default function OneExperience() {
             // intelligence changed since this scan → re-run on the new layer, not restore
             if (payload.result.intelligenceVersion !== INTELLIGENCE_VERSION) {
               scopedDel(user, LS_LAST_SCAN);
+              scopedDel(user, LS_ACTIVE_SCAN);
+              scopedDel(user, LS_ACTIVE_STARTED_AT);
+              resetProgressiveLayers();
               setStage(baseStage);
               return;
             }
@@ -3743,12 +3892,12 @@ export default function OneExperience() {
 
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), 1_800_000); // match server cap (30min)
-    const socialProfiles = [...igProfiles, ...threadsProfiles, ...xProfiles];
     setPhase1LayerStatus("running");
-    setPreferenceLayer(socialProfiles.length && socialPreferenceConsent ? "running" : "skipped");
 
     try {
       const authorization = await getFirebaseBearer(authUser as User);
+      const socialProfiles = await refreshConnectedSocialProfilesForScan(authorization);
+      setPreferenceLayer(socialProfiles.length && socialPreferenceConsent ? "running" : "skipped");
       const response = await fetch(RESEARCH_MODE ? "/api/one/research" : "/api/one/dashboard", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: authorization },

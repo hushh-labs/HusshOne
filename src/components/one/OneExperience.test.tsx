@@ -376,6 +376,7 @@ describe("OneExperience", () => {
   it("routes stale completed reports with no rich profile back to Google precollect", async () => {
     mocks.currentUser = signedInUser();
     window.localStorage.setItem("one_last_scan", "old-completed");
+    scopedLocal("firebase-1", "one_ig_full", JSON.stringify([instagramProfile]));
     mockFetch(async (url) => {
       if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
       if (url === "/api/one/scans/old-completed") {
@@ -392,7 +393,9 @@ describe("OneExperience", () => {
     render(<OneExperience />);
 
     expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
+    expect(await screen.findByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
     expect(screen.queryByText(/Your deep research dossier/i)).not.toBeInTheDocument();
     expect(window.localStorage.getItem("one_last_scan")).toBeNull();
+    expect(window.localStorage.getItem("one_ig_full")).not.toBeNull();
   });
 });

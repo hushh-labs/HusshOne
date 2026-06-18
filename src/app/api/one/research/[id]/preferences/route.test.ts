@@ -4,6 +4,7 @@ import { GET } from "./route";
 const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
+  indexSocialPreferenceEvidence: vi.fn(async () => ({ contentItems: 1, mediaAssets: 1 })),
   logUserPreferenceRun: vi.fn(async () => undefined),
   saveUserPreferenceProfile: vi.fn(async () => undefined),
   updateDeepTier: vi.fn(async (_uid: string, _id: string, fields: Record<string, unknown>) => ({
@@ -25,6 +26,7 @@ vi.mock("@/lib/auth/verify", () => ({
 vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
+  indexSocialPreferenceEvidence: mocks.indexSocialPreferenceEvidence,
   logUserPreferenceRun: mocks.logUserPreferenceRun,
   saveUserPreferenceProfile: mocks.saveUserPreferenceProfile,
   updateDeepTier: mocks.updateDeepTier,
@@ -196,7 +198,15 @@ describe("GET /api/one/research/[id]/preferences", () => {
         firebaseUid: "firebase-1",
         scanRunId: "scan-1",
         status: "completed",
-        version: "2026-06-17.social-preference-v1",
+        version: "2026-06-18.social-preference-questions-v2",
+      }),
+    );
+    expect(mocks.indexSocialPreferenceEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "firebase-1",
+        scanRunId: "scan-1",
+        version: "2026-06-18.social-preference-questions-v2",
+        evidence: expect.any(Array),
       }),
     );
     expect(mocks.updateDeepTier).toHaveBeenCalledWith(
@@ -204,7 +214,10 @@ describe("GET /api/one/research/[id]/preferences", () => {
       "scan-1",
       expect.objectContaining({
         preferenceStatus: "completed",
+        preferenceVersion: "2026-06-18.social-preference-questions-v2",
+        preferenceInputHash: expect.any(String),
         preferenceProfile: expect.objectContaining({
+          questionAnswers: expect.arrayContaining([expect.objectContaining({ questionId: "travel_perfect_escape" })]),
           topSignals: expect.arrayContaining([expect.objectContaining({ label: "seaside / beach-view places" })]),
         }),
       }),
@@ -225,11 +238,15 @@ describe("GET /api/one/research/[id]/preferences", () => {
     );
   });
 
-  it("reuses an existing same-input preference profile", async () => {
+  it("reuses an existing v2 same-input preference profile", async () => {
     const existing = {
-      version: "2026-06-17.social-preference-v1",
+      version: "2026-06-18.social-preference-questions-v2",
       status: "completed",
       generatedAt: "2026-06-17T09:00:00.000Z",
+      questionRegistryVersion: "2026-06-18.preference-30q-v1",
+      questionAnswers: [],
+      questionCoverage: { total: 30, answered: 0, inferred: 0, needsConfirmation: 0, unknown: 30, blockedByAccess: 0, bySection: {} },
+      sectionSummaries: [],
       updatedFrom: { platforms: ["instagram"], indexedItems: 1, mediaAssets: 1, ocrSignals: 0, externalLinks: 0, recentWindowDays: 30 },
       summary: "Existing preference profile",
       topSignals: [],
@@ -256,6 +273,7 @@ describe("GET /api/one/research/[id]/preferences", () => {
         noPrivateContent: true,
         sensitiveInferencePolicy: "self_declared_or_needs_confirmation",
       },
+      mediaIntelligence: { status: "pending", provider: "vertex_gemini_cloud_vision", queuedAssets: 1, note: "pending" },
     };
     mocks.getUserPreferenceProfileByInputHash.mockResolvedValueOnce(existing);
     mocks.getResearchJob.mockResolvedValueOnce({
@@ -288,5 +306,68 @@ describe("GET /api/one/research/[id]/preferences", () => {
     expect(json.result).toBeNull();
     expect(mocks.saveUserPreferenceProfile).not.toHaveBeenCalled();
     expect(mocks.logUserPreferenceRun).toHaveBeenCalledWith(expect.objectContaining({ event: "reused" }));
+  });
+
+  it("does not reuse a v1 preference profile when v2 is required", async () => {
+    mocks.getUserPreferenceProfileByInputHash.mockResolvedValueOnce({
+      version: "2026-06-17.social-preference-v1",
+      status: "completed",
+      generatedAt: "2026-06-17T09:00:00.000Z",
+      updatedFrom: { platforms: ["instagram"], indexedItems: 1, mediaAssets: 1, ocrSignals: 0, externalLinks: 0, recentWindowDays: 30 },
+      summary: "Old v1 preference profile",
+      topSignals: [],
+      domains: {},
+      evidence: [],
+      collage: [],
+      selection: {
+        selectedAt: "2026-06-17T09:00:00.000Z",
+        evidencePoolSize: 1,
+        selectedEvidenceCount: 1,
+        selectedEvidenceIds: ["e1"],
+        selectedSignalCount: 0,
+        selectedSignalIds: [],
+        collageEvidenceIds: ["e1"],
+        droppedEvidenceCount: 0,
+        byPlatform: { instagram: 1, threads: 0, x: 0, linkedin: 0 },
+        selectedByPlatform: { instagram: 1, threads: 0, x: 0, linkedin: 0 },
+        byDomain: {},
+        selectionRules: { evidenceCap: 2600, topSignalCap: 12, signalEvidenceCap: 12, collageCap: 16, promptPostLimit: null },
+      },
+      refresh: { lastIndexedAt: "2026-06-17T09:00:00.000Z", staleAfter: "2026-06-18T09:00:00.000Z", mode: "refresh_ready" },
+      guardrails: {
+        linkedinUntouched: true,
+        noPrivateContent: true,
+        sensitiveInferencePolicy: "self_declared_or_needs_confirmation",
+      },
+    });
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "running",
+      normalizedResult: null,
+      input: {
+        socialPreferenceConsent: true,
+        socialProfiles: [
+          {
+            platform: "Instagram",
+            username: "user",
+            displayName: "User",
+            bio: "Coffee and Goa",
+            avatarUrl: null,
+            externalUrl: null,
+            profileUrl: "https://www.instagram.com/user/",
+            source: "scraper",
+            recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", caption: "Goa sea view coffee", thumbnailUrl: "https://cdn.example.com/goa.jpg" }],
+          },
+        ],
+      },
+    });
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { version?: string; summary?: string } };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).toBe("completed");
+    expect(json.preferenceProfile?.version).toBe("2026-06-18.social-preference-questions-v2");
+    expect(json.preferenceProfile?.summary).not.toBe("Old v1 preference profile");
+    expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
   });
 });
