@@ -486,16 +486,18 @@ export async function POST(request: Request) {
       userAgent: request.headers.get("user-agent"),
     });
     scanRunId = scan.scanRunId;
-    // v3 preference track: enqueue a deep-archive (1024-item) refresh job per connected social
-    // platform, drained by the background archive/media worker. Fire-and-forget — the mandatory
-    // Phase-1 scan must never be blocked or failed by optional preference enrichment.
+    // v3 preference track: enqueue a deep-archive refresh job per connected social platform, drained by
+    // the background archive/media worker. The FIRST scrape targets 240 posts (not 1024 in one shot,
+    // which times out on the node-side fetch); the worker then grows the same job +120 per run up to the
+    // 1024 ceiling. Fire-and-forget — the mandatory Phase-1 scan must never be blocked or failed by
+    // optional preference enrichment.
     if (input.socialPreferenceConsent === true && input.socialProfiles?.length) {
       const jobs = input.socialProfiles
         .filter((profile) => profile && profile.profileUrl && profile.username)
         .map((profile) => ({
           platform: profile.platform.trim().toLowerCase(),
           publicId: profile.username,
-          metadata: { url: profile.profileUrl, maxPosts: 1024, scanRunId },
+          metadata: { url: profile.profileUrl, maxPosts: 240, scanRunId },
         }));
       if (jobs.length) void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs }).catch(() => 0);
     }

@@ -1,7 +1,9 @@
 import { normalizeXUrl, xHandleFromUrl } from "@/lib/auth/identity";
 import type { XAccessInfo, XAccessState, XProfileFull, XScrapeMeta, XTimelineItem } from "./profile";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// Node-side fetch abort — the real bound on deep scrapes. Raised to 180s for larger staged batches.
+// Env TWITTER_SCRAPER_TIMEOUT_MS / X_SCRAPER_TIMEOUT_MS overrides.
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class XScraperError extends Error {
   constructor(

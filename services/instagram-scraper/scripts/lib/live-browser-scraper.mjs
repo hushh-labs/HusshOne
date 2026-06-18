@@ -163,7 +163,7 @@ function delay(ms) {
 }
 
 export function extractInstagramProfileFromDom(options = {}) {
-  const maxPosts = Number(options.maxPosts || 120);
+  const maxPosts = Number(options.maxPosts || 1024);
   const text = document.body.innerText || "";
   const allLines = lines(text);
   const url = stripQuery(location.href);

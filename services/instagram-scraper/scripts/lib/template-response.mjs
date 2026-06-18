@@ -17,7 +17,7 @@ export function buildInstagramTemplate(profileUrl, raw) {
       following: raw?.stats?.following || null,
     },
     highlights: Array.isArray(raw?.highlights) ? raw.highlights.slice(0, 24) : [],
-    recentPublicPosts: Array.isArray(raw?.recentPublicPosts) ? raw.recentPublicPosts.slice(0, 120) : [],
+    recentPublicPosts: Array.isArray(raw?.recentPublicPosts) ? raw.recentPublicPosts.slice(0, 1024) : [],
     access: raw?.access || null,
     visibleProfileText: Array.isArray(raw?.visibleProfileText) ? raw.visibleProfileText.slice(0, 80) : [],
     scrapeMeta: {
