@@ -10,14 +10,12 @@
    ============================================================ */
 
 import { Icons } from "../Icons";
-import { CodeBoardHero } from "./CodeBoardHero";
 
 export default function LandingPage({ onStart, onGuest, error }: { onStart: () => void; onGuest: () => void; error?: string }) {
   return (
     <div className="landing">
       <section className="l-hero">
         <h1 className="sr-only">One by hussh, your personal intelligence agent</h1>
-        <CodeBoardHero />
         <div className="l-hero-inner">
           <h2 className="l-h">
             <span className="muted">Meet</span> One.

@@ -89,10 +89,8 @@ function ConnectorIcon({ platform }: { platform: ConnectorPlatform }) {
   if (platform === "instagram") {
     return (
       <span className="connector-logo connector-logo-instagram" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="5" y="5" width="14" height="14" rx="4" />
-          <circle cx="12" cy="12" r="3.2" />
-          <circle cx="16.5" cy="7.5" r="0.8" fill="currentColor" stroke="none" />
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2.2c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.43.36 1.06.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.43.16-1.06.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41a3.7 3.7 0 0 1-1.38-.9 3.7 3.7 0 0 1-.9-1.38c-.16-.43-.36-1.06-.41-2.23C2.21 15.58 2.2 15.2 2.2 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.43-.16 1.06-.36 2.23-.41C8.42 2.21 8.8 2.2 12 2.2Zm0 1.8c-3.15 0-3.5.01-4.74.07-.9.04-1.38.19-1.7.32-.43.16-.74.36-1.06.68-.32.32-.52.63-.68 1.06-.13.32-.28.8-.32 1.7C3.21 9.05 3.2 9.4 3.2 12s.01 2.95.07 4.74c.04.9.19 1.38.32 1.7.16.43.36.74.68 1.06.32.32.63.52 1.06.68.32.13.8.28 1.7.32 1.24.06 1.59.07 4.74.07s3.5-.01 4.74-.07c.9-.04 1.38-.19 1.7-.32.43-.16.74-.36 1.06-.68.32-.32.52-.63.68-1.06.13-.32.28-.8.32-1.7.06-1.24.07-1.59.07-4.74s-.01-2.95-.07-4.74c-.04-.9-.19-1.38-.32-1.7a2.85 2.85 0 0 0-.68-1.06 2.85 2.85 0 0 0-1.06-.68c-.32-.13-.8-.28-1.7-.32C15.5 4.01 15.15 4 12 4Zm0 3.05a4.95 4.95 0 1 1 0 9.9 4.95 4.95 0 0 1 0-9.9Zm0 1.8a3.15 3.15 0 1 0 0 6.3 3.15 3.15 0 0 0 0-6.3Zm5.15-3.27a1.16 1.16 0 1 1 0 2.32 1.16 1.16 0 0 1 0-2.32Z" />
         </svg>
       </span>
     );
@@ -100,17 +98,16 @@ function ConnectorIcon({ platform }: { platform: ConnectorPlatform }) {
   if (platform === "threads") {
     return (
       <span className="connector-logo connector-logo-threads" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M15.8 8.4c-.7-1.2-1.9-2-3.7-2-3 0-5 2.2-5 5.6s2.1 5.7 5.4 5.7c2.8 0 4.6-1.5 4.6-3.6 0-2.2-1.8-3.4-4.2-3.4h-1.2" />
-          <path d="M10 13.4c.3 1.1 1.2 1.7 2.4 1.7 1.5 0 2.4-.7 2.4-1.8 0-1.2-1.1-1.9-2.8-1.9" />
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M16.6 11.13c-.09-.04-.18-.08-.27-.12-.16-2.93-1.76-4.6-4.45-4.62h-.04c-1.6 0-2.94.69-3.76 1.93l1.48 1.01c.61-.92 1.57-1.12 2.28-1.12h.03c.88.01 1.55.27 1.98.76.31.36.52.86.63 1.5-.79-.14-1.65-.18-2.56-.13-2.58.15-4.24 1.65-4.13 3.74.06 1.06.59 1.97 1.49 2.56.76.5 1.74.76 2.76.7 1.35-.07 2.4-.59 3.15-1.52.56-.71.92-1.62 1.08-2.78.65.4 1.13.92 1.4 1.55.46 1.08.49 2.85-.96 4.29-1.27 1.27-2.8 1.82-5.1 1.83-2.56-.02-4.5-.84-5.76-2.45C5.42 16.01 4.83 13.9 4.81 12c.02-1.9.61-4.01 1.78-5.55C7.85 4.86 9.79 4.04 12.34 4.02c2.58.02 4.54.85 5.85 2.46.64.8 1.12 1.8 1.44 2.96l1.74-.46c-.38-1.43-.98-2.67-1.81-3.7-1.67-2.07-4.14-3.21-7.38-3.23h-.01C9.1 4.07 6.64 5.2 5 7.34 3.56 9.23 2.8 11.87 2.79 14v.01c.02 2.13.77 4.77 2.21 6.66 1.62 2.14 4.07 3.27 7.31 3.3h.01c2.88-.02 4.92-.78 6.59-2.45 2.19-2.18 2.12-4.92 1.4-6.6-.52-1.2-1.51-2.18-2.87-2.8ZM12.18 16c-1.13.06-2.3-.45-2.36-1.53-.04-.8.57-1.7 2.43-1.8.21-.02.42-.02.62-.02.68 0 1.31.06 1.89.19-.22 2.7-1.48 2.9-2.58 2.96Z" />
         </svg>
       </span>
     );
   }
   return (
     <span className="connector-logo connector-logo-x" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-        <path d="M6 5l12 14M18 5L6 19" />
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117l11.966 15.644Z" />
       </svg>
     </span>
   );
@@ -484,7 +481,7 @@ function Manual({
               {busy ? "Creating guest session..." : "Continue"}
             </button>
           </div>
-          {error ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{error}</span> : null}
+          {error ? <span className="field-hint" role="alert" style={{ color: "var(--hussh-crimson)" }}>{error}</span> : null}
         </div>
       </form>
     </div>
@@ -613,11 +610,14 @@ function ConnectInstagramInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : connected ? "Update Instagram" : "Add Instagram"}
+        <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update Instagram" : "Add Instagram"}
         </button>
       </div>
-      {connected ? (
+      {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
+      {busy ? (
+        <span className="field-hint conn-busy-hint">Reading your Instagram — photos and captions. This can take a few seconds.</span>
+      ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added
         </span>
@@ -628,7 +628,7 @@ function ConnectInstagramInline({
       ) : (
         <span className="field-hint">Direct public profile link only.</span>
       )}
-      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+      {err ? <span className="field-hint" role="alert" style={{ color: "var(--hussh-crimson)" }}>{err}</span> : null}
     </form>
   );
 }
@@ -755,11 +755,14 @@ function ConnectThreadsInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : connected ? "Update Threads" : "Add Threads"}
+        <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update Threads" : "Add Threads"}
         </button>
       </div>
-      {connected ? (
+      {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
+      {busy ? (
+        <span className="field-hint conn-busy-hint">Reading your Threads — posts and context. This can take a few seconds.</span>
+      ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added
         </span>
@@ -770,7 +773,7 @@ function ConnectThreadsInline({
       ) : (
         <span className="field-hint">Direct public profile link only.</span>
       )}
-      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+      {err ? <span className="field-hint" role="alert" style={{ color: "var(--hussh-crimson)" }}>{err}</span> : null}
     </form>
   );
 }
@@ -897,11 +900,14 @@ function ConnectXInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : connected ? "Update X" : "Add X"}
+        <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : connected ? "Update X" : "Add X"}
         </button>
       </div>
-      {connected ? (
+      {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
+      {busy ? (
+        <span className="field-hint conn-busy-hint">Reading your X — posts, replies and links. This can take a few seconds.</span>
+      ) : connected ? (
         <span className="field-hint">
           {Icons.check(12)} @{connected.username} added
         </span>
@@ -912,7 +918,7 @@ function ConnectXInline({
       ) : (
         <span className="field-hint">Direct public X/Twitter profile link only.</span>
       )}
-      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+      {err ? <span className="field-hint" role="alert" style={{ color: "var(--hussh-crimson)" }}>{err}</span> : null}
     </form>
   );
 }
@@ -1025,16 +1031,19 @@ function ConnectLinkedInInline({
           inputMode="url"
           aria-invalid={invalid}
         />
-        <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add LinkedIn"}
+        <button className={"ghost-btn" + (busy ? " busy" : "")} type="submit" disabled={busy || !normalized}>
+          {busy ? (<><span className="btn-spin" aria-hidden="true" />Reading…</>) : "Add LinkedIn"}
         </button>
       </div>
-      <span className="field-hint">
-        {required
-          ? "Use your personal profile link, not a company, jobs, feed, or search page."
-          : "Recommended: paste your /in/ link and One reads your real career, education, and skills — far sharper than your name alone. Still optional — you can send One without it."}
+      {busy ? <div className="conn-progress" aria-hidden="true" /> : null}
+      <span className={"field-hint" + (busy ? " conn-busy-hint" : "")}>
+        {busy
+          ? "Reading your LinkedIn — career, education and skills. This can take a few seconds."
+          : required
+            ? "Use your personal profile link, not a company, jobs, feed, or search page."
+            : "Recommended: paste your /in/ link and One reads your real career, education, and skills — far sharper than your name alone. Still optional — you can send One without it."}
       </span>
-      {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
+      {err ? <span className="field-hint" role="alert" style={{ color: "var(--hussh-crimson)" }}>{err}</span> : null}
     </form>
   );
 }
@@ -1237,40 +1246,39 @@ function PreCollect({
           ) : null}
         </div>
 
-        <span className="magnet pc-actions" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
-          <button className="cta cta-xl" onClick={submit} disabled={busy || (requiresLinkedIn && !hasLinkedIn) || (needsSocialConsent && !socialPreferenceConsent)}>
-            {busy ? (
-              <>
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 17,
-                    height: 17,
-                    borderRadius: "50%",
-                    border: "2px solid rgba(255,255,255,0.35)",
-                    borderTopColor: "#fff",
-                    animation: "scanSpin 0.7s linear infinite",
-                    display: "inline-block",
-                  }}
-                />
-                <span className="label">Locating…</span>
-              </>
+        <div className="pc-send">
+          <p className="pc-send-hint">
+            {requiresLinkedIn && !hasLinkedIn ? (
+              <>Add your <b>LinkedIn</b> above to send One.</>
+            ) : needsSocialConsent && !socialPreferenceConsent ? (
+              <>Tick the box above to include your connectors, then send One.</>
             ) : (
-              <>
-                {Icons.spark()}
-                <span className="label">Send One</span>
-                <span className="arrow" aria-hidden="true">
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 12h13M13 6l6 6-6 6" />
-                  </svg>
-                </span>
-              </>
+              <><b>Everything’s optional.</b> Send One now — or add a connector above for a sharper read.</>
             )}
-          </button>
-        </span>
-
-        <div className="trust-line">
-          <span className="lock">{Icons.shield(13)}</span> You decide what stays.
+          </p>
+          <span className="magnet pc-actions" ref={magnetRef} onMouseMove={onMove} onMouseLeave={onLeave}>
+            <button className="cta cta-xl" onClick={submit} disabled={busy || (requiresLinkedIn && !hasLinkedIn) || (needsSocialConsent && !socialPreferenceConsent)}>
+              {busy ? (
+                <>
+                  <span className="btn-spin" aria-hidden="true" />
+                  <span className="label">Locating…</span>
+                </>
+              ) : (
+                <>
+                  {Icons.spark()}
+                  <span className="label">Send One</span>
+                  <span className="arrow" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12h13M13 6l6 6-6 6" />
+                    </svg>
+                  </span>
+                </>
+              )}
+            </button>
+          </span>
+          <div className="trust-line">
+            <span className="lock">{Icons.shield(13)}</span> You decide what stays.
+          </div>
         </div>
       </div>
     </div>
@@ -2505,8 +2513,18 @@ function ProfileMenu({
       {open ? (
         <div className="pm-panel" role="menu">
           <div className="pm-head">
-            <div className="pm-nm">{name || "One user"}</div>
-            <div className="pm-em">{email}</div>
+            <span className="pm-head-av" aria-hidden="true">
+              {photoURL ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={photoURL} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                initialsForName(name)
+              )}
+            </span>
+            <div className="pm-head-meta">
+              <div className="pm-nm">{name || "One user"}</div>
+              <div className="pm-em">{email}</div>
+            </div>
           </div>
           <button type="button" className="pm-item" role="menuitem" onClick={run(onSettings)}>
             Settings
@@ -4704,8 +4722,8 @@ export default function OneExperience() {
     <main className="stage">
       {stage === "manual" || stage === "connect" || stage === "empty" || stage === "error" || stage === "location" || stage === "settings" || stage === "pending" ? (
         <ParticleMorph motion={MOTION} />
-      ) : (
-        <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={stage === "precollect"} />
+      ) : stage === "precollect" ? null /* clean white connectors screen — no ambient orb */ : (
+        <CanvasField mode={mode} progress={progress} motion={MOTION} preMoment={false} />
       )}
 
       <div className="brandbar">

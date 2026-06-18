@@ -21,11 +21,11 @@ interface CanvasFieldProps {
    drift from a light grey toward ink so they read on #FCFBFA; glow
    accents are neutral grey/ink (no colour). */
 const FX = {
-  slate: [165, 168, 188], // ambient particle base (soft cool grey-violet)
-  blue: [150, 182, 240],  // periwinkle — primary glow/accent
-  cyan: [150, 220, 205],  // mint — core accent
-  violet: [212, 168, 236],// lavender-pink
-  ink: [17, 17, 19],
+  slate: [170, 170, 176], // ambient particle base (neutral Apple grey)
+  blue: [212, 165, 116],  // hussh gold — primary glow/accent (palette-consistent, no blue)
+  cyan: [200, 158, 110],  // warm gold core accent
+  violet: [184, 137, 77], // deep gold
+  ink: [29, 29, 31],
 };
 const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 const mix = (a: number[], b: number[], t: number): number[] => [
