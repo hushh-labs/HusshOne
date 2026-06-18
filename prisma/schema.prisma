@@ -29,8 +29,43 @@ model OneUser {
   preferenceProfile UserPreferenceProfile?
   preferenceRunLogs SocialPreferenceRunLog[]
   chatGptContextSnapshots ChatGptContextSnapshot[]
+  burstJobs   BurstJob[]
 
   @@index([email])
+}
+
+// Xtreme Compute Burst job: a heavy workload routed to the local "One Puppy" Mac or
+// burst to the customer's cloud (GCP in v1). BYOC — the SA key is NEVER stored here;
+// only projectId/region/credsSource for audit. See docs/xtreme-compute-burst.md.
+model BurstJob {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @db.Uuid
+  provider         String    // "gcp" | "mock"
+  acceleratorKind  String    // "gpu" | "tpu"
+  acceleratorCount Int       @default(1)
+  machineType      String
+  region           String
+  placement        String    // "puppy" | "gcp"
+  placementReason  String?
+  status           String    @default("pending")
+  spec             Json      // JobSpec (image/command/env/estimate) — never credentials
+  result           Json?
+  error            String?
+  providerJobId    String?
+  instanceName     String?
+  credsSource      String?   // "request" | "env" | "adc" (audit only)
+  provisionMs      Int?
+  runMs            Int?
+  totalMs          Int?
+  outcome          String?   // completed | completed_via_recovery | failed | torn_down
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  completedAt      DateTime?
+  user             OneUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([providerJobId])
 }
 
 // User-approved ChatGPT context imports. OpenAI does not give One raw chat
