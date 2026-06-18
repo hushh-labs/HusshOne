@@ -81,6 +81,91 @@ interface ScanFinal {
   emailDelivery?: ScanEmailDeliverySummary | null;
 }
 
+type ConnectorPlatform = "linkedin" | "instagram" | "threads" | "x";
+
+function ConnectorIcon({ platform }: { platform: ConnectorPlatform }) {
+  if (platform === "linkedin") return <span className="connector-logo connector-logo-linkedin">{Icons.linkedin()}</span>;
+  if (platform === "instagram") {
+    return (
+      <span className="connector-logo connector-logo-instagram" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="5" y="5" width="14" height="14" rx="4" />
+          <circle cx="12" cy="12" r="3.2" />
+          <circle cx="16.5" cy="7.5" r="0.8" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+    );
+  }
+  if (platform === "threads") {
+    return (
+      <span className="connector-logo connector-logo-threads" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M15.8 8.4c-.7-1.2-1.9-2-3.7-2-3 0-5 2.2-5 5.6s2.1 5.7 5.4 5.7c2.8 0 4.6-1.5 4.6-3.6 0-2.2-1.8-3.4-4.2-3.4h-1.2" />
+          <path d="M10 13.4c.3 1.1 1.2 1.7 2.4 1.7 1.5 0 2.4-.7 2.4-1.8 0-1.2-1.1-1.9-2.8-1.9" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span className="connector-logo connector-logo-x" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+        <path d="M6 5l12 14M18 5L6 19" />
+      </svg>
+    </span>
+  );
+}
+
+function ConnectorDisclosure({
+  platform,
+  title,
+  subtitle,
+  state,
+  required,
+  children,
+}: {
+  platform: ConnectorPlatform;
+  title: string;
+  subtitle: string;
+  state: "connected" | "required" | "optional" | "pending";
+  required?: boolean;
+  children: ReactElement;
+}) {
+  const [open, setOpen] = useState(false);
+  const statusLabel =
+    state === "connected" ? "Connected" : state === "pending" ? "Pending" : required ? "Required" : "Optional";
+  return (
+    <section className={`connector-row connector-row-${platform} ${open ? "open" : ""} ${state}`}>
+      <button
+        className="connector-trigger"
+        type="button"
+        aria-expanded={open}
+        aria-controls={`connector-panel-${platform}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ConnectorIcon platform={platform} />
+        <span className="connector-copy">
+          <span className="connector-title">{title}</span>
+          <span className="connector-subtitle">{subtitle}</span>
+        </span>
+        <span className="connector-status">
+          {state === "connected" ? Icons.check(12) : null}
+          {statusLabel}
+        </span>
+        <span className="connector-chevron" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </span>
+      </button>
+      {open ? (
+        <div className="connector-panel" id={`connector-panel-${platform}`}>
+          {children}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 const MOTION = 0.7;
 const ACCENT = "#111113";
 /* When on, the number→scan flow is powered by the Deep Research API (markdown
@@ -460,7 +545,7 @@ function ConnectInstagramInline({
 
   const busy = phase === "fetching";
   return (
-    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+    <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
       <div className="social-url-row">
         <input
@@ -479,7 +564,7 @@ function ConnectInstagramInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add"}
+          {busy ? "Adding..." : "Add Instagram"}
         </button>
       </div>
       {connected ? (
@@ -567,7 +652,7 @@ function ConnectThreadsInline({
 
   const busy = phase === "fetching";
   return (
-    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+    <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
       <div className="social-url-row">
         <input
@@ -586,7 +671,7 @@ function ConnectThreadsInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add"}
+          {busy ? "Adding..." : "Add Threads"}
         </button>
       </div>
       {connected ? (
@@ -674,7 +759,7 @@ function ConnectXInline({
 
   const busy = phase === "fetching";
   return (
-    <form className="field-group" onSubmit={submit} style={{ gap: 8 }}>
+    <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
       <div className="social-url-row">
         <input
@@ -693,7 +778,7 @@ function ConnectXInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add"}
+          {busy ? "Adding..." : "Add X"}
         </button>
       </div>
       {connected ? (
@@ -714,9 +799,17 @@ function ConnectXInline({
 
 function ConnectLinkedInInline({
   authUser,
+  profile,
+  required = false,
+  inputId = "linkedin-optional-url",
+  onChange,
   onConnected,
 }: {
   authUser: ClientUser | null;
+  profile?: LinkedInProfileFull | null;
+  required?: boolean;
+  inputId?: string;
+  onChange?: () => void;
   onConnected: (profile: LinkedInProfileFull) => void;
 }) {
   type Phase = "idle" | "fetching" | "connected" | "error";
@@ -768,12 +861,38 @@ function ConnectLinkedInInline({
   };
 
   const busy = phase === "fetching";
+  if (hasUrlEnrichedLinkedInProfile(profile)) {
+    return (
+      <div className="field-group connector-form pc-required-link" style={{ gap: 8 }}>
+        <label htmlFor={`${inputId}-connected`}>
+          LinkedIn profile URL <span style={{ color: "var(--muted)" }}>{required ? "(required)" : "(connected)"}</span>
+        </label>
+        <div className="social-url-row">
+          <input
+            id={`${inputId}-connected`}
+            className="input"
+            value={profile.profileUrl ?? ""}
+            readOnly
+            aria-label="Connected LinkedIn profile URL"
+          />
+          {onChange ? (
+            <button className="ghost-btn" type="button" onClick={onChange}>
+              Change
+            </button>
+          ) : null}
+        </div>
+        <span className="field-hint">
+          {Icons.check(12)} {required ? "LinkedIn is required for guest sessions." : "LinkedIn is connected as richer career context."}
+        </span>
+      </div>
+    );
+  }
   return (
-    <form className="field-group pc-required-link" onSubmit={submit} style={{ gap: 8 }}>
-      <label htmlFor="linkedin-optional-url">LinkedIn profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
+    <form className="field-group connector-form pc-required-link" onSubmit={submit} style={{ gap: 8 }}>
+      <label htmlFor={inputId}>LinkedIn profile URL <span style={{ color: "var(--muted)" }}>{required ? "(required)" : "(optional)"}</span></label>
       <div className="social-url-row">
         <input
-          id="linkedin-optional-url"
+          id={inputId}
           className={"input" + (invalid ? " invalid" : "")}
           placeholder="https://www.linkedin.com/in/your-profile"
           value={url}
@@ -787,11 +906,13 @@ function ConnectLinkedInInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add"}
+          {busy ? "Adding..." : "Add LinkedIn"}
         </button>
       </div>
       <span className="field-hint">
-        LinkedIn adds richer career context, but Google identity can start One.
+        {required
+          ? "Use your personal profile link, not a company, jobs, feed, or search page."
+          : "LinkedIn adds richer career context, but Google identity can start One."}
       </span>
       {err ? <span className="field-hint" role="alert" style={{ color: "#b4453a" }}>{err}</span> : null}
     </form>
@@ -902,56 +1023,65 @@ function PreCollect({
           <div className="pc-phone">
             <span className="field-hint">
               {hasLinkedIn
-                ? `One will research the real you from your verified LinkedIn${verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}. No phone, no contacts — just tap Send One.`
-                : "One will start from your signed-in Google identity. LinkedIn is optional, and adding it gives richer career context."}
+                ? `One will research the real you from your verified LinkedIn${verifications.length ? ` (LinkedIn-verified: ${verifications.join(", ")})` : ""}.`
+                : "Tap a connector to add it. Google identity can start One; LinkedIn adds richer career context."}
             </span>
           </div>
 
-          {hasLinkedIn ? (
-            <div className="field-group pc-required-link" style={{ gap: 8 }}>
-              <label htmlFor="linkedin-connected-url">
-                LinkedIn profile URL <span style={{ color: "var(--muted)" }}>{requiresLinkedIn ? "(required)" : "(connected)"}</span>
-              </label>
-              <div className="social-url-row">
-                <input
-                  id="linkedin-connected-url"
-                  className="input"
-                  value={profile.profileUrl ?? ""}
-                  readOnly
-                  aria-label="Connected LinkedIn profile URL"
-                />
-                <button className="ghost-btn" type="button" onClick={onLinkedInChange}>
-                  Change
-                </button>
-              </div>
-              <span className="field-hint">
-                {Icons.check(12)} {requiresLinkedIn ? "LinkedIn is required for guest sessions." : "LinkedIn is connected as richer career context."}
-              </span>
-            </div>
-          ) : requiresLinkedIn ? null : (
-            <ConnectLinkedInInline
-              authUser={authUser}
-              onConnected={onLinkedInConnected}
-            />
-          )}
-
-          <div className="pc-socials">
-            <div className="pc-section-label">Optional social links</div>
-            <ConnectInstagramInline
-              authUser={authUser}
-              profiles={instagramProfiles}
-              onConnected={onInstagramConnected}
-            />
-            <ConnectThreadsInline
-              authUser={authUser}
-              profiles={threadsProfiles}
-              onConnected={onThreadsConnected}
-            />
-            <ConnectXInline
-              authUser={authUser}
-              profiles={xProfiles}
-              onConnected={onXConnected}
-            />
+          <div className="connector-deck" aria-label="Profile connectors">
+            <div className="pc-section-label">Connectors</div>
+            <ConnectorDisclosure
+              platform="linkedin"
+              title="LinkedIn"
+              subtitle={hasLinkedIn ? "Career context connected" : requiresLinkedIn ? "Required for guest sessions" : "Optional career anchor"}
+              state={hasLinkedIn ? "connected" : requiresLinkedIn ? "required" : "optional"}
+              required={requiresLinkedIn}
+            >
+              <ConnectLinkedInInline
+                authUser={authUser}
+                profile={profile}
+                required={requiresLinkedIn}
+                inputId="linkedin-precollect-url"
+                onChange={onLinkedInChange}
+                onConnected={onLinkedInConnected}
+              />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="instagram"
+              title="Instagram"
+              subtitle={instagramProfiles[0] ? `@${instagramProfiles[0].username} added` : "Photos, captions, lifestyle signals"}
+              state={instagramProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectInstagramInline
+                authUser={authUser}
+                profiles={instagramProfiles}
+                onConnected={onInstagramConnected}
+              />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="threads"
+              title="Threads"
+              subtitle={threadsProfiles[0] ? `@${threadsProfiles[0].username} added` : "Public posts and conversation context"}
+              state={threadsProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectThreadsInline
+                authUser={authUser}
+                profiles={threadsProfiles}
+                onConnected={onThreadsConnected}
+              />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="x"
+              title="X"
+              subtitle={xProfiles[0] ? `@${xProfiles[0].username} added` : "Posts, replies, links, and public signals"}
+              state={xProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectXInline
+                authUser={authUser}
+                profiles={xProfiles}
+                onConnected={onXConnected}
+              />
+            </ConnectorDisclosure>
           </div>
           {needsSocialConsent ? (
             <label className="pc-consent">
@@ -2497,163 +2627,18 @@ function ConnectLinkedIn({
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onXConnected: (profile: XProfileFull) => void;
 }) {
-  type Phase = "idle" | "fetching" | "connected" | "error";
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [url, setUrl] = useState("");
-  const [instagramUrl, setInstagramUrl] = useState("");
-  const [threadsUrl, setThreadsUrl] = useState("");
-  const [xUrl, setXUrl] = useState("");
-  const [touched, setTouched] = useState(false);
-  const [socialTouched, setSocialTouched] = useState({ instagram: false, threads: false, x: false });
-  const [err, setErr] = useState("");
-
-  const normalized = normalizeLinkedInUrl(url);
-  const invalid = touched && !normalized;
-  const normalizedInstagram = normalizeInstagramUrl(instagramUrl);
-  const normalizedThreads = normalizeThreadsUrl(threadsUrl);
-  const normalizedX = normalizeXUrl(xUrl);
-  const invalidInstagram = socialTouched.instagram && !!instagramUrl && !normalizedInstagram;
-  const invalidThreads = socialTouched.threads && !!threadsUrl && !normalizedThreads;
-  const invalidX = socialTouched.x && !!xUrl && !normalizedX;
-
-  const enrichInstagram = async (authorization: string, profileUrl: string) => {
-    const res = await fetch("/api/instagram/enrich-url", {
-      method: "POST",
-      headers: { Authorization: authorization, "Content-Type": "application/json" },
-      body: JSON.stringify({ url: profileUrl }),
-    });
-    const payload = (await res.json().catch(() => ({}))) as {
-      ok?: boolean; profile?: InstagramProfileFull | null; error?: string; code?: string; access?: InstagramAccessInfo;
-    };
-    if (res.status === 202 && payload.code === "instagram_access_pending") {
-      track("instagram_connect_pending", { state: payload.access?.state ?? "pending" });
-      return;
-    }
-    if (!res.ok || !payload.ok || !hasInstagramProfile(payload.profile)) {
-      throw new Error(payload.error || "We could not read this Instagram profile.");
-    }
-    onInstagramConnected(payload.profile);
-  };
-
-  const enrichThreads = async (authorization: string, profileUrl: string) => {
-    const res = await fetch("/api/threads/enrich-url", {
-      method: "POST",
-      headers: { Authorization: authorization, "Content-Type": "application/json" },
-      body: JSON.stringify({ url: profileUrl }),
-    });
-    const payload = (await res.json().catch(() => ({}))) as {
-      ok?: boolean; profile?: ThreadsProfileFull | null; error?: string; code?: string; access?: ThreadsAccessInfo;
-    };
-    if (res.status === 202 && payload.code === "threads_access_pending") {
-      track("threads_connect_pending", { state: payload.access?.state ?? "pending" });
-      return;
-    }
-    if (!res.ok || !payload.ok || !hasThreadsProfile(payload.profile)) {
-      throw new Error(payload.error || "We could not read this Threads profile.");
-    }
-    onThreadsConnected(payload.profile);
-  };
-
-  const enrichX = async (authorization: string, profileUrl: string) => {
-    const res = await fetch("/api/x/enrich-url", {
-      method: "POST",
-      headers: { Authorization: authorization, "Content-Type": "application/json" },
-      body: JSON.stringify({ url: profileUrl }),
-    });
-    const payload = (await res.json().catch(() => ({}))) as {
-      ok?: boolean; profile?: XProfileFull | null; error?: string; code?: string; access?: XAccessInfo;
-    };
-    if (res.status === 202 && payload.code === "x_access_pending") {
-      track("x_connect_pending", { state: payload.access?.state ?? "pending" });
-      return;
-    }
-    if (!res.ok || !payload.ok || !hasXProfile(payload.profile)) {
-      throw new Error(payload.error || "We could not read this X profile.");
-    }
-    onXConnected(payload.profile);
-  };
-
-  const submit = async (e?: FormEvent) => {
-    e?.preventDefault();
-    setTouched(true);
-    setSocialTouched({ instagram: true, threads: true, x: true });
-    setErr("");
-    if (!normalized) {
-      setErr("Paste a valid LinkedIn personal profile URL.");
-      setPhase("error");
-      return;
-    }
-    if ((instagramUrl && !normalizedInstagram) || (threadsUrl && !normalizedThreads) || (xUrl && !normalizedX)) {
-      setErr("Fix invalid optional profile URLs or leave them blank.");
-      setPhase("error");
-      return;
-    }
-    setPhase("fetching");
-    track("linkedin_connect_started");
-    try {
-      const authorization = await getFirebaseBearer(authUser as User);
-      const optionalTasks: Promise<void>[] = [];
-      const runOptionalTask = (platform: "instagram" | "threads" | "x", task: Promise<void>) => {
-        optionalTasks.push(
-          task.catch((error) => {
-            const message = error instanceof Error ? error.message : `We could not read this ${platform} profile.`;
-            track(`${platform}_connect_failed`, { reason: message.slice(0, 120) });
-          }),
-        );
-      };
-      if (normalizedInstagram) {
-        track("instagram_connect_started");
-        runOptionalTask("instagram", enrichInstagram(authorization, normalizedInstagram));
-      }
-      if (normalizedThreads) {
-        track("threads_connect_started");
-        runOptionalTask("threads", enrichThreads(authorization, normalizedThreads));
-      }
-      if (normalizedX) {
-        track("x_connect_started");
-        runOptionalTask("x", enrichX(authorization, normalizedX));
-      }
-      const res = await fetch("/api/linkedin/enrich-url", {
-        method: "POST",
-        headers: { Authorization: authorization, "Content-Type": "application/json" },
-        body: JSON.stringify({ url: normalized }),
-      });
-      const payload = (await res.json().catch(() => ({}))) as {
-        ok?: boolean; profile?: LinkedInProfileFull; error?: string;
-      };
-      if (!res.ok || !payload.ok || !payload.profile) {
-        throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
-      }
-      if (optionalTasks.length) {
-        await Promise.race([
-          Promise.allSettled(optionalTasks),
-          new Promise((resolve) => setTimeout(resolve, 300)),
-        ]);
-      }
-      setPhase("connected");
-      onConnected(payload.profile);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
-      track("linkedin_connect_failed", { reason: message.slice(0, 120) });
-      setErr(message);
-      setPhase("error");
-    }
-  };
-
-  const busy = phase === "fetching";
-
   return (
     <div className="screen social-connect screen-enter">
       <div className="content social-connect-content">
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <p className="eyebrow">One more step</p>
-          <h1 className="display" style={{ fontSize: "clamp(26px,4vw,38px)" }}>Add your social profile URLs.</h1>
+          <p className="eyebrow">Connectors</p>
+          <h1 className="display" style={{ fontSize: "clamp(28px,4vw,44px)" }}>Choose what One can read.</h1>
           <p className="sub" style={{ margin: "0 auto" }}>
-            LinkedIn is required for guest sessions. Instagram, Threads, and X are optional context.
+            LinkedIn is required for guest sessions. Tap any connector to add or update it.
           </p>
         </div>
 
-        <div className="card social-connect-card">
+        <div className="card social-connect-card connector-intake-card">
           <div className="pc-id">
             <div className="pc-avatar"><span>{initialsForName(user.name)}</span></div>
             <div className="pc-meta">
@@ -2661,143 +2646,70 @@ function ConnectLinkedIn({
               <div className="em">{user.email}</div>
             </div>
           </div>
-          <div className="field-group">
-            <label htmlFor="linkedin-url">LinkedIn profile URL</label>
-            <input
-              id="linkedin-url"
-              className="input"
-              placeholder="https://www.linkedin.com/in/your-profile"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                if (err) setErr("");
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void submit();
-              }}
-              onBlur={() => setTouched(true)}
-              autoComplete="url"
-              inputMode="url"
-              aria-invalid={invalid}
-            />
+
+          <div className="pc-phone">
             <span className="field-hint">
-              Use your personal profile link, not a company, jobs, feed, or search page.
+              Add the LinkedIn connector first to unlock One. Optional socials can be connected now or later.
             </span>
           </div>
 
-          <div className="pc-socials">
-            <div className="pc-section-label">Optional social context</div>
-            <div className="field-group" style={{ gap: 8 }}>
-              <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-              <input
-                id="instagram-url"
-                className={"input" + (invalidInstagram ? " invalid" : "")}
-                placeholder="https://www.instagram.com/username/"
-                value={instagramProfiles[0]?.profileUrl ?? instagramUrl}
-                readOnly={!!instagramProfiles[0]}
-                onChange={(e) => {
-                  setInstagramUrl(e.target.value);
-                  if (err) setErr("");
-                }}
-                onBlur={() => setSocialTouched((prev) => ({ ...prev, instagram: true }))}
-                autoComplete="url"
-                inputMode="url"
-                aria-invalid={invalidInstagram}
+          <div className="connector-deck" aria-label="Profile connectors">
+            <div className="pc-section-label">Connectors</div>
+            <ConnectorDisclosure
+              platform="linkedin"
+              title="LinkedIn"
+              subtitle="Required identity and career anchor"
+              state="required"
+              required
+            >
+              <ConnectLinkedInInline
+                authUser={authUser}
+                required
+                inputId="linkedin-url"
+                onConnected={onConnected}
               />
-              <span className="field-hint">
-                {instagramProfiles[0] ? (
-                  <>{Icons.check(12)} @{instagramProfiles[0].username} added</>
-                ) : (
-                  "Direct public profile link only."
-                )}
-              </span>
-            </div>
-            <div className="field-group" style={{ gap: 8 }}>
-              <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-              <input
-                id="threads-url"
-                className={"input" + (invalidThreads ? " invalid" : "")}
-                placeholder="https://www.threads.com/@username"
-                value={threadsProfiles[0]?.profileUrl ?? threadsUrl}
-                readOnly={!!threadsProfiles[0]}
-                onChange={(e) => {
-                  setThreadsUrl(e.target.value);
-                  if (err) setErr("");
-                }}
-                onBlur={() => setSocialTouched((prev) => ({ ...prev, threads: true }))}
-                autoComplete="url"
-                inputMode="url"
-                aria-invalid={invalidThreads}
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="instagram"
+              title="Instagram"
+              subtitle={instagramProfiles[0] ? `@${instagramProfiles[0].username} added` : "Optional lifestyle and visual context"}
+              state={instagramProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectInstagramInline
+                authUser={authUser}
+                profiles={instagramProfiles}
+                onConnected={onInstagramConnected}
               />
-              <span className="field-hint">
-                {threadsProfiles[0] ? (
-                  <>{Icons.check(12)} @{threadsProfiles[0].username} added</>
-                ) : (
-                  "Direct public profile link only."
-                )}
-              </span>
-            </div>
-            <div className="field-group" style={{ gap: 8 }}>
-              <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
-              <input
-                id="x-url"
-                className={"input" + (invalidX ? " invalid" : "")}
-                placeholder="https://x.com/username"
-                value={xProfiles[0]?.profileUrl ?? xUrl}
-                readOnly={!!xProfiles[0]}
-                onChange={(e) => {
-                  setXUrl(e.target.value);
-                  if (err) setErr("");
-                }}
-                onBlur={() => setSocialTouched((prev) => ({ ...prev, x: true }))}
-                autoComplete="url"
-                inputMode="url"
-                aria-invalid={invalidX}
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="threads"
+              title="Threads"
+              subtitle={threadsProfiles[0] ? `@${threadsProfiles[0].username} added` : "Optional public conversation context"}
+              state={threadsProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectThreadsInline
+                authUser={authUser}
+                profiles={threadsProfiles}
+                onConnected={onThreadsConnected}
               />
-              <span className="field-hint">
-                {xProfiles[0] ? (
-                  <>{Icons.check(12)} @{xProfiles[0].username} added</>
-                ) : (
-                  "Direct public X/Twitter profile link only."
-                )}
-              </span>
-            </div>
-          </div>
-
-          <div className="cta-block">
-            <button className="solid-cta" type="button" onClick={() => void submit()} disabled={busy || phase === "connected" || !normalized}>
-              {busy ? (
-                <>
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 16,
-                      height: 16,
-                      borderRadius: "50%",
-                      border: "2px solid rgba(255,255,255,0.35)",
-                      borderTopColor: "#fff",
-                      animation: "scanSpin 0.7s linear infinite",
-                      display: "inline-block",
-                      marginRight: 8,
-                    }}
-                  />
-                  Connecting profiles…
-                </>
-              ) : (
-                <>
-                  {Icons.spark()}
-                  <span style={{ marginLeft: 8 }}>Continue with profiles</span>
-                </>
-              )}
-            </button>
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="x"
+              title="X"
+              subtitle={xProfiles[0] ? `@${xProfiles[0].username} added` : "Optional posts, replies, and links"}
+              state={xProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectXInline
+                authUser={authUser}
+                profiles={xProfiles}
+                onConnected={onXConnected}
+              />
+            </ConnectorDisclosure>
           </div>
         </div>
-
-        {err ? (
-          <p className="l-hero-error" role="alert">
-            {err} <button className="ghost-btn" type="button" onClick={() => void submit()}>Try again</button>
-          </p>
-        ) : null}
+        <div className="trust-line">
+          <span className="lock">{Icons.shield(13)}</span> You decide what stays.
+        </div>
       </div>
     </div>
   );

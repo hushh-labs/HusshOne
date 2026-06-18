@@ -160,13 +160,16 @@ describe("OneExperience", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "guest@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Choose what One can read.")).toBeInTheDocument();
     expect(screen.getByText(/LinkedIn is required for guest sessions/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("LinkedIn profile URL")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Instagram profile URL/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Threads profile URL/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/X profile URL/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /continue with profiles/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /linkedin/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /instagram/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /threads/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^x/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/LinkedIn profile URL/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /linkedin/i }));
+    expect(screen.getByLabelText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /continue with profiles/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /use linkedin profile/i })).not.toBeInTheDocument();
     expect(vi.mocked(signInWithOneCustomToken)).toHaveBeenCalledWith("guest-custom-token");
   });
@@ -183,7 +186,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Choose what One can read.")).toBeInTheDocument();
     expect(screen.queryByText(/One is composing your report/i)).not.toBeInTheDocument();
     expect(window.localStorage.getItem("one_active_scan")).toBeNull();
     expect(window.localStorage.getItem("one_active_started_at")).toBeNull();
@@ -203,7 +206,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Choose what One can read.")).toBeInTheDocument();
     expect(screen.queryByText(/One is composing your report/i)).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain("/api/one/scans/latest");
   });
@@ -219,7 +222,8 @@ describe("OneExperience", () => {
     render(<OneExperience />);
 
     expect(await screen.findByText("Verified via Google")).toBeInTheDocument();
-    expect(screen.getByLabelText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /linkedin/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/LinkedIn profile URL/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send one/i })).not.toBeDisabled();
     expect(screen.queryByText("Add your social profile URLs.")).not.toBeInTheDocument();
   });
@@ -235,10 +239,11 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
+    fireEvent.click(await screen.findByRole("button", { name: /linkedin/i }));
     fireEvent.change(await screen.findByLabelText(/LinkedIn profile URL/i), {
       target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
     });
-    fireEvent.click(screen.getAllByRole("button", { name: /^add$/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /add linkedin/i }));
 
     expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(screen.getByText(/LinkedIn is connected as richer career context/i)).toBeInTheDocument();
@@ -271,7 +276,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /linkedin/i }));
     expect(screen.getByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
   });
@@ -291,17 +296,25 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Choose what One can read.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /instagram/i }));
     fireEvent.change(screen.getByLabelText(/Instagram profile URL/i), {
       target: { value: "https://www.instagram.com/ankit_ya_i_am/" },
     });
-    fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), {
+    fireEvent.click(screen.getByRole("button", { name: /add instagram/i }));
+    await waitFor(() =>
+      expect(screen.getAllByText((_, element) => element?.textContent?.includes("@ankit_ya_i_am added") ?? false).length).toBeGreaterThan(0),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /linkedin/i }));
+    fireEvent.change(screen.getByLabelText(/LinkedIn profile URL/i), {
       target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /continue with profiles/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add linkedin/i }));
 
+    expect(await screen.findByText("Verified via LinkedIn")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /career context connected/i }));
     expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
-    expect(screen.getByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
+    expect(screen.getAllByText((_, element) => element?.textContent?.includes("@ankit_ya_i_am added") ?? false).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /send one/i })).toBeDisabled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/instagram/enrich-url",
@@ -328,15 +341,20 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText("Add your social profile URLs.")).toBeInTheDocument();
+    expect(await screen.findByText("Choose what One can read.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^x/i }));
     fireEvent.change(screen.getByLabelText(/X profile URL/i), {
       target: { value: "https://x.com/sundarpichai" },
     });
-    fireEvent.change(screen.getByLabelText("LinkedIn profile URL"), {
+    fireEvent.click(screen.getByRole("button", { name: /add x/i }));
+    fireEvent.click(screen.getByRole("button", { name: /linkedin/i }));
+    fireEvent.change(screen.getByLabelText(/LinkedIn profile URL/i), {
       target: { value: "https://www.linkedin.com/in/ankit-kumar-singh" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /continue with profiles/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add linkedin/i }));
 
+    expect(await screen.findByText("Verified via LinkedIn")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /career context connected/i }));
     expect(await screen.findByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/x/enrich-url",
@@ -366,7 +384,7 @@ describe("OneExperience", () => {
 
     render(<OneExperience />);
 
-    expect(await screen.findByText(/LinkedIn profile URL/i)).toBeInTheDocument();
+    expect(await screen.findByText(/@ankit_ya_i_am added/i)).toBeInTheDocument();
     const send = screen.getByRole("button", { name: /send one/i });
     expect(send).toBeDisabled();
     fireEvent.click(screen.getByLabelText(/Allow One to analyze/i));
