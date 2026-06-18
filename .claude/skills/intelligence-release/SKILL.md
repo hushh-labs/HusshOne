@@ -119,3 +119,33 @@ npm run build                                # MUST pass — type-checks every s
   changes. See the deploy skill's wrong-service trap.
 - **Testing in a logged-in browser that already cached the shell** → hard-refresh
   (Cmd+Shift+R) once; after the no-cache header is live this stops being an issue.
+
+## Preference layer (separate from the DR dossier above)
+
+The "What One understands about you" preference layer has its **own** auto-refresh path — you usually
+do **not** touch `INTELLIGENCE_VERSION` for it, and existing users refresh **in place** (no re-scan).
+
+- **Version is auto-derived.** `PREFERENCE_SYNTHESIS_VERSION` in
+  [src/lib/social-intelligence/preference-synthesis.ts](src/lib/social-intelligence/preference-synthesis.ts)
+  is a `sha256` of the synthesis prompt (`SYNTH_INSTRUCTION`), response schema (`PREFERENCE_SYNTH_SCHEMA`),
+  section routing (`SECTION_EVIDENCE`), model (`DEFAULT_SYNTH_MODEL`), the question registry
+  (`QUESTION_REGISTRY_VERSION`), and a manual salt `PREFERENCE_DATA_SHAPE_REV`. **Edit any of those →
+  the hash flips automatically** — there is no constant to remember to bump.
+- **Lazy self-heal.** On the next visit, `/api/one/research/[id]/preferences` sees the stored profile's
+  version ≠ current, enqueues a deduped `__recompute__` job, and serves the stale profile as `running`.
+  The existing `one-preference-recompute` Cloud Scheduler (every 3 min) rebuilds it with the new version,
+  re-stamps it, and the next poll serves it `completed`. Only users who actually visit get recomputed.
+- **What needs a manual bump:** only data-shape changes the hash can't see — e.g. the collage builder
+  (`buildPreferenceCollage`) shape or the `RenderablePreferenceProfile` fields. Bump
+  `PREFERENCE_DATA_SHAPE_REV` (`"1"` → `"2"`).
+- **What needs NO bump at all:** pure headline/copy. The summary is built by `buildPreferenceSummary` in
+  [src/lib/social-intelligence/preference-presentation.ts](src/lib/social-intelligence/preference-presentation.ts)
+  and computed at **render time** in `PreferenceIntelligence`, so copy tweaks ship to everyone on the next
+  load with no recompute. Keep that module **client-safe** (no `node:crypto`/server imports) or the build
+  breaks.
+- **The `PREFERENCE_SYNTH_MODEL` env override is NOT in the hash** — flipping the model via env is an ops
+  lever and won't auto-refresh users. Change `DEFAULT_SYNTH_MODEL` in code if you want a model change to
+  re-stale everyone.
+- **Deploy is just the normal `deploy` skill.** No DB migration, no `INTELLIGENCE_VERSION` bump. After
+  deploy the hash differs from every stored profile, so all returning users get a one-time in-place
+  refresh (drains ~1 user / 3 min via the recompute scheduler).

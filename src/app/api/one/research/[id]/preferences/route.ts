@@ -2,12 +2,14 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
 import {
+  enqueueSocialRefreshJobs,
   getResearchJob,
   getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
   hasPendingPreferenceWork,
   indexSocialPreferenceEvidence,
   logUserPreferenceRun,
+  PREFERENCE_RECOMPUTE_PLATFORM,
   saveUserPreferenceProfile,
   updateDeepTier,
 } from "@/lib/db/scan-store";
@@ -130,8 +132,22 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // media is fully analyzed), so a sparse account's settled partial is served as "completed" and
     // never hangs the client on "building". While the worker still has it "partial", report "running".
     const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
-    if (v3 && v3.version === PREFERENCE_SYNTHESIS_VERSION && v3.profile) {
-      const v3Status = v3.status === "completed" ? "completed" : "running";
+    if (v3 && v3.profile) {
+      const isCurrent = v3.version === PREFERENCE_SYNTHESIS_VERSION;
+      // Lazy self-heal: a stored profile from an OLDER synthesis version is stale (the prompt/schema/
+      // sections/model/questions/collage changed → the auto-derived version hash flipped). Enqueue an
+      // in-place recompute (deduped by user+platform+publicId, higher priority than routine jobs) so the
+      // existing one-preference-recompute scheduler rebuilds it with the current version, and serve the
+      // stale profile NOW as "running" so the user still sees best-available data + the render-time
+      // headline while it upgrades (~3 min). We never drop to the weaker v2 fast-pass when a v3 profile
+      // already exists. The worker re-stamps THIS same version, so the loop converges after one pass.
+      if (!isCurrent) {
+        void enqueueSocialRefreshJobs({
+          firebaseUid: verified.uid,
+          jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: id ?? "latest", metadata: { scanRunId: id }, priority: 1 }],
+        }).catch(() => 0);
+      }
+      const v3Status = isCurrent && v3.status === "completed" ? "completed" : "running";
       const merged = result
         ? await updateDeepTier(verified.uid, id, { preferenceStatus: v3Status, preferenceProfile: v3.profile })
         : null;

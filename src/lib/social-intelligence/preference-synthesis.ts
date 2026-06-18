@@ -12,17 +12,28 @@
    All inference goes THROUGH Vertex (no direct Gemini API). Sensitive questions (Partner & Romance)
    can never be force-answered — the guardrail is enforced in code, not trusted to the model.
    Pure builders/parsers are exported for unit tests; the network calls are fully defensive. */
+import crypto from "node:crypto";
 import { adcAccessToken, vertexConfig, vertexGenerateContentUrl } from "@/lib/gcp/auth";
 import {
   PREFERENCE_QUESTIONS,
+  QUESTION_REGISTRY_VERSION,
   type PreferenceQuestionDefinition,
   type PreferenceQuestionSectionId,
 } from "./preference-profile";
+import { buildPreferenceSummary } from "./preference-presentation";
 import type { ArchiveContentRecord } from "@/lib/db/scan-store";
 
-export const PREFERENCE_SYNTHESIS_VERSION = "2026-06-18.synthesis-v3.1-persection";
+// Re-export the client-safe presentation helpers so existing import sites keep working.
+export { prettyPlatform, prettyPlatformList } from "./preference-presentation";
+
 export const DEFAULT_SYNTH_MODEL = "gemini-2.5-pro";
 const FETCH_TIMEOUT_MS = 150_000;
+
+// Manual salt for data-shape changes that the auto-derived PREFERENCE_SYNTHESIS_VERSION hash (below)
+// can't see in the prompt/schema/sections/model/questions — e.g. the collage builder shape or the
+// RenderablePreferenceProfile fields. Bump this string when you change those so existing users
+// auto-refresh. Pure copy changes need NO bump (the headline is computed at render time).
+const PREFERENCE_DATA_SHAPE_REV = "1";
 
 // Context budgets — kept bounded but generous. Because we now route PER SECTION, each call sees a
 // focused slice, so we can afford a deeper per-section text budget and more aggregated signals than
@@ -352,6 +363,30 @@ Hard rules (never violate):
 
 Output MUST match the JSON schema exactly (an "answers" array, one object per question in this section).`;
 
+/* Auto-derived synthesis version. It is a hash of everything that shapes the STORED intelligence:
+   the prompt, the response schema, the per-section evidence routing, the model, the question registry,
+   and the manual data-shape salt. Any change to those flips the version automatically — so we can never
+   forget to "bump" it, and every existing user's stored profile is treated as stale on the next visit
+   (the /preferences read path enqueues an in-place recompute; the worker re-stamps THIS same version, so
+   the loop converges after one pass). Pure presentation/copy is NOT in this hash — the headline is
+   computed at render time, so copy tweaks ship instantly without a recompute. Defined here (after its
+   dependencies) to avoid a temporal-dead-zone crash at module load. The `env` model override is
+   intentionally excluded — flipping PREFERENCE_SYNTH_MODEL is an ops lever, not a code change. */
+export const PREFERENCE_SYNTHESIS_VERSION = `v3.1-${crypto
+  .createHash("sha256")
+  .update(
+    JSON.stringify({
+      instr: SYNTH_INSTRUCTION,
+      schema: PREFERENCE_SYNTH_SCHEMA,
+      sections: SECTION_EVIDENCE,
+      model: DEFAULT_SYNTH_MODEL,
+      questions: QUESTION_REGISTRY_VERSION,
+      rev: PREFERENCE_DATA_SHAPE_REV,
+    }),
+  )
+  .digest("hex")
+  .slice(0, 12)}`;
+
 /** Render the per-section evidence as compact JSON for the prompt. */
 function sectionEvidenceJson(context: SectionContext, professionalContext?: string): string {
   return JSON.stringify(
@@ -559,22 +594,6 @@ export interface SynthesizeInput {
 
 const CONFIDENCE_SCORE: Record<SynthConfidence, number> = { low: 0.35, medium: 0.65, high: 0.9 };
 
-function prettyPlatform(platform: string): string {
-  const s = platform.trim();
-  if (!s) return s;
-  if (s.toLowerCase() === "x") return "X";
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-/** "Instagram, Threads and X" — for warm, human-readable copy (not a scrape list). */
-export function prettyPlatformList(platforms: string[]): string {
-  const names = [...new Set(platforms.map(prettyPlatform).filter(Boolean))];
-  if (!names.length) return "your socials";
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
 export interface ArchiveDepthLike {
   perPlatform: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number; mediaFailed: number }>;
   totals: { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number };
@@ -693,7 +712,7 @@ export function toRenderablePreferenceProfile(
     version: result.version,
     synthesisModel: result.model,
     preferenceStatus: opts.preferenceStatus,
-    summary: `One has a read on ${answeredTotal} of ${result.answers.length} sides of your taste — drawn from how you show up across ${prettyPlatformList(result.context.platforms)}.`,
+    summary: buildPreferenceSummary({ answeredTotal, total: result.answers.length, platforms: result.context.platforms }),
     generatedAt: opts.generatedAt,
     updatedFrom: {
       platforms: result.context.platforms,
