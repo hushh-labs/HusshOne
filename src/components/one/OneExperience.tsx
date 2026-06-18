@@ -1637,6 +1637,24 @@ function RichCards({ rich: rawRich }: { rich: NonNullable<OneDashboardResult["ri
   return <>{cards}</>;
 }
 
+function asCount(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function asCountRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, raw]) => [key, asCount(raw)] as const)
+      .filter(([, count]) => count > 0),
+  );
+}
+
 function PreferenceIntelligence({
   profile,
   status,
@@ -1679,37 +1697,48 @@ function PreferenceIntelligence({
   }
 
   const questionAnswers = Array.isArray(profile.questionAnswers) ? profile.questionAnswers : [];
-  const questionCoverage = profile.questionCoverage;
+  const questionCoverage = profile.questionCoverage ?? {
+    total: questionAnswers.length,
+    answered: 0,
+    inferred: 0,
+    needsConfirmation: 0,
+    unknown: 0,
+    blockedByAccess: 0,
+  };
   const sectionSummaries = Array.isArray(profile.sectionSummaries) ? profile.sectionSummaries : [];
+  const updatedFrom = (profile as { updatedFrom?: Partial<NonNullable<OneDashboardResult["preferenceProfile"]>["updatedFrom"]> }).updatedFrom ?? {};
+  const platforms = asStringList(updatedFrom.platforms);
+  const topSignals = Array.isArray(profile.topSignals) ? profile.topSignals : [];
+  const collage = Array.isArray(profile.collage) ? profile.collage : [];
+  const selection =
+    profile.selection && typeof profile.selection === "object" && !Array.isArray(profile.selection) ? profile.selection : null;
+  const selectedByPlatform = asCountRecord(selection?.selectedByPlatform);
+  const byDomain = asCountRecord(selection?.byDomain);
+  const generatedAt = typeof profile.generatedAt === "string" && !Number.isNaN(Date.parse(profile.generatedAt)) ? profile.generatedAt : null;
   const metrics = questionAnswers.length
     ? [
         ["answers", `${(questionCoverage?.answered ?? 0) + (questionCoverage?.inferred ?? 0)}/${questionCoverage?.total ?? questionAnswers.length}`],
         ["confirm", questionCoverage?.needsConfirmation ?? 0],
         ["unknown", questionCoverage?.unknown ?? 0],
-        ["media", profile.updatedFrom.mediaAssets],
-        ["items", profile.updatedFrom.indexedItems],
+        ["media", asCount(updatedFrom.mediaAssets)],
+        ["items", asCount(updatedFrom.indexedItems)],
       ]
     : [
-        ["items", profile.updatedFrom.indexedItems],
-        ["media", profile.updatedFrom.mediaAssets],
-        ["links", profile.updatedFrom.externalLinks],
-        ["signals", profile.topSignals.length],
-        ["selected", profile.selection?.selectedEvidenceCount ?? 0],
+        ["items", asCount(updatedFrom.indexedItems)],
+        ["media", asCount(updatedFrom.mediaAssets)],
+        ["links", asCount(updatedFrom.externalLinks)],
+        ["signals", topSignals.length],
+        ["selected", asCount(selection?.selectedEvidenceCount)],
       ];
   const domainLabel = (domain: string) =>
     domain
       .split("_")
       .map((part) => part[0]?.toUpperCase() + part.slice(1))
       .join(" ");
-  const selectedPlatforms = profile.selection
-    ? Object.entries(profile.selection.selectedByPlatform).filter(([, count]) => count > 0)
-    : [];
-  const selectedDomains = profile.selection
-    ? Object.entries(profile.selection.byDomain)
-        .filter(([, count]) => count > 0)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-    : [];
+  const selectedPlatforms = Object.entries(selectedByPlatform);
+  const selectedDomains = Object.entries(byDomain)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
   const sectionRows = sectionSummaries.length
     ? sectionSummaries.map((summary) => ({
         summary,
@@ -1736,9 +1765,10 @@ function PreferenceIntelligence({
       <div className="pref-top">
         <div>
           <p className="eyebrow">Social preference intelligence</p>
-          <h2>{profile.summary}</h2>
+          <h2>{profile.summary || "One is building your preference intelligence."}</h2>
           <p>
-            Updated {new Date(profile.generatedAt).toLocaleString()} from {profile.updatedFrom.platforms.join(", ") || "connected socials"}.
+            {generatedAt ? `Updated ${new Date(generatedAt).toLocaleString()}` : "Updated recently"} from{" "}
+            {platforms.join(", ") || "connected socials"}.
           </p>
         </div>
         <div className="pref-metrics" aria-label="Preference intelligence metrics">
@@ -1792,8 +1822,8 @@ function PreferenceIntelligence({
                       <strong>{answer.answer || (answer.unknownReason === "unsafe_to_infer" ? "Needs your confirmation." : "Not enough reliable evidence yet.")}</strong>
                     </div>
                     <small>
-                      {statusLabel(answer.status)} · {answer.confidence.level} · {Math.round(answer.confidence.score * 100)}%
-                      {answer.evidenceIds.length ? ` · ${answer.evidenceIds.length} evidence` : ""}
+                      {statusLabel(answer.status)} · {answer.confidence?.level ?? "low"} · {Math.round(asCount(answer.confidence?.score) * 100)}%
+                      {Array.isArray(answer.evidenceIds) && answer.evidenceIds.length ? ` · ${answer.evidenceIds.length} evidence` : ""}
                     </small>
                   </div>
                 ))}
@@ -1803,16 +1833,16 @@ function PreferenceIntelligence({
         </div>
       ) : null}
 
-      {profile.selection ? (
+      {selection ? (
         <div className="pref-tracking" aria-label="Preference selection tracking">
           <div>
             <span>Selection tracking</span>
             <strong>
-              {profile.selection.selectedEvidenceCount} / {profile.selection.evidencePoolSize} evidence items selected
+              {asCount(selection.selectedEvidenceCount)} / {asCount(selection.evidencePoolSize)} evidence items selected
             </strong>
             <small>
-              cap {profile.selection.selectionRules.evidenceCap}
-              {profile.selection.droppedEvidenceCount ? ` · ${profile.selection.droppedEvidenceCount} dropped by cap` : " · no evidence dropped"}
+              cap {asCount(selection.selectionRules?.evidenceCap)}
+              {asCount(selection.droppedEvidenceCount) ? ` · ${asCount(selection.droppedEvidenceCount)} dropped by cap` : " · no evidence dropped"}
             </small>
           </div>
           <div className="pref-tracking-pills">
@@ -1830,9 +1860,9 @@ function PreferenceIntelligence({
         </div>
       ) : null}
 
-      {profile.topSignals.length ? (
+      {topSignals.length ? (
         <div className="pref-signals">
-          {profile.topSignals.slice(0, 8).map((signal) => (
+          {topSignals.slice(0, 8).map((signal) => (
             <div className="pref-signal" key={signal.id}>
               <span>{domainLabel(signal.domain)}</span>
               <strong>{signal.label}</strong>
@@ -1845,9 +1875,9 @@ function PreferenceIntelligence({
         </div>
       ) : null}
 
-      {profile.collage.length ? (
+      {collage.length ? (
         <div className="pref-collage" aria-label="Preference evidence collage">
-          {profile.collage.slice(0, 12).map((item) => (
+          {collage.slice(0, 12).map((item) => (
             <a
               key={item.evidenceId}
               href={item.postUrl ?? undefined}

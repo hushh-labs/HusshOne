@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { signInWithOneCustomToken } from "@/lib/firebase/client";
+import { INTELLIGENCE_VERSION } from "@/lib/research/version";
 import OneExperience from "./OneExperience";
 
 const mocks = vi.hoisted(() => ({
@@ -298,6 +299,55 @@ describe("OneExperience", () => {
     expect(screen.getAllByText("Preference intelligence").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Phase 1 dossier").length).toBeGreaterThan(0);
     expect(screen.queryByText("Paste your LinkedIn profile URL.")).not.toBeInTheDocument();
+  });
+
+  it("restores a current completed scan when the v3 preference profile is missing legacy counters", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_last_scan", "completed-v3-partial-profile");
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/completed-v3-partial-profile") {
+        return Response.json({
+          ok: true,
+          status: "completed",
+          emailDelivery: null,
+          result: {
+            scanRunId: "completed-v3-partial-profile",
+            intelligenceVersion: INTELLIGENCE_VERSION,
+            report: "# Current report",
+            categories: { goals: ["Build durable AI products"] },
+            preferenceStatus: "completed",
+            preferenceProfile: {
+              version: "preference-synthesis-v3",
+              generatedAt: "2026-06-18T15:00:00.000Z",
+              summary: "One answered 30/30 preference questions.",
+              questionAnswers: [
+                {
+                  questionId: "q1",
+                  sectionId: "taste",
+                  sectionTitle: "Taste",
+                  prompt: "What does this person enjoy?",
+                  status: "answered",
+                  answer: "Product launches and thoughtful AI demos.",
+                  confidence: { level: "medium", score: 0.65, rationale: "" },
+                  evidenceIds: [],
+                },
+              ],
+              questionCoverage: { total: 30, answered: 30, inferred: 0, needsConfirmation: 0, unknown: 0, blockedByAccess: 0 },
+              sectionSummaries: [{ sectionId: "taste", title: "Taste", summary: "", answeredCount: 1, totalCount: 1, confidence: "medium" }],
+              archiveDepth: { perPlatform: { instagram: { items: 33, mediaTotal: 66, mediaAnalyzed: 0 } }, totals: { items: 33, mediaTotal: 66, mediaAnalyzed: 0 } },
+            },
+          },
+        });
+      }
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("One answered 30/30 preference questions.", undefined, { timeout: 7000 })).toBeInTheDocument();
+    expect(screen.getByText(/instagram/i)).toBeInTheDocument();
+    expect(screen.queryByText(/One couldn't show that/i)).not.toBeInTheDocument();
   });
 
   it("shows the connected LinkedIn URL on the social intake page", async () => {
