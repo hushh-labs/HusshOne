@@ -3,6 +3,7 @@
    whole burst flow (placement → API stream → recovery → teardown) runs end-to-end
    locally and in tests without any GCP creds. Enabled by ONE_ENABLE_MOCK_BURST=true
    (see provider-factory), mirroring the ONE_ENABLE_MOCK_RESEARCH convention. */
+import { BoundedLru } from "../lru";
 import type { BurstPollResult, ComputeBurstProvider, JobSpec, ProvisionResult } from "../types";
 
 // How long the simulated job "runs" before completing (kept short for snappy dev/tests).
@@ -18,7 +19,10 @@ interface MockJob {
   fail: boolean;
 }
 
-const jobs = new Map<string, MockJob>();
+// Bounded so an abandoned job (provisioned but never polled to completion or torn down)
+// can't leak memory on a long-lived process — the LRU evicts the coldest entries.
+const MAX_MOCK_JOBS = Number.parseInt(process.env.ONE_BURST_MOCK_MAX_JOBS || "", 10) || 1_024;
+const jobs = new BoundedLru<string, MockJob>(MAX_MOCK_JOBS);
 
 export const mockBurstProvider: ComputeBurstProvider = {
   id: "mock",

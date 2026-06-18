@@ -41,4 +41,29 @@ describe("decidePlacement", () => {
     expect(decision.target).toBe("gcp");
     expect(decision.reason).toMatch(/offline/i);
   });
+
+  it("bursts when the workload size is unknown (degenerate estimate)", () => {
+    const decision = decidePlacement(estimate({ vramGb: 0, unifiedMemoryGb: 0 }), PUPPY, "gpu");
+    expect(decision.target).toBe("gcp");
+    expect(decision.reason).toMatch(/unknown/i);
+  });
+
+  it("treats unified memory (not just vram) as the binding requirement on Apple Silicon", () => {
+    // vram tiny but host RAM need huge → still must burst.
+    const decision = decidePlacement(estimate({ vramGb: 2, unifiedMemoryGb: 180 }), PUPPY, "gpu");
+    expect(decision.target).toBe("gcp");
+  });
+
+  it("reports headroom on a local placement", () => {
+    const decision = decidePlacement(estimate({ vramGb: 50, unifiedMemoryGb: 50, diskGb: 100 }), PUPPY, "gpu");
+    expect(decision.target).toBe("puppy");
+    // 192*0.8 - 50 = 103.6 memory headroom; 2048*0.8 - 100 = 1538.4 disk headroom
+    expect(decision.headroom?.memoryGb).toBeCloseTo(103.6, 1);
+    expect(decision.headroom?.diskGb).toBeCloseTo(1538.4, 1);
+  });
+
+  it("defaults the accelerator kind to gpu when omitted", () => {
+    const decision = decidePlacement(estimate({ vramGb: 10, unifiedMemoryGb: 10 }), PUPPY);
+    expect(decision.target).toBe("puppy");
+  });
 });

@@ -23,10 +23,18 @@ export const runtime = "nodejs";
 // A burst can run for many minutes; allow the route to run long where honored.
 export const maxDuration = 1800;
 
-const POLL_INTERVAL_MS = 5000;
+// Poll cadence and the soft-deadline handoff are env-tunable (defaults below) so they
+// can be tuned per environment and driven deterministically in tests.
+function pollIntervalMs() {
+  const v = Number.parseInt(process.env.ONE_BURST_POLL_INTERVAL_MS || "", 10);
+  return Number.isFinite(v) && v >= 0 ? v : 5000;
+}
 // Soft deadline: hand off before Cloud Run's hard kill so a long burst is never lost
 // without tearing the instance down. Recovery (GET /[id]) resumes the poll + teardown.
-const DEADLINE_MS = 1_650_000;
+function deadlineMs() {
+  const v = Number.parseInt(process.env.ONE_BURST_DEADLINE_MS || "", 10);
+  return Number.isFinite(v) ? v : 1_650_000;
+}
 
 function statusCodeOf(error: unknown) {
   if (typeof error === "object" && error && "statusCode" in error) {
@@ -222,7 +230,7 @@ export async function POST(request: Request) {
       try {
         for (;;) {
           if (closed) return; // client disconnected — recovery route resumes + tears down
-          if (Date.now() - startedAt > DEADLINE_MS) {
+          if (Date.now() - startedAt > deadlineMs()) {
             // Hand off before the hard kill, tearing the instance down so it isn't orphaned.
             await teardownBurst(started.provider, started.provision, creds);
             await failBurstJob(burstJobId, "Burst exceeded the inline time budget", {
@@ -248,7 +256,7 @@ export async function POST(request: Request) {
           }
 
           send({ type: "progress", scanning: latestProgress, elapsedMs: Date.now() - startedAt });
-          await sleep(POLL_INTERVAL_MS);
+          await sleep(pollIntervalMs());
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Burst could not complete";

@@ -8,10 +8,36 @@
    key. Production hardening (not built here): store an encrypted credential reference
    in Secret Manager (KMS envelope) keyed per user, and resolve it by ref at runtime. */
 import { GoogleAuth, JWT } from "google-auth-library";
+import { BoundedLru } from "./lru";
 import type { RequestByocCreds, ResolvedGcpCreds } from "./types";
 
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const DEFAULT_REGION = "us-central1";
+
+/* Minimal token-source contract satisfied by both a service-account JWT and an ADC
+   client. getAccessToken() caches the token internally and only refreshes it shortly
+   before expiry — so reusing ONE client per credential avoids re-signing a JWT (or
+   re-reading ADC) on every status poll. */
+interface TokenSource {
+  getAccessToken(): Promise<{ token?: string | null }>;
+}
+
+// Cap the auth-client cache so a process serving many distinct BYOC service accounts
+// keeps memory flat (LRU-evicts cold tenants) rather than retaining a JWT per tenant
+// forever. 256 hot tenants is plenty; an evicted client is simply rebuilt on next use.
+const MAX_CACHED_CLIENTS = Number.parseInt(process.env.ONE_BURST_AUTH_CACHE_SIZE || "", 10) || 256;
+const clientCache = new BoundedLru<string, TokenSource>(MAX_CACHED_CLIENTS);
+
+function credentialKey(creds: ResolvedGcpCreds): string {
+  return creds.serviceAccountJson
+    ? `sa:${creds.serviceAccountJson.client_email}`
+    : `adc:${creds.projectId}`;
+}
+
+/** Test-only: drop the cached auth clients so a test starts from a clean slate. */
+export function __resetAuthClientCacheForTests(): void {
+  clientCache.clear();
+}
 
 type ServiceAccountJson = NonNullable<ResolvedGcpCreds["serviceAccountJson"]>;
 
@@ -78,22 +104,28 @@ export function resolveGcpCreds(req?: RequestByocCreds): ResolvedGcpCreds {
  * Mint a short-lived OAuth2 access token (cloud-platform scope) for the resolved
  * creds. This is the ONLY use of google-auth-library — every Compute Engine REST
  * call uses the returned bearer token with native fetch.
+ *
+ * The underlying auth client is cached per credential and reused, so a tight status-
+ * poll loop reuses the library's in-memory token (refreshed only near expiry) instead
+ * of re-signing a JWT / re-reading ADC on every call.
  */
 export async function mintAccessToken(creds: ResolvedGcpCreds): Promise<string> {
-  if (creds.serviceAccountJson) {
-    const jwt = new JWT({
-      email: creds.serviceAccountJson.client_email,
-      key: creds.serviceAccountJson.private_key,
-      scopes: [CLOUD_PLATFORM_SCOPE],
-    });
-    const { access_token: token } = await jwt.authorize();
-    if (!token) throw Object.assign(new Error("Could not mint a GCP access token from BYOC creds"), { statusCode: 502 });
-    return token;
+  const key = credentialKey(creds);
+  let client = clientCache.get(key);
+  if (!client) {
+    client = creds.serviceAccountJson
+      ? new JWT({
+          email: creds.serviceAccountJson.client_email,
+          key: creds.serviceAccountJson.private_key,
+          scopes: [CLOUD_PLATFORM_SCOPE],
+        })
+      : ((await new GoogleAuth({ scopes: [CLOUD_PLATFORM_SCOPE] }).getClient()) as unknown as TokenSource);
+    clientCache.set(key, client);
   }
 
-  const auth = new GoogleAuth({ scopes: [CLOUD_PLATFORM_SCOPE] });
-  const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  if (!token.token) throw Object.assign(new Error("Could not mint a GCP access token from ADC"), { statusCode: 502 });
-  return token.token;
+  const { token } = await client.getAccessToken();
+  if (!token) {
+    throw Object.assign(new Error(`Could not mint a GCP access token (${creds.source})`), { statusCode: 502 });
+  }
+  return token;
 }
