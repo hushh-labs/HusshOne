@@ -1,6 +1,8 @@
 # Hussh One — Xtreme Compute Burst (GCP + "One Puppy")
 
-> Full documentation set (white paper, specs, OpenAPI, FDE runbook): **[docs/specs/README.md](./specs/README.md)**.
+> **Customer onboarding:** [docs/customer/getting-started.md](./customer/getting-started.md) ·
+> **Provision your cloud (script/Terraform):** [provisioning/README.md](../provisioning/README.md) ·
+> **Engineering docs (white paper, specs, OpenAPI, FDE runbook):** [docs/specs/README.md](./specs/README.md).
 
 The flagship **Xtreme Compute Burst** agent runs a heavy workload wherever it runs best:
 on the user's local Mac (**"One Puppy"** — a personal supercomputer) when it fits, or burst
