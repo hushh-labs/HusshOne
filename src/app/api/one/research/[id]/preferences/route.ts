@@ -24,6 +24,22 @@ import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+/**
+ * Surface gate: don't report the preference layer "completed" until at least this many of the 30
+ * questions are answered/inferred. A weak fast-pass profile keeps reporting "running" so the client
+ * shows a building state instead of a thin "completed" layer.
+ */
+const SHOW_THRESHOLD = 20;
+
+/** answeredTotal = questionCoverage.answered + questionCoverage.inferred, robust to missing fields. */
+function answeredCoverage(coverage: unknown): number {
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return 0;
+  const c = coverage as { answered?: unknown; inferred?: unknown };
+  const answered = typeof c.answered === "number" && Number.isFinite(c.answered) ? c.answered : 0;
+  const inferred = typeof c.inferred === "number" && Number.isFinite(c.inferred) ? c.inferred : 0;
+  return answered + inferred;
+}
+
 function statusCodeOf(error: unknown): number {
   if (typeof error === "object" && error && "statusCode" in error) {
     const n = Number((error as { statusCode?: number }).statusCode);
@@ -113,7 +129,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // pass. While still "partial" (media analyzing) report "running" so the client keeps polling.
     const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
     if (v3 && v3.version === PREFERENCE_SYNTHESIS_VERSION && v3.profile) {
-      const v3Status = v3.status === "completed" ? "completed" : "running";
+      const answeredTotal = answeredCoverage((v3.profile as { questionCoverage?: unknown }).questionCoverage);
+      const v3Status = v3.status === "completed" && answeredTotal >= SHOW_THRESHOLD ? "completed" : "running";
       const merged = result
         ? await updateDeepTier(verified.uid, id, { preferenceStatus: v3Status, preferenceProfile: v3.profile })
         : null;
@@ -151,13 +168,16 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     }
 
     // Keep the layer "running" while deep-archive/media jobs are still in flight so the client poll
-    // upgrades the fast pass to the v3 synthesis once the worker finishes.
+    // upgrades the fast pass to the v3 synthesis once the worker finishes. Also stay "running" until
+    // the profile clears the 20/30 surface gate, so a thin fast pass never reports "completed".
     const pendingWork = await hasPendingPreferenceWork(verified.uid).catch(() => false);
-    const settledStatus: "running" | "completed" = pendingWork ? "running" : "completed";
+    const settledStatusFor = (profile: { questionCoverage?: unknown }): "running" | "completed" =>
+      pendingWork || answeredCoverage(profile.questionCoverage) < SHOW_THRESHOLD ? "running" : "completed";
 
     const inputHash = profileInputHash({ linkedinProfile: stored.linkedinProfile, socialProfiles: stored.socialProfiles });
     const existing = await getUserPreferenceProfileByInputHash<UserPreferenceProfile>(verified.uid, inputHash).catch(() => null);
     if (existing?.status === "completed" && isCurrentPreferenceProfile(existing)) {
+      const settledStatus = settledStatusFor(existing);
       const durationMs = Date.now() - startedAt;
       const counts = preferenceCounts(existing);
       await logUserPreferenceRun({
@@ -212,6 +232,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       linkedinProfile: stored.linkedinProfile as LinkedInProfileFull | undefined,
       socialProfiles: stored.socialProfiles as SocialProfileFull[] | undefined,
     });
+    const settledStatus = settledStatusFor(profile);
     const indexed = await indexSocialPreferenceEvidence({
       firebaseUid: verified.uid,
       scanRunId: id,

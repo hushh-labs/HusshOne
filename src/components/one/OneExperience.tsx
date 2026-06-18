@@ -183,6 +183,10 @@ const ACCENT = "#111113";
    /dashboard + /scans recovery protocol, so the rest of the flow is unchanged. */
 const RESEARCH_MODE = process.env.NEXT_PUBLIC_ONE_RESEARCH_MODE === "true";
 const SOCIAL_REFRESH_TIMEOUT_MS = 2500;
+/* Shared 20/30 surface gate — don't present the preference layer as finished until at least this
+   many of the 30 questions are answered/inferred (answeredTotal = coverage.answered + .inferred).
+   Mirrors SHOW_THRESHOLD in the preferences route so server gating and client UI agree. */
+const SHOW_THRESHOLD = 20;
 /* Phase-0 candidate discovery (the "is this you?" pivot cards + 4-✓ gate) is now
    DORMANT — Phase-0 identity is anchored by the user's pasted LinkedIn URL instead.
    Flip this on to revive the old discover/disambiguation flow (kept intact behind it). */
@@ -1705,6 +1709,27 @@ function PreferenceIntelligence({
     unknown: 0,
     blockedByAccess: 0,
   };
+
+  // 20/30 surface gate: a profile may arrive while the layer is still "running"/"partial". Until at
+  // least SHOW_THRESHOLD questions are answered/inferred, show a building state (header + spinner +
+  // progress) instead of the thin full layer. Once completed (or >= threshold), render in full.
+  const profilePhase = (profile as { preferenceStatus?: string }).preferenceStatus;
+  const effectiveCompleted = status === "completed" && profilePhase !== "partial";
+  const answeredTotal = (questionCoverage.answered ?? 0) + (questionCoverage.inferred ?? 0);
+  const isBuilding = !effectiveCompleted && answeredTotal < SHOW_THRESHOLD;
+  if (isBuilding) {
+    return (
+      <section className="pref-intel pref-intel-loading pref-intel-running">
+        <div>
+          <p className="eyebrow">Social preference intelligence</p>
+          <h2>One is building your preference intelligence.</h2>
+          <p>One is still analyzing your social patterns — {answeredTotal}/30 answered so far.</p>
+        </div>
+        <span className="pref-spinner" aria-hidden="true" />
+      </section>
+    );
+  }
+
   const sectionSummaries = Array.isArray(profile.sectionSummaries) ? profile.sectionSummaries : [];
   const updatedFrom = (profile as { updatedFrom?: Partial<NonNullable<OneDashboardResult["preferenceProfile"]>["updatedFrom"]> }).updatedFrom ?? {};
   const platforms = asStringList(updatedFrom.platforms);
@@ -3567,8 +3592,11 @@ export default function OneExperience() {
               setDashboard((prev) => (prev ? { ...prev, ...next } : next));
             }
             if (nextProfile) {
-              setPreferenceLayer("completed", nextProfile);
-              setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "completed", preferenceProfile: nextProfile } : prev));
+              // Render the profile so the building UI can show progress, but only mark the layer
+              // done when the SERVER says completed (it gates on the 20/30 surface threshold).
+              const serverStatus: LayerStatus = payload?.preferenceStatus === "completed" ? "completed" : "running";
+              setPreferenceLayer(serverStatus, nextProfile);
+              setDashboard((prev) => (prev ? { ...prev, preferenceStatus: serverStatus, preferenceProfile: nextProfile } : prev));
             }
             if (payload?.preferenceStatus === "completed") {
               track("preference_completed", {

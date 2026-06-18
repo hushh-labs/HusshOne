@@ -97,6 +97,53 @@ describe("parseGeminiStructured", () => {
     expect(semantic).toMatchObject({ scene: "outdoor cafe", brands: ["Google", "Apple"], confidence: "medium", foodDrink: ["coffee"] });
   });
 
+  it("parses the richer preference fields and sanitizes enums + arrays", () => {
+    const semantic = parseGeminiStructured({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                text: JSON.stringify({
+                  cuisineCategory: "Japanese",
+                  venueType: "fine dining",
+                  destinationName: "Kyoto",
+                  socialSetting: "small_group",
+                  timeOfDay: "evening",
+                  musicOrEntertainment: ["Spotify Wrapped", "concert poster", ""],
+                  confidence: "high",
+                }),
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(semantic).toMatchObject({
+      cuisineCategory: "Japanese",
+      venueType: "fine dining",
+      destinationName: "Kyoto",
+      socialSetting: "small_group",
+      timeOfDay: "evening",
+      musicOrEntertainment: ["Spotify Wrapped", "concert poster"],
+      confidence: "high",
+    });
+  });
+
+  it("drops out-of-enum socialSetting/timeOfDay values", () => {
+    const semantic = parseGeminiStructured({
+      candidates: [
+        {
+          content: {
+            parts: [{ text: JSON.stringify({ socialSetting: "crowd", timeOfDay: "midnight", confidence: "low" }) }],
+          },
+        },
+      ],
+    });
+    expect(semantic?.socialSetting).toBeUndefined();
+    expect(semantic?.timeOfDay).toBeUndefined();
+  });
+
   it("defaults confidence to low and tolerates junk", () => {
     expect(parseGeminiStructured({ candidates: [{ content: { parts: [{ text: "{}" }] } }] })?.confidence).toBe("low");
     expect(parseGeminiStructured({ candidates: [{ content: { parts: [{ text: "not json" }] } }] })).toBeNull();

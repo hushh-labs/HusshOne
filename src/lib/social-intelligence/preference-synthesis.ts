@@ -1,22 +1,36 @@
 /* Phase-D: Vertex preference synthesis. Reads the FULL indexed archive (SocialContentItem) + the
-   media analyses (SocialMediaAsset) and asks a Vertex LLM (Gemini 3.1 Pro by default, env-switchable)
-   to answer the 30 preference questions with evidence, confidence, source, and honest unknowns.
+   media analyses (SocialMediaAsset) and asks a Vertex LLM (Gemini 2.5 Pro by default, env-switchable)
+   to answer the 30 preference questions with evidence, confidence, source, and calibrated inference.
+
+   v3.1 — PER-SECTION synthesis. Instead of one conservative one-shot over a generic evidence blob
+   (which answered only ~6/30 in prod), we route each of the 6 sections to its own Vertex call with a
+   TARGETED evidence slice (section-relevant text snippets + the media signals that matter for that
+   section, with frequency counts and representative asset hashes). The 6 section calls run in PARALLEL
+   and are merged into 30 answers. The prompt is reframed to infer with calibrated confidence wherever
+   a reasonable pattern exists, reserving "unknown" for genuinely zero-signal questions.
+
    All inference goes THROUGH Vertex (no direct Gemini API). Sensitive questions (Partner & Romance)
    can never be force-answered — the guardrail is enforced in code, not trusted to the model.
-   Pure builders/parsers are exported for unit tests; the network call is fully defensive. */
+   Pure builders/parsers are exported for unit tests; the network calls are fully defensive. */
 import { adcAccessToken, vertexConfig, vertexGenerateContentUrl } from "@/lib/gcp/auth";
-import { PREFERENCE_QUESTIONS, type PreferenceQuestionDefinition } from "./preference-profile";
+import {
+  PREFERENCE_QUESTIONS,
+  type PreferenceQuestionDefinition,
+  type PreferenceQuestionSectionId,
+} from "./preference-profile";
 import type { ArchiveContentRecord } from "@/lib/db/scan-store";
 
-export const PREFERENCE_SYNTHESIS_VERSION = "2026-06-18.synthesis-v3";
-export const DEFAULT_SYNTH_MODEL = "gemini-3.1-pro";
-const FETCH_TIMEOUT_MS = 60_000;
+export const PREFERENCE_SYNTHESIS_VERSION = "2026-06-18.synthesis-v3.1-persection";
+export const DEFAULT_SYNTH_MODEL = "gemini-2.5-pro";
+const FETCH_TIMEOUT_MS = 150_000;
 
-// Context budgets — keep the synthesis prompt bounded (Vertex has generous limits, but a tight,
-// aggregated context is faster, cheaper, and higher-signal than dumping 1024 raw posts).
-const MAX_TEXT_SNIPPETS = 60;
-const TEXT_SNIPPET_CHARS = 240;
-const TOP_AGG = 16;
+// Context budgets — kept bounded but generous. Because we now route PER SECTION, each call sees a
+// focused slice, so we can afford a deeper per-section text budget and more aggregated signals than
+// the old single-shot prompt allowed.
+const MAX_TEXT_SNIPPETS = 40; // per section
+const TEXT_SNIPPET_CHARS = 500;
+const TOP_AGG = 28;
+const REPRESENTATIVE_ASSETS = 24; // assetHashes surfaced per section for media citations
 
 export type SynthAnswerStatus = "answered" | "inferred" | "needs_confirmation" | "unknown";
 export type SynthConfidence = "low" | "medium" | "high";
@@ -43,25 +57,6 @@ export interface MediaAnalysisRecord {
   analysis: unknown; // the MediaAnalysisResult JSON persisted on SocialMediaAsset.analysis
 }
 
-export interface SynthesisContext {
-  platforms: string[];
-  contentItemCount: number;
-  mediaAnalyzedCount: number;
-  textSnippets: Array<{ id: string; platform: string; type: string; text: string }>;
-  mediaSignals: {
-    brands: string[];
-    logos: string[];
-    devices: string[];
-    foodDrink: string[];
-    travelPlaceTypes: string[];
-    clothingStyles: string[];
-    colorAesthetic: string[];
-    scenes: string[];
-    activities: string[];
-    ocrSnippets: string[];
-  };
-}
-
 export interface PreferenceSynthesisResult {
   version: string;
   model: string;
@@ -69,21 +64,115 @@ export interface PreferenceSynthesisResult {
   context: { platforms: string[]; contentItems: number; mediaAnalyzed: number };
 }
 
-/* ── Pure aggregation (unit-tested) ─────────────────────────────────────────────────────────── */
+/* ── Section evidence routing ───────────────────────────────────────────────────────────────────
+   For each section we declare: which media-signal keys matter (read from each analysis's
+   vision/semantic, including the NEW optional semantic fields another agent is adding), and which
+   text keywords help pre-filter the most relevant snippets. partner_romance is TEXT ONLY (sensitive):
+   it gets no media signals so we never feed a face/scene to a romance inference. */
 
-function topByFrequency(values: string[], limit: number): string[] {
-  const counts = new Map<string, number>();
-  for (const raw of values) {
-    const value = raw.trim();
-    if (!value) continue;
-    const key = value.toLowerCase();
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    // re-surface a representative original casing
-    .map(([key]) => values.find((v) => v.trim().toLowerCase() === key)?.trim() ?? key);
+export interface SectionEvidenceSpec {
+  /** Media-signal sources pulled from each completed analysis. `path` is vision|semantic; `key` is
+   *  the field; `array` says whether the value is a string[] (collected) or a scalar string. */
+  mediaSignals: Array<{ label: string; path: "vision" | "semantic"; key: string; array: boolean }>;
+  /** Lowercase keyword fragments used to bias text-snippet selection toward this section. */
+  textKeywords: string[];
+  /** When true this section never receives media signals (sensitive — text/self-declared only). */
+  textOnly?: boolean;
+}
+
+export const SECTION_EVIDENCE: Record<PreferenceQuestionSectionId, SectionEvidenceSpec> = {
+  style_brands_color: {
+    mediaSignals: [
+      { label: "brands", path: "semantic", key: "brands", array: true },
+      { label: "logos", path: "vision", key: "logos", array: true },
+      { label: "dominantColors", path: "vision", key: "dominantColors", array: true },
+      { label: "colorAesthetic", path: "semantic", key: "colorAesthetic", array: true },
+      { label: "clothingStyle", path: "semantic", key: "clothingStyle", array: true },
+      { label: "devices", path: "semantic", key: "devices", array: true },
+    ],
+    textKeywords: [
+      "brand", "style", "outfit", "wear", "fashion", "color", "colour", "aesthetic", "logo", "luxury",
+      "minimal", "fit check", "sneaker", "streetwear", "wardrobe", "design", "palette",
+    ],
+  },
+  travel_wanderlust: {
+    mediaSignals: [
+      { label: "travelPlaceType", path: "semantic", key: "travelPlaceType", array: false },
+      { label: "destinationName", path: "semantic", key: "destinationName", array: false },
+      { label: "landmarks", path: "vision", key: "landmarks", array: true },
+      { label: "scene", path: "semantic", key: "scene", array: false },
+    ],
+    textKeywords: [
+      "travel", "trip", "flight", "hotel", "beach", "mountain", "city", "trek", "vacation", "holiday",
+      "wander", "itinerary", "resort", "stay", "airbnb", "destination", "explore", "escape", "abroad",
+    ],
+  },
+  food_culinary: {
+    mediaSignals: [
+      { label: "foodDrink", path: "semantic", key: "foodDrink", array: true },
+      { label: "cuisineCategory", path: "semantic", key: "cuisineCategory", array: false },
+      { label: "venueType", path: "semantic", key: "venueType", array: false },
+      { label: "scene", path: "semantic", key: "scene", array: false },
+    ],
+    textKeywords: [
+      "food", "eat", "dinner", "lunch", "brunch", "cafe", "coffee", "restaurant", "menu", "dish",
+      "cook", "recipe", "drink", "cocktail", "wine", "street food", "chai", "dining", "tasty", "meal",
+    ],
+  },
+  partner_romance: {
+    // SENSITIVE: text only, never media. We still pre-filter by relationship language, but inference
+    // stays gated to self-declaration via the code guardrail in parseSectionAnswers.
+    mediaSignals: [],
+    textKeywords: [
+      "partner", "love", "relationship", "date", "crush", "romantic", "girlfriend", "boyfriend",
+      "marriage", "wedding", "couple", "my type", "love language", "red flag", "green flag",
+    ],
+    textOnly: true,
+  },
+  deep_likes_dislikes: {
+    mediaSignals: [
+      { label: "socialSetting", path: "semantic", key: "socialSetting", array: false },
+      { label: "activity", path: "semantic", key: "activity", array: false },
+      { label: "scene", path: "semantic", key: "scene", array: false },
+      { label: "timeOfDay", path: "semantic", key: "timeOfDay", array: false },
+    ],
+    textKeywords: [
+      "love", "hate", "favorite", "favourite", "pet peeve", "annoy", "cringe", "recharge", "alone",
+      "friends", "morning", "introvert", "extrovert", "party", "quiet", "weekend", "vibe", "opinion",
+    ],
+  },
+  mental_models: {
+    mediaSignals: [
+      { label: "musicOrEntertainment", path: "semantic", key: "musicOrEntertainment", array: true },
+      { label: "ocrText", path: "vision", key: "ocrText", array: false },
+      { label: "activity", path: "semantic", key: "activity", array: false },
+    ],
+    textKeywords: [
+      "music", "song", "playlist", "genre", "review", "research", "decision", "buy", "purchase",
+      "freedom", "respect", "creative", "build", "ship", "founder", "friend group", "money", "think",
+    ],
+  },
+};
+
+/* ── Targeted per-section context (unit-tested) ──────────────────────────────────────────────────── */
+
+export interface SectionMediaSignal {
+  label: string;
+  /** Aggregated, frequency-ranked values for this signal across the section's media. */
+  values: Array<{ value: string; count: number }>;
+}
+
+export interface SectionContext {
+  sectionId: PreferenceQuestionSectionId;
+  platforms: string[];
+  contentItemCount: number;
+  mediaAnalyzedCount: number;
+  /** Section-relevant text snippets (keyword-biased, then back-filled to budget). */
+  textSnippets: Array<{ id: string; platform: string; type: string; text: string }>;
+  /** This section's media signals with frequency counts. Empty for text-only (sensitive) sections. */
+  mediaSignals: SectionMediaSignal[];
+  /** Representative assetHashes so answers can cite mediaEvidenceIds. Empty for text-only sections. */
+  mediaAssetHashes: string[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -94,63 +183,120 @@ function strArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((v) => String(v)).filter(Boolean) : [];
 }
 
-/** Aggregate the archive + media analyses into a compact, high-signal synthesis context. */
-export function buildSynthesisContext(contentItems: ArchiveContentRecord[], mediaAnalyses: MediaAnalysisRecord[]): SynthesisContext {
+/** Frequency-rank a list of raw strings, returning `{ value, count }` with a representative casing. */
+function rankByFrequency(values: string[], limit: number): Array<{ value: string; count: number }> {
+  const counts = new Map<string, { count: number; sample: string }>();
+  for (const raw of values) {
+    const value = raw.trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    const existing = counts.get(key);
+    if (existing) existing.count += 1;
+    else counts.set(key, { count: 1, sample: value });
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit)
+    .map((entry) => ({ value: entry.sample, count: entry.count }));
+}
+
+function normText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+/** Pull a single media-signal's raw values from one completed analysis, per its spec. */
+function readSignalFromAnalysis(
+  analysis: Record<string, unknown>,
+  spec: SectionEvidenceSpec["mediaSignals"][number],
+): string[] {
+  const bag = asRecord(analysis[spec.path]);
+  const value = bag[spec.key];
+  if (spec.array) return strArray(value);
+  const scalar = normText(value);
+  return scalar ? [scalar] : [];
+}
+
+/** Build a TARGETED evidence slice for one section: keyword-biased text snippets (back-filled to
+ *  budget) + that section's media signals with frequency counts + representative assetHashes. */
+export function buildSectionContext(
+  sectionId: PreferenceQuestionSectionId,
+  contentItems: ArchiveContentRecord[],
+  mediaAnalyses: MediaAnalysisRecord[],
+): SectionContext {
+  const spec = SECTION_EVIDENCE[sectionId];
   const platforms = [...new Set(contentItems.map((c) => c.platform))].sort();
 
-  const textSnippets = contentItems
-    .filter((c) => c.text && c.text.trim())
-    .slice(0, MAX_TEXT_SNIPPETS)
-    .map((c) => ({ id: c.itemId, platform: c.platform, type: c.itemType, text: (c.text as string).replace(/\s+/g, " ").trim().slice(0, TEXT_SNIPPET_CHARS) }));
+  // ── Text snippets: prefer items whose text matches this section's keywords, then back-fill with
+  // other items up to the budget so a section is never starved when keyword hits are sparse.
+  const withText = contentItems.filter((c) => c.text && (c.text as string).trim());
+  const keywords = spec.textKeywords;
+  const matches: ArchiveContentRecord[] = [];
+  const rest: ArchiveContentRecord[] = [];
+  for (const item of withText) {
+    const lower = (item.text as string).toLowerCase();
+    (keywords.some((kw) => lower.includes(kw)) ? matches : rest).push(item);
+  }
+  const ordered = [...matches, ...rest].slice(0, MAX_TEXT_SNIPPETS);
+  const textSnippets = ordered.map((c) => ({
+    id: c.itemId,
+    platform: c.platform,
+    type: c.itemType,
+    text: normText(c.text).slice(0, TEXT_SNIPPET_CHARS),
+  }));
 
-  const brands: string[] = [];
-  const logos: string[] = [];
-  const devices: string[] = [];
-  const foodDrink: string[] = [];
-  const travelPlaceTypes: string[] = [];
-  const clothingStyles: string[] = [];
-  const colorAesthetic: string[] = [];
-  const scenes: string[] = [];
-  const activities: string[] = [];
-  const ocrSnippets: string[] = [];
+  // ── Media signals + representative asset hashes (skipped entirely for sensitive/text-only sections).
+  const signalBuckets = new Map<string, string[]>();
+  for (const s of spec.mediaSignals) signalBuckets.set(s.label, []);
+  const assetHashes: string[] = [];
   let mediaAnalyzedCount = 0;
 
-  for (const record of mediaAnalyses) {
-    const analysis = asRecord(record.analysis);
-    if (analysis.status !== "completed") continue;
-    mediaAnalyzedCount += 1;
-    const vision = asRecord(analysis.vision);
-    const semantic = asRecord(analysis.semantic);
-    logos.push(...strArray(vision.logos));
-    if (typeof vision.ocrText === "string" && vision.ocrText.trim()) ocrSnippets.push(vision.ocrText.trim().slice(0, 120));
-    brands.push(...strArray(semantic.brands));
-    devices.push(...strArray(semantic.devices));
-    foodDrink.push(...strArray(semantic.foodDrink));
-    if (typeof semantic.travelPlaceType === "string" && semantic.travelPlaceType.trim()) travelPlaceTypes.push(semantic.travelPlaceType.trim());
-    clothingStyles.push(...strArray(semantic.clothingStyle));
-    colorAesthetic.push(...strArray(semantic.colorAesthetic));
-    if (typeof semantic.scene === "string" && semantic.scene.trim()) scenes.push(semantic.scene.trim());
-    if (typeof semantic.activity === "string" && semantic.activity.trim()) activities.push(semantic.activity.trim());
+  if (!spec.textOnly) {
+    for (const record of mediaAnalyses) {
+      const analysis = asRecord(record.analysis);
+      if (analysis.status !== "completed") continue;
+      mediaAnalyzedCount += 1;
+      let contributed = false;
+      for (const s of spec.mediaSignals) {
+        const values = readSignalFromAnalysis(analysis, s);
+        if (values.length) {
+          const bucket = signalBuckets.get(s.label);
+          if (bucket) {
+            for (const v of values) bucket.push(s.key === "ocrText" ? v.slice(0, 160) : v);
+          }
+          contributed = true;
+        }
+      }
+      if (contributed && record.assetHash && assetHashes.length < REPRESENTATIVE_ASSETS) {
+        if (!assetHashes.includes(record.assetHash)) assetHashes.push(record.assetHash);
+      }
+    }
+  } else {
+    // Still report how much media exists overall (for context counts) without exposing it.
+    for (const record of mediaAnalyses) {
+      if (asRecord(record.analysis).status === "completed") mediaAnalyzedCount += 1;
+    }
   }
 
+  const mediaSignals: SectionMediaSignal[] = spec.mediaSignals
+    .map((s) => ({ label: s.label, values: rankByFrequency(signalBuckets.get(s.label) ?? [], TOP_AGG) }))
+    .filter((s) => s.values.length > 0);
+
   return {
+    sectionId,
     platforms,
     contentItemCount: contentItems.length,
     mediaAnalyzedCount,
     textSnippets,
-    mediaSignals: {
-      brands: topByFrequency(brands, TOP_AGG),
-      logos: topByFrequency(logos, TOP_AGG),
-      devices: topByFrequency(devices, TOP_AGG),
-      foodDrink: topByFrequency(foodDrink, TOP_AGG),
-      travelPlaceTypes: topByFrequency(travelPlaceTypes, TOP_AGG),
-      clothingStyles: topByFrequency(clothingStyles, TOP_AGG),
-      colorAesthetic: topByFrequency(colorAesthetic, TOP_AGG),
-      scenes: topByFrequency(scenes, TOP_AGG),
-      activities: topByFrequency(activities, TOP_AGG),
-      ocrSnippets: ocrSnippets.slice(0, TOP_AGG),
-    },
+    mediaSignals,
+    mediaAssetHashes: assetHashes,
   };
+}
+
+/** Overall analyzed-media count across the archive (status === "completed"), for the result context. */
+export function countAnalyzedMedia(mediaAnalyses: MediaAnalysisRecord[]): number {
+  let n = 0;
+  for (const record of mediaAnalyses) if (asRecord(record.analysis).status === "completed") n += 1;
+  return n;
 }
 
 /* ── Vertex request / response (pure builder + parser) ──────────────────────────────────────── */
@@ -172,7 +318,8 @@ export const PREFERENCE_SYNTH_SCHEMA = {
           mediaEvidenceIds: { type: "array", items: { type: "string" } },
           why: { type: "string" },
         },
-        required: ["questionId", "status", "confidence"],
+        // answer is REQUIRED — the per-section reframe forces the model to commit to its best read.
+        required: ["questionId", "status", "answer", "confidence"],
       },
     },
   },
@@ -185,27 +332,53 @@ function questionsBlock(questions: PreferenceQuestionDefinition[]): string {
     .join("\n");
 }
 
-const SYNTH_INSTRUCTION = `You are One's preference analyst. The user consented to a self-audit of their own public social presence. Answer EACH of the 30 preference questions using ONLY the provided evidence (text snippets + aggregated media signals). Rules:
-- Ground every answer in the evidence; cite the snippet ids you used in evidenceIds.
-- Prefer "unknown" over guessing. If the signal is weak/ambiguous, use status "needs_confirmation" or "unknown" with confidence "low".
-- SENSITIVE questions (partner/romance/attraction/etc.): NEVER state as fact. Use "needs_confirmation" or "unknown" unless the user themselves self-declared it in the text (source "self_declared").
-- Do NOT infer protected/sensitive traits (health, religion, politics, sexuality) and never identify other people.
-- 30/30 must be present; showing a question as "unknown" is correct when evidence is missing — do not fabricate.
-Output MUST match the JSON schema exactly (an "answers" array).`;
+/* The reframed instruction: the BIGGEST lever. We replace "prefer unknown over guessing" with
+   calibrated inference — answer wherever any reasonable pattern exists, label confidence honestly,
+   and reserve "unknown" for genuinely zero-signal questions. The sensitive rule is unchanged and is
+   ALSO enforced in code (parseSectionAnswers) regardless of what the model returns. */
+const SYNTH_INSTRUCTION = `You are One's preference analyst. The user consented to a self-audit of their OWN public social presence. You are given a FOCUSED evidence slice for ONE section of the preference profile (this section's text snippets + the aggregated media signals relevant to it, with frequency counts). Answer EVERY question in this section.
 
-export function buildSynthesisRequest(model: string, context: SynthesisContext, questions: PreferenceQuestionDefinition[], professionalContext?: string) {
-  const contextJson = JSON.stringify(
+How to reason:
+- Infer with calibrated confidence from the evidence. Use status "inferred" with low or medium confidence whenever a reasonable pattern exists across the posts/media — frequent brands, recurring places, repeated foods, dominant colors, etc. are all valid grounds to infer.
+- Use status "answered" with the matching confidence when the user states it directly (self-declared) or the evidence is strong and unambiguous.
+- Use "unknown" ONLY when there is genuinely ZERO relevant signal for that question. A weak or partial signal is still an "inferred" answer with low confidence — do not throw it away.
+- Always write a concrete \`answer\` string with your best read (the schema requires it). Never leave it blank; if truly nothing is known, set status "unknown" and write a one-line note in \`answer\` saying no signal was found.
+- Ground every answer in the evidence and cite the snippet ids you used in evidenceIds and the media asset hashes in mediaEvidenceIds. Do NOT contradict the evidence.
+- Put a short justification in \`why\`.
+
+Hard rules (never violate):
+- SENSITIVE questions (partner/romance/attraction/red-flags/love-language): NEVER state as fact and NEVER infer from photos or scenes. Use "needs_confirmation" or "unknown" unless the user themselves self-declared it in their own text (then source "self_declared").
+- Do NOT infer protected/sensitive traits (health, religion, politics, sexuality) and never identify other people in media.
+
+Output MUST match the JSON schema exactly (an "answers" array, one object per question in this section).`;
+
+/** Render the per-section evidence as compact JSON for the prompt. */
+function sectionEvidenceJson(context: SectionContext, professionalContext?: string): string {
+  return JSON.stringify(
     {
+      section: context.sectionId,
       platforms: context.platforms,
       counts: { contentItems: context.contentItemCount, mediaAnalyzed: context.mediaAnalyzedCount },
       mediaSignals: context.mediaSignals,
+      mediaAssetHashes: context.mediaAssetHashes,
       textSnippets: context.textSnippets,
       professionalContext: professionalContext ?? null,
     },
     null,
     2,
   );
-  const text = `${SYNTH_INSTRUCTION}\n\nQUESTIONS:\n${questionsBlock(questions)}\n\nEVIDENCE:\n\`\`\`json\n${contextJson}\n\`\`\``;
+}
+
+/** Build the Vertex request for ONE section (its questions + its targeted evidence slice). */
+export function buildSectionSynthesisRequest(
+  model: string,
+  context: SectionContext,
+  questions: PreferenceQuestionDefinition[],
+  professionalContext?: string,
+) {
+  const text = `${SYNTH_INSTRUCTION}\n\nSECTION: ${context.sectionId}\n\nQUESTIONS (answer all ${questions.length}):\n${questionsBlock(
+    questions,
+  )}\n\nEVIDENCE:\n\`\`\`json\n${sectionEvidenceJson(context, professionalContext)}\n\`\`\``;
   return {
     model,
     body: {
@@ -213,63 +386,120 @@ export function buildSynthesisRequest(model: string, context: SynthesisContext, 
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: PREFERENCE_SYNTH_SCHEMA,
-        temperature: 0.3,
+        temperature: 0.4,
         maxOutputTokens: 8192,
       },
     },
   };
 }
 
-/** Parse the model JSON into typed answers, fill missing questions with honest unknowns, and ENFORCE
- *  the sensitive-question guardrail regardless of what the model returned. */
-export function parseSynthesisResponse(json: unknown, questions: PreferenceQuestionDefinition[]): SynthesizedAnswer[] {
-  let raw: Record<string, unknown>[] = [];
+/* Back-compat builder: the old single-shot request over ALL questions. Kept exported (and used by the
+   legacy test) so any caller depending on the prior signature still works; the production path now
+   uses per-section synthesis. It embeds the same reframed instruction. */
+export function buildSynthesisRequest(
+  model: string,
+  context: SectionContext | { textSnippets: SectionContext["textSnippets"]; platforms: string[] },
+  questions: PreferenceQuestionDefinition[],
+  professionalContext?: string,
+) {
+  const text = `${SYNTH_INSTRUCTION}\n\nThis is a combined pass over ${questions.length} preference questions (the production path runs these PER SECTION in parallel).\n\nQUESTIONS:\n${questionsBlock(
+    questions,
+  )}\n\nEVIDENCE:\n\`\`\`json\n${JSON.stringify(
+    {
+      platforms: context.platforms,
+      textSnippets: context.textSnippets,
+      professionalContext: professionalContext ?? null,
+    },
+    null,
+    2,
+  )}\n\`\`\``;
+  return {
+    model,
+    body: {
+      contents: [{ role: "user", parts: [{ text }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: PREFERENCE_SYNTH_SCHEMA,
+        temperature: 0.4,
+        maxOutputTokens: 8192,
+      },
+    },
+  };
+}
+
+const VALID_STATUS = new Set<SynthAnswerStatus>(["answered", "inferred", "needs_confirmation", "unknown"]);
+const VALID_SOURCE = new Set<SynthSource>(["self_declared", "observed", "inferred", "aggregate", "not_available"]);
+
+/** Turn one raw model answer object + its question definition into a typed SynthesizedAnswer, KEEPING
+ *  the model's answer text (don't null it on low confidence) and ENFORCING the sensitive guardrail. */
+function mapOneAnswer(a: Record<string, unknown>, q: PreferenceQuestionDefinition): SynthesizedAnswer {
+  let status: SynthAnswerStatus = VALID_STATUS.has(a.status as SynthAnswerStatus) ? (a.status as SynthAnswerStatus) : "unknown";
+  const confidence: SynthConfidence = a.confidence === "high" || a.confidence === "medium" ? a.confidence : "low";
+  const source: SynthSource = VALID_SOURCE.has(a.source as SynthSource) ? (a.source as SynthSource) : "not_available";
+  let answer = typeof a.answer === "string" && a.answer.trim() ? a.answer.trim() : null;
+  const evidenceIds = strArray(a.evidenceIds).slice(0, 16);
+  const mediaEvidenceIds = strArray(a.mediaEvidenceIds).slice(0, 16);
+  const why = typeof a.why === "string" && a.why.trim() ? a.why.trim() : null;
+
+  // Parse rule: status "unknown" ONLY when there is no answer text. Otherwise keep the model's read
+  // even at low confidence (the whole point of the reframe — don't discard weak-but-real signal).
+  if (status === "unknown" && answer) status = "inferred";
+  if (status !== "unknown" && !answer) status = "unknown";
+
+  // Guardrail: a sensitive question may never be asserted ("answered"/"inferred") unless the user
+  // self-declared it. Otherwise it is downgraded to needs_confirmation (or unknown if no answer).
+  if (q.sensitive && (status === "answered" || status === "inferred") && source !== "self_declared") {
+    status = answer ? "needs_confirmation" : "unknown";
+  }
+  if (status === "unknown") answer = null;
+  const needsUserConfirmation = Boolean(status === "needs_confirmation" || (q.sensitive && status !== "unknown"));
+
+  return {
+    questionId: q.id,
+    sectionId: q.sectionId,
+    prompt: q.prompt,
+    status,
+    answer,
+    confidence,
+    source,
+    evidenceIds,
+    mediaEvidenceIds,
+    why,
+    needsUserConfirmation,
+  };
+}
+
+/** Extract the raw `answers` array from a Vertex generateContent response (defensive). */
+function extractRawAnswers(json: unknown): Record<string, unknown>[] {
   try {
     const text = (json as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
       ?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (typeof text === "string") {
       const parsed = JSON.parse(text) as { answers?: unknown };
-      if (Array.isArray(parsed.answers)) raw = parsed.answers.filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === "object");
+      if (Array.isArray(parsed.answers)) {
+        return parsed.answers.filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === "object");
+      }
     }
   } catch {
-    raw = [];
+    /* fall through to empty */
   }
-  const byId = new Map(raw.map((a) => [String(a.questionId ?? ""), a]));
+  return [];
+}
 
-  const validStatus = new Set<SynthAnswerStatus>(["answered", "inferred", "needs_confirmation", "unknown"]);
-  const validSource = new Set<SynthSource>(["self_declared", "observed", "inferred", "aggregate", "not_available"]);
+/** Parse a SINGLE section's model response into typed answers for exactly that section's questions,
+ *  filling any the model omitted with honest unknowns. */
+export function parseSectionAnswers(
+  json: unknown,
+  questions: PreferenceQuestionDefinition[],
+): SynthesizedAnswer[] {
+  const byId = new Map(extractRawAnswers(json).map((a) => [String(a.questionId ?? ""), a]));
+  return questions.map((q) => mapOneAnswer(byId.get(q.id) ?? {}, q));
+}
 
-  return questions.map((q) => {
-    const a = byId.get(q.id) ?? {};
-    let status: SynthAnswerStatus = validStatus.has(a.status as SynthAnswerStatus) ? (a.status as SynthAnswerStatus) : "unknown";
-    const confidence: SynthConfidence = a.confidence === "high" || a.confidence === "medium" ? a.confidence : "low";
-    const source: SynthSource = validSource.has(a.source as SynthSource) ? (a.source as SynthSource) : "not_available";
-    const answer = typeof a.answer === "string" && a.answer.trim() ? a.answer.trim() : null;
-    const evidenceIds = strArray(a.evidenceIds).slice(0, 12);
-    const mediaEvidenceIds = strArray(a.mediaEvidenceIds).slice(0, 12);
-    const why = typeof a.why === "string" && a.why.trim() ? a.why.trim() : null;
-
-    // Guardrail: a sensitive question may never be asserted ("answered"/"inferred") unless the user
-    // self-declared it. Otherwise it is downgraded to needs_confirmation (or unknown if no answer).
-    if (q.sensitive && (status === "answered" || status === "inferred") && source !== "self_declared") {
-      status = answer ? "needs_confirmation" : "unknown";
-    }
-    const needsUserConfirmation = Boolean(status === "needs_confirmation" || (q.sensitive && status !== "unknown"));
-
-    return {
-      questionId: q.id,
-      sectionId: q.sectionId,
-      prompt: q.prompt,
-      status,
-      answer: status === "unknown" ? null : answer,
-      confidence,
-      source,
-      evidenceIds,
-      mediaEvidenceIds,
-      why,
-      needsUserConfirmation,
-    };
-  });
+/** Parse a model JSON into typed answers for the FULL question set (back-compat with the prior
+ *  single-shot contract). Fills missing questions with honest unknowns and enforces the guardrail. */
+export function parseSynthesisResponse(json: unknown, questions: PreferenceQuestionDefinition[]): SynthesizedAnswer[] {
+  return parseSectionAnswers(json, questions);
 }
 
 /* ── Vertex call (defensive) ────────────────────────────────────────────────────────────────── */
@@ -295,6 +525,24 @@ async function callVertex(model: string, body: unknown): Promise<unknown | null>
   } catch {
     return null;
   }
+}
+
+/** Synthesize ONE section: build its targeted context, make one Vertex call, parse its answers.
+ *  Returns null if Vertex is unavailable/failed for this section (caller fills it with unknowns). */
+export async function synthesizeSection(
+  sectionId: PreferenceQuestionSectionId,
+  questions: PreferenceQuestionDefinition[],
+  contentItems: ArchiveContentRecord[],
+  mediaAnalyses: MediaAnalysisRecord[],
+  model: string,
+  professionalContext?: string,
+): Promise<SynthesizedAnswer[] | null> {
+  if (!questions.length) return [];
+  const context = buildSectionContext(sectionId, contentItems, mediaAnalyses);
+  const { body } = buildSectionSynthesisRequest(model, context, questions, professionalContext);
+  const json = await callVertex(model, body);
+  if (!json) return null;
+  return parseSectionAnswers(json, questions);
 }
 
 export interface SynthesizeInput {
@@ -404,19 +652,68 @@ export function toRenderablePreferenceProfile(
   };
 }
 
-/** Run the full synthesis. Returns null if Vertex is unavailable/failed (caller keeps the fast pass). */
+/** Group a question list by sectionId, preserving the registry's section order. */
+function groupBySection(questions: PreferenceQuestionDefinition[]): Array<{ sectionId: PreferenceQuestionSectionId; questions: PreferenceQuestionDefinition[] }> {
+  const order: PreferenceQuestionSectionId[] = [];
+  const groups = new Map<PreferenceQuestionSectionId, PreferenceQuestionDefinition[]>();
+  for (const q of questions) {
+    if (!groups.has(q.sectionId)) {
+      groups.set(q.sectionId, []);
+      order.push(q.sectionId);
+    }
+    groups.get(q.sectionId)!.push(q);
+  }
+  return order.map((sectionId) => ({ sectionId, questions: groups.get(sectionId)! }));
+}
+
+/** Run the full synthesis via PER-SECTION parallel Vertex calls.
+ *  - Groups the requested questions by section and fires one Vertex call per section in parallel.
+ *  - Merges the results into answers for exactly the requested questions (in registry order).
+ *  - When a `questions` subset is passed, only the sections those questions belong to are run, and
+ *    only those answers are returned (used for a re-pass by another agent).
+ *  Returns null only if Vertex is entirely unavailable (no section produced any model answer), so the
+ *  caller can keep the fast pass. If some sections succeed and others fail, the failed sections'
+ *  questions come back as honest unknowns rather than dropping the whole run. */
 export async function synthesizePreferences(input: SynthesizeInput): Promise<PreferenceSynthesisResult | null> {
   const model = input.model || process.env.PREFERENCE_SYNTH_MODEL || DEFAULT_SYNTH_MODEL;
   const questions = input.questions ?? PREFERENCE_QUESTIONS;
-  const context = buildSynthesisContext(input.contentItems, input.mediaAnalyses);
-  const { body } = buildSynthesisRequest(model, context, questions, input.professionalContext);
-  const json = await callVertex(model, body);
-  if (!json) return null;
-  const answers = parseSynthesisResponse(json, questions);
+  const groups = groupBySection(questions);
+
+  const platforms = [...new Set(input.contentItems.map((c) => c.platform))].sort();
+  const mediaAnalyzed = countAnalyzedMedia(input.mediaAnalyses);
+
+  const sectionResults = await Promise.all(
+    groups.map(async (group) => {
+      const answers = await synthesizeSection(
+        group.sectionId,
+        group.questions,
+        input.contentItems,
+        input.mediaAnalyses,
+        model,
+        input.professionalContext,
+      );
+      return { group, answers };
+    }),
+  );
+
+  // If EVERY section failed (Vertex unavailable), signal null so the caller keeps the fast pass.
+  if (sectionResults.every((r) => r.answers === null)) return null;
+
+  // Merge: succeeded sections use their answers; failed sections fall back to honest unknowns. Then
+  // re-order to match the requested question list exactly.
+  const merged = new Map<string, SynthesizedAnswer>();
+  for (const { group, answers } of sectionResults) {
+    const resolved = answers ?? parseSectionAnswers({}, group.questions);
+    for (const a of resolved) merged.set(a.questionId, a);
+  }
+  const answers = questions.map(
+    (q) => merged.get(q.id) ?? parseSectionAnswers({}, [q])[0],
+  );
+
   return {
     version: PREFERENCE_SYNTHESIS_VERSION,
     model,
     answers,
-    context: { platforms: context.platforms, contentItems: context.contentItemCount, mediaAnalyzed: context.mediaAnalyzedCount },
+    context: { platforms, contentItems: input.contentItems.length, mediaAnalyzed },
   };
 }

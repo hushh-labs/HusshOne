@@ -139,7 +139,9 @@ describe("GET /api/one/research/[id]/preferences", () => {
     };
 
     expect(res.status).toBe(200);
-    expect(json.preferenceStatus).toBe("completed");
+    // Fast-pass profile answers far fewer than the 20/30 surface gate → stays "running" so the
+    // client shows the building state instead of a thin "completed" layer.
+    expect(json.preferenceStatus).toBe("running");
     expect(json.preferenceProfile?.summary).toContain("visible social evidence");
     expect(json.result).toBeNull();
     expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
@@ -194,7 +196,9 @@ describe("GET /api/one/research/[id]/preferences", () => {
     };
 
     expect(res.status).toBe(200);
-    expect(json.preferenceStatus).toBe("completed");
+    // Below the 20/30 surface gate → the patched layer stays "running" while the deep synthesis
+    // catches up, even though the fast-pass profile itself is fully built and persisted.
+    expect(json.preferenceStatus).toBe("running");
     expect(json.result?.preferenceProfile?.summary).toContain("visible social evidence");
     expect(json.result?.preferenceProfile?.selection?.selectedEvidenceCount).toBeGreaterThan(0);
     expect(mocks.saveUserPreferenceProfile).toHaveBeenCalledWith(
@@ -217,7 +221,7 @@ describe("GET /api/one/research/[id]/preferences", () => {
       "firebase-1",
       "scan-1",
       expect.objectContaining({
-        preferenceStatus: "completed",
+        preferenceStatus: "running",
         preferenceVersion: "2026-06-18.social-preference-questions-v2",
         preferenceInputHash: expect.any(String),
         preferenceProfile: expect.objectContaining({
@@ -305,11 +309,82 @@ describe("GET /api/one/research/[id]/preferences", () => {
     const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { summary?: string }; result?: unknown };
 
     expect(res.status).toBe(200);
-    expect(json.preferenceStatus).toBe("completed");
+    // Reused profile has 0/30 answered → below the surface gate → "running" (still surfaced so the
+    // building UI can show progress), even though the stored row is status "completed".
+    expect(json.preferenceStatus).toBe("running");
     expect(json.preferenceProfile?.summary).toBe("Existing preference profile");
     expect(json.result).toBeNull();
     expect(mocks.saveUserPreferenceProfile).not.toHaveBeenCalled();
     expect(mocks.logUserPreferenceRun).toHaveBeenCalledWith(expect.objectContaining({ event: "reused" }));
+  });
+
+  it("reports completed once a reused profile clears the 20/30 surface gate", async () => {
+    const existing = {
+      version: "2026-06-18.social-preference-questions-v2",
+      status: "completed",
+      generatedAt: "2026-06-17T09:00:00.000Z",
+      questionRegistryVersion: "2026-06-18.preference-30q-v1",
+      questionAnswers: [],
+      // answeredTotal = answered + inferred = 18 + 4 = 22 ≥ SHOW_THRESHOLD(20) → surfaced as completed.
+      questionCoverage: { total: 30, answered: 18, inferred: 4, needsConfirmation: 3, unknown: 5, blockedByAccess: 0, bySection: {} },
+      sectionSummaries: [],
+      updatedFrom: { platforms: ["instagram"], indexedItems: 1, mediaAssets: 1, ocrSignals: 0, externalLinks: 0, recentWindowDays: 30 },
+      summary: "Strong preference profile",
+      topSignals: [],
+      domains: {},
+      evidence: [],
+      collage: [],
+      selection: {
+        selectedAt: "2026-06-17T09:00:00.000Z",
+        evidencePoolSize: 1,
+        selectedEvidenceCount: 1,
+        selectedEvidenceIds: ["e1"],
+        selectedSignalCount: 0,
+        selectedSignalIds: [],
+        collageEvidenceIds: ["e1"],
+        droppedEvidenceCount: 0,
+        byPlatform: { instagram: 1, threads: 0, x: 0, linkedin: 0 },
+        selectedByPlatform: { instagram: 1, threads: 0, x: 0, linkedin: 0 },
+        byDomain: {},
+        selectionRules: { evidenceCap: 2600, topSignalCap: 12, signalEvidenceCap: 12, collageCap: 16, promptPostLimit: null },
+      },
+      refresh: { lastIndexedAt: "2026-06-17T09:00:00.000Z", staleAfter: "2026-06-18T09:00:00.000Z", mode: "refresh_ready" },
+      guardrails: {
+        linkedinUntouched: true,
+        noPrivateContent: true,
+        sensitiveInferencePolicy: "self_declared_or_needs_confirmation",
+      },
+      mediaIntelligence: { status: "completed", provider: "vertex_gemini_cloud_vision", queuedAssets: 0, note: "done" },
+    };
+    mocks.hasPendingPreferenceWork.mockResolvedValueOnce(false);
+    mocks.getUserPreferenceProfileByInputHash.mockResolvedValueOnce(existing);
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "running",
+      normalizedResult: null,
+      input: {
+        socialPreferenceConsent: true,
+        socialProfiles: [
+          {
+            platform: "Instagram",
+            username: "user",
+            displayName: "User",
+            bio: "Coffee and Goa",
+            avatarUrl: null,
+            externalUrl: null,
+            profileUrl: "https://www.instagram.com/user/",
+            source: "scraper",
+            recentPublicPosts: [],
+          },
+        ],
+      },
+    });
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { summary?: string } };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).toBe("completed");
+    expect(json.preferenceProfile?.summary).toBe("Strong preference profile");
   });
 
   it("does not reuse a v1 preference profile when v2 is required", async () => {
@@ -369,7 +444,8 @@ describe("GET /api/one/research/[id]/preferences", () => {
     const json = (await res.json()) as { preferenceStatus?: string; preferenceProfile?: { version?: string; summary?: string } };
 
     expect(res.status).toBe(200);
-    expect(json.preferenceStatus).toBe("completed");
+    // Freshly rebuilt v2 fast pass is below the surface gate → "running".
+    expect(json.preferenceStatus).toBe("running");
     expect(json.preferenceProfile?.version).toBe("2026-06-18.social-preference-questions-v2");
     expect(json.preferenceProfile?.summary).not.toBe("Old v1 preference profile");
     expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();

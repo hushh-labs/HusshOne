@@ -4,6 +4,8 @@ import puppeteer from "puppeteer-core";
 const DEFAULT_BROWSER_URL = process.env.INSTAGRAM_BROWSER_URL || "http://127.0.0.1:9222";
 const DEFAULT_TIMEOUT_MS = Number(process.env.INSTAGRAM_PROFILE_SCRAPER_TIMEOUT_MS || 120_000);
 const DEFAULT_MAX_POSTS = Number(process.env.INSTAGRAM_MAX_POSTS_PER_PROFILE || 1024);
+const DEFAULT_SCROLL_PASSES = Number(process.env.INSTAGRAM_MAX_SCROLL_PASSES || 250);
+const DEFAULT_STABLE_SCROLL_PASSES = Number(process.env.INSTAGRAM_STABLE_SCROLL_PASSES || 5);
 
 export async function scrapeInstagramProfile(profileUrl, options = {}) {
   return runInstagramProfileBrowser(profileUrl, {
@@ -106,25 +108,30 @@ function resolveChromePath() {
 }
 
 async function autoScroll(page, maxPosts) {
-  await page.evaluate(async (limit) => {
-    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    let previousHeight = 0;
-    let stable = 0;
-    for (let pass = 0; pass < 20; pass += 1) {
-      const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      window.scrollTo(0, height);
-      await wait(800);
-      const next = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-      const postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
-        /\/(?:p|reel)\/[^/]+/i.test(link.getAttribute("href") || ""),
-      ).length;
-      stable = next === previousHeight ? stable + 1 : 0;
-      previousHeight = next;
-      if (postCount >= limit) break;
-      if (stable >= 2) break;
-    }
-    window.scrollTo(0, 0);
-  }, maxPosts);
+  await page.evaluate(
+    async (limit, maxScrollPasses, stableLimit) => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      let previousHeight = 0;
+      let stable = 0;
+      for (let pass = 0; pass < maxScrollPasses; pass += 1) {
+        const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+        window.scrollTo(0, height);
+        await wait(800);
+        const next = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+        const postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
+          /\/(?:p|reel)\/[^/]+/i.test(link.getAttribute("href") || ""),
+        ).length;
+        stable = next === previousHeight ? stable + 1 : 0;
+        previousHeight = next;
+        if (postCount >= limit) break;
+        if (stable >= stableLimit) break;
+      }
+      window.scrollTo(0, 0);
+    },
+    maxPosts,
+    DEFAULT_SCROLL_PASSES,
+    DEFAULT_STABLE_SCROLL_PASSES,
+  );
 }
 
 async function dismissInstagramInterruption(page) {

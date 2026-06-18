@@ -350,6 +350,57 @@ describe("OneExperience", () => {
     expect(screen.queryByText(/One couldn't show that/i)).not.toBeInTheDocument();
   });
 
+  it("shows the preference building state when a profile is below the 20/30 surface gate", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_last_scan", "completed-weak-profile");
+    mockFetch(async (url) => {
+      if (url === "/api/linkedin/profile") return Response.json({ ok: false }, { status: 404 });
+      if (url === "/api/one/scans/completed-weak-profile") {
+        return Response.json({
+          ok: true,
+          status: "completed",
+          emailDelivery: null,
+          result: {
+            scanRunId: "completed-weak-profile",
+            intelligenceVersion: INTELLIGENCE_VERSION,
+            report: "# Current report",
+            categories: { goals: ["Build durable AI products"] },
+            // Layer still running and only 6/30 answered → building state, not the full layer.
+            preferenceStatus: "running",
+            preferenceProfile: {
+              version: "preference-synthesis-v3",
+              generatedAt: "2026-06-18T15:00:00.000Z",
+              summary: "One answered 30/30 preference questions.",
+              questionAnswers: [
+                {
+                  questionId: "q1",
+                  sectionId: "taste",
+                  sectionTitle: "Taste",
+                  prompt: "What does this person enjoy?",
+                  status: "answered",
+                  answer: "Product launches and thoughtful AI demos.",
+                  confidence: { level: "medium", score: 0.65, rationale: "" },
+                  evidenceIds: [],
+                },
+              ],
+              questionCoverage: { total: 30, answered: 5, inferred: 1, needsConfirmation: 4, unknown: 20, blockedByAccess: 0 },
+              sectionSummaries: [{ sectionId: "taste", title: "Taste", summary: "", answeredCount: 1, totalCount: 1, confidence: "medium" }],
+            },
+          },
+        });
+      }
+      return Response.json({ ok: false }, { status: 404 });
+    });
+
+    render(<OneExperience />);
+
+    expect(
+      await screen.findByText(/One is still analyzing your social patterns — 6\/30 answered so far/i, undefined, { timeout: 7000 }),
+    ).toBeInTheDocument();
+    // Building state hides the full layer (no per-question summary copy renders yet).
+    expect(screen.queryByText("One answered 30/30 preference questions.")).not.toBeInTheDocument();
+  });
+
   it("shows the connected LinkedIn URL on the social intake page", async () => {
     mocks.currentUser = signedInUser();
     scopedLocal("firebase-1", "one_li_full", JSON.stringify(richLinkedInProfile()));

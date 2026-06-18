@@ -38,13 +38,19 @@ export const PREFERENCE_MEDIA_SCHEMA = {
     colorAesthetic: { type: "array", items: { type: "string" } },
     mood: { type: "string" },
     languageInImage: { type: "string" },
+    cuisineCategory: { type: "string" },
+    venueType: { type: "string" },
+    destinationName: { type: "string" },
+    socialSetting: { type: "string", enum: ["solo", "couple", "small_group", "large_gathering"] },
+    timeOfDay: { type: "string", enum: ["morning", "afternoon", "evening", "night"] },
+    musicOrEntertainment: { type: "array", items: { type: "string" } },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
     notes: { type: "string" },
   },
   required: ["confidence"],
 } as const;
 
-const GEMINI_INSTRUCTION = `You are extracting PREFERENCE signals from ONE public social image for a user who consented to a self-audit. Describe ONLY what is visibly present. Infer brand/device/style/food/travel/aesthetic preferences cautiously and set confidence accordingly (low if unsure). Do NOT identify or describe specific people, do NOT guess identity, religion, health, politics, or sensitive traits. If the image shows none of these signals, return empty arrays and confidence "low". Output must match the provided JSON schema exactly.`;
+const GEMINI_INSTRUCTION = `You are extracting PREFERENCE signals from ONE public social image for a user who consented to a self-audit. Describe ONLY what is visibly present. Infer brand/device/style/food/travel/aesthetic preferences cautiously and set confidence accordingly (low if unsure). When clearly evident from the image, also fill: cuisineCategory (e.g. "Indian", "Japanese", "Italian"), venueType (e.g. "fine dining", "cafe", "street food", "home"), destinationName (a specific place or city only if clearly visible, else empty), socialSetting (one of "solo", "couple", "small_group", "large_gathering"), timeOfDay (one of "morning", "afternoon", "evening", "night"), and musicOrEntertainment (visible Spotify/concert/film references). Fill these ONLY from what is visibly present — leave them empty or omit them when not evident; never guess. Do NOT identify or describe specific people, do NOT guess identity, religion, health, politics, or sensitive traits. If the image shows none of these signals, return empty arrays and confidence "low". Output must match the provided JSON schema exactly.`;
 
 export interface VisionFacts {
   ocrText: string | null;
@@ -67,6 +73,12 @@ export interface PreferenceMediaSemantic {
   colorAesthetic?: string[];
   mood?: string;
   languageInImage?: string;
+  cuisineCategory?: string;
+  venueType?: string;
+  destinationName?: string;
+  socialSetting?: string;
+  timeOfDay?: string;
+  musicOrEntertainment?: string[];
   confidence: "low" | "medium" | "high";
   notes?: string;
 }
@@ -172,6 +184,10 @@ export function parseGeminiStructured(json: unknown): PreferenceMediaSemantic | 
     const strArr = (v: unknown): string[] | undefined =>
       Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 12) : undefined;
     const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    const oneOf = (v: unknown, allowed: readonly string[]): string | undefined => {
+      const s = str(v);
+      return s && allowed.includes(s) ? s : undefined;
+    };
     const confidence = parsed.confidence === "high" || parsed.confidence === "medium" ? parsed.confidence : "low";
     return {
       scene: str(parsed.scene),
@@ -184,6 +200,12 @@ export function parseGeminiStructured(json: unknown): PreferenceMediaSemantic | 
       colorAesthetic: strArr(parsed.colorAesthetic),
       mood: str(parsed.mood),
       languageInImage: str(parsed.languageInImage),
+      cuisineCategory: str(parsed.cuisineCategory),
+      venueType: str(parsed.venueType),
+      destinationName: str(parsed.destinationName),
+      socialSetting: oneOf(parsed.socialSetting, ["solo", "couple", "small_group", "large_gathering"]),
+      timeOfDay: oneOf(parsed.timeOfDay, ["morning", "afternoon", "evening", "night"]),
+      musicOrEntertainment: strArr(parsed.musicOrEntertainment),
       confidence,
       notes: str(parsed.notes),
     };
