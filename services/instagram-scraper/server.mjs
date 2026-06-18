@@ -51,10 +51,11 @@ const server = http.createServer(async (request, response) => {
       const urls = normalizeInputUrls(body);
       if (!urls.length) return sendJson(response, 400, { ok: false, error: "Provide `url` or `urls` with Instagram profile URL(s)." });
       if (urls.length > maxUrls) return sendJson(response, 400, { ok: false, error: `Too many URLs. Max ${maxUrls} per request.` });
+      const maxPosts = normalizeMaxPosts(body?.maxPosts);
 
       const results = [];
       for (const url of urls) {
-        const result = await scrapeOne(url, { action: actionForPath(requestUrl.pathname) });
+        const result = await scrapeOne(url, { action: actionForPath(requestUrl.pathname), maxPosts });
         await writeResult(result);
         await writeAccessRecord(result);
         results.push(result);
@@ -84,7 +85,7 @@ async function scrapeOne(profileUrl, options = {}) {
         ? await requestInstagramProfileAccess(profileUrl)
         : options.action === "access_check"
           ? await checkInstagramProfileAccess(profileUrl)
-          : await scrapeInstagramProfile(profileUrl, { requestAccess: true });
+          : await scrapeInstagramProfile(profileUrl, { requestAccess: true, maxPosts: options.maxPosts });
     const template = buildInstagramTemplate(profileUrl, raw);
     const access = normalizeAccess(raw, template);
     if (isAuthwallResponse(raw)) {
@@ -194,6 +195,14 @@ function nextCheckAfterForState(state, checkedAt) {
 function normalizeInputUrls(body) {
   const raw = Array.isArray(body?.urls) ? body.urls : body?.url ? [body.url] : [];
   return [...new Set(raw.map(normalizeInstagramProfileUrl).filter(Boolean))];
+}
+
+// Honor a per-request `maxPosts` (the One worker sends 1024), clamped to the service ceiling.
+// Falls back to the env default when omitted. Mirrors the Threads/X scrapers.
+function normalizeMaxPosts(value) {
+  const n = Number(value || process.env.INSTAGRAM_MAX_POSTS_PER_PROFILE || 1024);
+  if (!Number.isFinite(n) || n <= 0) return 1024;
+  return Math.max(1, Math.min(1024, Math.round(n)));
 }
 
 async function readJson(request) {

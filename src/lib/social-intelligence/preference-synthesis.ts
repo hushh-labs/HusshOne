@@ -305,6 +305,105 @@ export interface SynthesizeInput {
   questions?: PreferenceQuestionDefinition[];
 }
 
+/* ── Render mapping: turn the v3 synthesis into the shape the dashboard's PreferenceIntelligence
+   component already renders (question answers + coverage + section summaries), plus archive depth.
+   This lets v3 reuse the entire polished v2 UI with no component rewrite. ──────────────────────── */
+
+const CONFIDENCE_SCORE: Record<SynthConfidence, number> = { low: 0.35, medium: 0.65, high: 0.9 };
+
+export interface ArchiveDepthLike {
+  perPlatform: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number; mediaFailed: number }>;
+  totals: { items: number; mediaTotal: number; mediaAnalyzed: number; mediaPending: number };
+}
+
+/** A subset-compatible UserPreferenceProfile the dashboard can render, carrying the v3 answers,
+ *  coverage, section summaries, and the live archive depth. Stored as JSON; the client reads it as
+ *  `preferenceProfile`. */
+export interface RenderablePreferenceProfile {
+  version: string;
+  synthesisModel: string;
+  preferenceStatus: "partial" | "completed";
+  summary: string;
+  generatedAt: string;
+  updatedFrom: { platforms: string[]; indexedItems: number; mediaAssets: number; externalLinks: number; ocrSignals: number };
+  topSignals: never[];
+  collage: never[];
+  questionAnswers: Array<Record<string, unknown>>;
+  questionCoverage: { total: number; answered: number; inferred: number; needsConfirmation: number; unknown: number; blockedByAccess: number };
+  sectionSummaries: Array<{ sectionId: string; title: string; summary: string; answeredCount: number; totalCount: number; confidence: "low" | "medium" | "high" }>;
+  archiveDepth: ArchiveDepthLike | null;
+}
+
+export function toRenderablePreferenceProfile(
+  result: PreferenceSynthesisResult,
+  depth: ArchiveDepthLike | null,
+  opts: { generatedAt: string; preferenceStatus: "partial" | "completed" },
+): RenderablePreferenceProfile {
+  const byId = new Map(PREFERENCE_QUESTIONS.map((q) => [q.id, q]));
+  const questionAnswers = result.answers.map((a) => {
+    const q = byId.get(a.questionId);
+    return {
+      questionId: a.questionId,
+      sectionId: a.sectionId,
+      sectionTitle: q?.sectionTitle ?? a.sectionId,
+      category: q?.category ?? "unknowns",
+      prompt: a.prompt,
+      status: a.status,
+      answer: a.answer,
+      confidence: { score: CONFIDENCE_SCORE[a.confidence], level: a.confidence, rationale: a.why ?? "" },
+      sourceMode: a.source,
+      evidenceIds: a.evidenceIds,
+      mediaEvidenceIds: a.mediaEvidenceIds,
+      needsUserConfirmation: a.needsUserConfirmation,
+      updatedFrom: a.mediaEvidenceIds.length ? "media_pass" : "fast_text_pass",
+      ...(a.status === "unknown" ? { unknownReason: a.needsUserConfirmation ? "unsafe_to_infer" : "no_evidence" } : {}),
+    };
+  });
+  const count = (pred: (a: SynthesizedAnswer) => boolean) => result.answers.filter(pred).length;
+  const questionCoverage = {
+    total: result.answers.length,
+    answered: count((a) => a.status === "answered"),
+    inferred: count((a) => a.status === "inferred"),
+    needsConfirmation: count((a) => a.status === "needs_confirmation"),
+    unknown: count((a) => a.status === "unknown"),
+    blockedByAccess: 0,
+  };
+  const sectionIds = [...new Set(result.answers.map((a) => a.sectionId))];
+  const sectionSummaries = sectionIds.map((sectionId) => {
+    const xs = result.answers.filter((a) => a.sectionId === sectionId);
+    const answered = xs.filter((a) => a.status === "answered" || a.status === "inferred").length;
+    return {
+      sectionId,
+      title: byId.get(xs[0]?.questionId ?? "")?.sectionTitle ?? sectionId,
+      summary: "",
+      answeredCount: answered,
+      totalCount: xs.length,
+      confidence: (answered > xs.length / 2 ? "medium" : "low") as "low" | "medium" | "high",
+    };
+  });
+  const answeredTotal = questionCoverage.answered + questionCoverage.inferred;
+  return {
+    version: result.version,
+    synthesisModel: result.model,
+    preferenceStatus: opts.preferenceStatus,
+    summary: `One answered ${answeredTotal}/${result.answers.length} preference questions from ${result.context.contentItems} posts and ${result.context.mediaAnalyzed} analyzed media across ${result.context.platforms.join(", ") || "your socials"}.`,
+    generatedAt: opts.generatedAt,
+    updatedFrom: {
+      platforms: result.context.platforms,
+      indexedItems: result.context.contentItems,
+      mediaAssets: result.context.mediaAnalyzed,
+      externalLinks: 0,
+      ocrSignals: 0,
+    },
+    topSignals: [],
+    collage: [],
+    questionAnswers,
+    questionCoverage,
+    sectionSummaries,
+    archiveDepth: depth,
+  };
+}
+
 /** Run the full synthesis. Returns null if Vertex is unavailable/failed (caller keeps the fast pass). */
 export async function synthesizePreferences(input: SynthesizeInput): Promise<PreferenceSynthesisResult | null> {
   const model = input.model || process.env.PREFERENCE_SYNTH_MODEL || DEFAULT_SYNTH_MODEL;

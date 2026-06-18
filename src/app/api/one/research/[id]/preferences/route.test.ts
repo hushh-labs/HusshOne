@@ -3,7 +3,9 @@ import { GET } from "./route";
 
 const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
+  getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
+  hasPendingPreferenceWork: vi.fn(async () => false),
   indexSocialPreferenceEvidence: vi.fn(async () => ({ contentItems: 1, mediaAssets: 1 })),
   logUserPreferenceRun: vi.fn(async () => undefined),
   saveUserPreferenceProfile: vi.fn(async () => undefined),
@@ -25,7 +27,9 @@ vi.mock("@/lib/auth/verify", () => ({
 
 vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
+  getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
+  hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   indexSocialPreferenceEvidence: mocks.indexSocialPreferenceEvidence,
   logUserPreferenceRun: mocks.logUserPreferenceRun,
   saveUserPreferenceProfile: mocks.saveUserPreferenceProfile,

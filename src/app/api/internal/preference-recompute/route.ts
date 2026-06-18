@@ -16,7 +16,7 @@ import {
   updateDeepTier,
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
-import { synthesizePreferences } from "@/lib/social-intelligence/preference-synthesis";
+import { synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -61,20 +61,15 @@ export async function POST(request: Request) {
       }
 
       const mediaPending = depth?.totals ? depth.totals.mediaTotal - depth.totals.mediaAnalyzed : 0;
-      const mediaStatus = depth?.totals.mediaTotal ? (mediaPending > 0 ? "partial" : "completed") : "not_configured";
+      // "partial" while media is still being analyzed; "completed" once the archive+media settle.
       const preferenceStatus = mediaPending > 0 ? "partial" : "completed";
 
-      const profile = {
-        version: synthesis.version,
-        synthesisModel: synthesis.model,
+      // Render-compatible profile: reuses the dashboard's existing PreferenceIntelligence UI and
+      // carries the live archive depth so the user sees e.g. "Instagram 684/1024 · 512 analyzed".
+      const profile = toRenderablePreferenceProfile(synthesis, depth, {
+        generatedAt: new Date().toISOString(),
         preferenceStatus,
-        archiveStatus: "completed",
-        mediaStatus,
-        platformArchiveSummary: depth?.perPlatform ?? {},
-        mediaAnalysisSummary: depth?.totals ?? null,
-        answers: synthesis.answers,
-        context: synthesis.context,
-      };
+      });
 
       await saveUserPreferenceProfile({
         firebaseUid: job.firebaseUid,
@@ -87,11 +82,13 @@ export async function POST(request: Request) {
 
       const scanRunId = meta.scanRunId ?? (await getLatestScanForUser(job.firebaseUid))?.id ?? null;
       if (scanRunId) {
+        // The dashboard renders `preferenceProfile`; on "completed" mark the layer done, on "partial"
+        // keep it "running" so the client poll keeps upgrading as media finishes.
         await updateDeepTier(job.firebaseUid, scanRunId, {
-          preferenceStatus,
+          preferenceStatus: preferenceStatus === "completed" ? "completed" : "running",
+          preferenceProfile: profile,
           preferenceSynthesisVersion: synthesis.version,
           preferenceSynthesisModel: synthesis.model,
-          preferenceProfileV3: profile,
         });
       }
       await completeSocialRefreshJob(job.id);

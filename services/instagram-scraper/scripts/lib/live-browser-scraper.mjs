@@ -3,7 +3,7 @@ import puppeteer from "puppeteer-core";
 
 const DEFAULT_BROWSER_URL = process.env.INSTAGRAM_BROWSER_URL || "http://127.0.0.1:9222";
 const DEFAULT_TIMEOUT_MS = Number(process.env.INSTAGRAM_PROFILE_SCRAPER_TIMEOUT_MS || 120_000);
-const DEFAULT_MAX_POSTS = Number(process.env.INSTAGRAM_MAX_POSTS_PER_PROFILE || 120);
+const DEFAULT_MAX_POSTS = Number(process.env.INSTAGRAM_MAX_POSTS_PER_PROFILE || 1024);
 
 export async function scrapeInstagramProfile(profileUrl, options = {}) {
   return runInstagramProfileBrowser(profileUrl, {

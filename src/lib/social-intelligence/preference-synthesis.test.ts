@@ -3,8 +3,11 @@ import {
   buildSynthesisContext,
   buildSynthesisRequest,
   parseSynthesisResponse,
+  toRenderablePreferenceProfile,
   PREFERENCE_SYNTH_SCHEMA,
+  PREFERENCE_SYNTHESIS_VERSION,
   type MediaAnalysisRecord,
+  type PreferenceSynthesisResult,
 } from "./preference-synthesis";
 import { PREFERENCE_QUESTIONS, type PreferenceQuestionDefinition } from "./preference-profile";
 import type { ArchiveContentRecord } from "@/lib/db/scan-store";
@@ -108,5 +111,37 @@ describe("parseSynthesisResponse", () => {
     const answers = parseSynthesisResponse({}, PREFERENCE_QUESTIONS);
     expect(answers).toHaveLength(PREFERENCE_QUESTIONS.length);
     expect(answers.every((a) => a.status === "unknown")).toBe(true);
+  });
+});
+
+describe("toRenderablePreferenceProfile", () => {
+  it("maps the synthesis into the dashboard-renderable shape with coverage, sections, and depth", () => {
+    const answers = parseSynthesisResponse(
+      { candidates: [{ content: { parts: [{ text: JSON.stringify({ answers: [{ questionId: PREFERENCE_QUESTIONS[0].id, status: "answered", answer: "Quiet luxury", confidence: "high", source: "observed", evidenceIds: ["a"], mediaEvidenceIds: ["m1"] }] }) }] } }] },
+      PREFERENCE_QUESTIONS,
+    );
+    const result: PreferenceSynthesisResult = {
+      version: PREFERENCE_SYNTHESIS_VERSION,
+      model: "gemini-2.5-flash",
+      answers,
+      context: { platforms: ["instagram"], contentItems: 684, mediaAnalyzed: 512 },
+    };
+    const depth = {
+      perPlatform: { instagram: { items: 684, mediaTotal: 684, mediaAnalyzed: 512, mediaPending: 172, mediaFailed: 0 } },
+      totals: { items: 684, mediaTotal: 684, mediaAnalyzed: 512, mediaPending: 172 },
+    };
+    const renderable = toRenderablePreferenceProfile(result, depth, { generatedAt: "2026-06-18T00:00:00Z", preferenceStatus: "partial" });
+
+    expect(renderable.questionAnswers).toHaveLength(PREFERENCE_QUESTIONS.length);
+    expect(renderable.questionCoverage.total).toBe(PREFERENCE_QUESTIONS.length);
+    expect(renderable.questionCoverage.answered).toBe(1);
+    // section summaries cover all 6 sections; first answer mapped with confidence score + media pass
+    expect(renderable.sectionSummaries.length).toBeGreaterThanOrEqual(6);
+    const first = renderable.questionAnswers.find((a) => a.questionId === PREFERENCE_QUESTIONS[0].id) as Record<string, unknown>;
+    expect((first.confidence as { level: string }).level).toBe("high");
+    expect(first.updatedFrom).toBe("media_pass");
+    expect(renderable.archiveDepth).toBe(depth);
+    expect(renderable.preferenceStatus).toBe("partial");
+    expect(renderable.summary).toContain("684 posts");
   });
 });

@@ -654,6 +654,27 @@ button { font-family: inherit; cursor: pointer; }
   grid-template-columns: repeat(5, minmax(0, 1fr));
   border: 1px solid var(--hair);
 }
+/* v3 archive-depth strip — per-platform "684/1024 · 512 media" pills + "analyzing media…" badge. */
+.pref-depth {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.pref-depth-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-pill);
+  background: rgba(255,255,255,0.72);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.pref-depth-pill b { font-family: var(--font-heading); text-transform: capitalize; }
+.pref-depth-partial { background: var(--pastel-blue); border-color: rgba(143,182,255,0.36); }
 .pref-metrics span {
   min-width: 0;
   padding: 12px 10px;
@@ -1407,6 +1428,21 @@ button { font-family: inherit; cursor: pointer; }
 .connector-row.recommended {
   border-color: rgba(143,182,255,0.42);
 }
+/* Returning-user upgrade banner on the intake screens — explains the re-route + entices a re-run. */
+.upgrade-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 6px 0 2px;
+  padding: 11px 14px;
+  border: 1px solid rgba(143,182,255,0.42);
+  border-radius: var(--radius-pill);
+  background: var(--pastel-blue);
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+.upgrade-banner .upgrade-spark { display: inline-flex; flex: none; color: var(--blue); }
 .connector-chevron {
   display: grid;
   place-items: center;

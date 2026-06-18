@@ -771,6 +771,44 @@ export async function updateMediaAssetAnalysis(input: {
   }
 }
 
+/** The user's current stored preference profile (latest, by userId) — used to serve the v3
+ *  synthesis once the worker has produced it. */
+export async function getUserPreferenceProfile<TProfile = unknown>(
+  firebaseUid: string,
+): Promise<{ status: string; version: string; profile: TProfile } | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    const row = await prisma.userPreferenceProfile.findUnique({
+      where: { userId: user.id },
+      select: { status: true, version: true, profile: true },
+    });
+    if (!row) return null;
+    return { status: row.status, version: row.version, profile: row.profile as TProfile };
+  } catch {
+    return null;
+  }
+}
+
+/** True while the user has deep-archive or recompute jobs still queued/processing — the dashboard
+ *  keeps the preference layer "running" so the client poll picks up the v3 upgrade. */
+export async function hasPendingPreferenceWork(firebaseUid: string): Promise<boolean> {
+  const prisma = getPrismaClient();
+  if (!prisma) return false;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid }, select: { id: true } });
+    if (!user) return false;
+    const pending = await prisma.socialRefreshJob.count({
+      where: { userId: user.id, status: { in: ["queued", "processing"] } },
+    });
+    return pending > 0;
+  } catch {
+    return false;
+  }
+}
+
 /* ── SocialRefreshJob queue: deep-scrape + recompute jobs drained by the worker ─────────────── */
 
 export interface ClaimedRefreshJob {

@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { verifyOneRequest } from "@/lib/auth/verify";
 import {
   getResearchJob,
+  getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
+  hasPendingPreferenceWork,
   indexSocialPreferenceEvidence,
   logUserPreferenceRun,
   saveUserPreferenceProfile,
@@ -15,6 +17,7 @@ import {
   QUESTION_REGISTRY_VERSION,
   type UserPreferenceProfile,
 } from "@/lib/social-intelligence/preference-profile";
+import { PREFERENCE_SYNTHESIS_VERSION } from "@/lib/social-intelligence/preference-synthesis";
 import type { OneDashboardResult, OneSubjectInput, SocialProfileFull } from "@/lib/ria/types";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 
@@ -106,6 +109,17 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus: result.preferenceStatus, result });
     }
 
+    // v3 upgrade: once the Vertex synthesis worker has produced a profile it supersedes the v2 fast
+    // pass. While still "partial" (media analyzing) report "running" so the client keeps polling.
+    const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
+    if (v3 && v3.version === PREFERENCE_SYNTHESIS_VERSION && v3.profile) {
+      const v3Status = v3.status === "completed" ? "completed" : "running";
+      const merged = result
+        ? await updateDeepTier(verified.uid, id, { preferenceStatus: v3Status, preferenceProfile: v3.profile })
+        : null;
+      return NextResponse.json({ ok: true, preferenceStatus: v3Status, preferenceProfile: v3.profile, result: merged ?? result });
+    }
+
     const stored = (scan.input ?? {}) as Partial<OneSubjectInput>;
     if (stored.socialPreferenceConsent !== true || !stored.socialProfiles?.length) {
       const durationMs = Date.now() - startedAt;
@@ -136,6 +150,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus, preferenceProfile: null, result: merged ?? result });
     }
 
+    // Keep the layer "running" while deep-archive/media jobs are still in flight so the client poll
+    // upgrades the fast pass to the v3 synthesis once the worker finishes.
+    const pendingWork = await hasPendingPreferenceWork(verified.uid).catch(() => false);
+    const settledStatus: "running" | "completed" = pendingWork ? "running" : "completed";
+
     const inputHash = profileInputHash({ linkedinProfile: stored.linkedinProfile, socialProfiles: stored.socialProfiles });
     const existing = await getUserPreferenceProfileByInputHash<UserPreferenceProfile>(verified.uid, inputHash).catch(() => null);
     if (existing?.status === "completed" && isCurrentPreferenceProfile(existing)) {
@@ -164,10 +183,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         ...counts,
       });
       if (!result) {
-        return NextResponse.json({ ok: true, preferenceStatus: "completed", preferenceProfile: existing, result: null });
+        return NextResponse.json({ ok: true, preferenceStatus: settledStatus, preferenceProfile: existing, result: null });
       }
       const merged = await updateDeepTier(verified.uid, id, {
-        preferenceStatus: "completed",
+        preferenceStatus: settledStatus,
         preferenceVersion: existing.version,
         preferenceInputHash: inputHash,
         preferenceProfile: existing,
@@ -175,9 +194,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       });
       return NextResponse.json({
         ok: true,
-        preferenceStatus: "completed",
+        preferenceStatus: settledStatus,
         preferenceProfile: existing,
-        result: merged ?? { ...result, preferenceStatus: "completed", preferenceVersion: existing.version, preferenceInputHash: inputHash, preferenceProfile: existing },
+        result: merged ?? { ...result, preferenceStatus: settledStatus, preferenceVersion: existing.version, preferenceInputHash: inputHash, preferenceProfile: existing },
       });
     }
 
@@ -235,10 +254,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     });
 
     if (!result) {
-      return NextResponse.json({ ok: true, preferenceStatus: "completed", preferenceProfile: profile, result: null });
+      return NextResponse.json({ ok: true, preferenceStatus: settledStatus, preferenceProfile: profile, result: null });
     }
     const merged = await updateDeepTier(verified.uid, id, {
-      preferenceStatus: "completed",
+      preferenceStatus: settledStatus,
       preferenceVersion: profile.version,
       preferenceInputHash: inputHash,
       preferenceProfile: profile,
@@ -246,9 +265,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     });
     return NextResponse.json({
       ok: true,
-      preferenceStatus: "completed",
+      preferenceStatus: settledStatus,
       preferenceProfile: profile,
-      result: merged ?? { ...result, preferenceStatus: "completed", preferenceVersion: profile.version, preferenceInputHash: inputHash, preferenceProfile: profile },
+      result: merged ?? { ...result, preferenceStatus: settledStatus, preferenceVersion: profile.version, preferenceInputHash: inputHash, preferenceProfile: profile },
     });
   } catch (error) {
     const status = statusCodeOf(error);

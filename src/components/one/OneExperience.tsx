@@ -1053,6 +1053,7 @@ function PreCollect({
   onSocialPreferenceConsentChange,
   onCollect,
   busy,
+  upgradeNotice,
 }: {
   user: Identity;
   profile: LinkedInProfileFull | null;
@@ -1071,6 +1072,7 @@ function PreCollect({
   onSocialPreferenceConsentChange: (value: boolean) => void;
   onCollect: () => void;
   busy: boolean;
+  upgradeNotice?: string;
 }) {
   const initials = initialsForName(user.name);
   const verifications = profile?.verifications ?? [];
@@ -1105,6 +1107,13 @@ function PreCollect({
           <p className="eyebrow">Agent ready</p>
           <h1 className="display pc-title">One will connect what matters.</h1>
         </div>
+
+        {upgradeNotice ? (
+          <div className="upgrade-banner" role="status">
+            <span className="upgrade-spark">{Icons.spark()}</span>
+            <span>{upgradeNotice}</span>
+          </div>
+        ) : null}
 
         <div className="pc-box">
           <div className="pc-id">
@@ -1741,6 +1750,25 @@ function PreferenceIntelligence({
           ))}
         </div>
       </div>
+
+      {(() => {
+        // v3 archive depth strip — e.g. "instagram 684/1024 · 512/684 media". Present only on the
+        // v3 synthesis profile; the v2 fast pass omits it.
+        const depth = (profile as { archiveDepth?: { perPlatform?: Record<string, { items: number; mediaTotal: number; mediaAnalyzed: number }> } }).archiveDepth;
+        const v3Status = (profile as { preferenceStatus?: string }).preferenceStatus;
+        const rows = depth?.perPlatform ? Object.entries(depth.perPlatform).filter(([, d]) => d.items || d.mediaTotal) : [];
+        if (!rows.length) return null;
+        return (
+          <div className="pref-depth" aria-label="Archive depth">
+            {rows.map(([platform, d]) => (
+              <span key={platform} className="pref-depth-pill">
+                <b>{platform}</b> {d.items}/1024{d.mediaTotal ? ` · ${d.mediaAnalyzed}/${d.mediaTotal} media` : ""}
+              </span>
+            ))}
+            {v3Status === "partial" ? <span className="pref-depth-pill pref-depth-partial">analyzing media…</span> : null}
+          </div>
+        );
+      })()}
 
       {questionAnswers.length ? (
         <div className="pref-question-sections" aria-label="Preference question answers">
@@ -2742,6 +2770,7 @@ function ConnectLinkedIn({
   onInstagramConnected,
   onThreadsConnected,
   onXConnected,
+  upgradeNotice,
 }: {
   user: Identity;
   authUser: ClientUser;
@@ -2752,6 +2781,7 @@ function ConnectLinkedIn({
   onInstagramConnected: (profile: InstagramProfileFull) => void;
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onXConnected: (profile: XProfileFull) => void;
+  upgradeNotice?: string;
 }) {
   return (
     <div className="screen social-connect screen-enter">
@@ -2759,6 +2789,12 @@ function ConnectLinkedIn({
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <p className="eyebrow">Connectors</p>
           <h1 className="display" style={{ fontSize: "clamp(28px,4vw,44px)" }}>Choose what One can read.</h1>
+          {upgradeNotice ? (
+            <div className="upgrade-banner" role="status">
+              <span className="upgrade-spark">{Icons.spark()}</span>
+              <span>{upgradeNotice}</span>
+            </div>
+          ) : null}
           <p className="sub" style={{ margin: "0 auto" }}>
             LinkedIn is required for guest sessions. Tap any connector to add or update it.
           </p>
@@ -2871,6 +2907,9 @@ export default function OneExperience() {
   const [geoBusy, setGeoBusy] = useState(false); // waiting on the browser location prompt
   const [geoReason, setGeoReason] = useState<GeoReason>("denied"); // drives LocationFallback copy
   const [notice, setNotice] = useState(""); // brief confirmation line on landing (e.g. after delete)
+  // Shown on the intake screens when a returning user is routed back because the intelligence layer
+  // was upgraded — tells them WHY they're here and entices a re-run on the new deployment.
+  const [upgradeNotice, setUpgradeNotice] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -2947,6 +2986,9 @@ export default function OneExperience() {
     setEmailDelivery(null);
     setError("");
     resetProgressiveLayers();
+    setUpgradeNotice(
+      "One just leveled up. Send One again to unlock your upgraded intelligence — deeper preference insights read from your social posts and media.",
+    );
     const linkedInConnected = hasUrlEnrichedLinkedInProfile(liProfile);
     setStage(nextStage ?? (requiresLinkedIn && !linkedInConnected ? "connect" : "precollect"));
   };
@@ -4205,6 +4247,7 @@ export default function OneExperience() {
 
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
+    setUpgradeNotice(""); // they're re-running on the new layer — clear the upgrade prompt
     if (requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile)) {
       scopedDel(authUser, LS_LI_FULL);
       scopedDel(authUser, LS_LI_CONNECTED);
@@ -4484,6 +4527,7 @@ export default function OneExperience() {
         onInstagramConnected={onInstagramConnected}
         onThreadsConnected={onThreadsConnected}
         onXConnected={onXConnected}
+        upgradeNotice={upgradeNotice}
       />
     );
   else if (stage === "precollect")
@@ -4507,6 +4551,7 @@ export default function OneExperience() {
         onSocialPreferenceConsentChange={onSocialPreferenceConsentChanged}
         onCollect={startCollect}
         busy={geoBusy}
+        upgradeNotice={upgradeNotice}
       />
     );
   else if (stage === "disambiguate")
