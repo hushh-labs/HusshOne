@@ -18,6 +18,7 @@ import {
   getCompletedMediaAnalyses,
   getLatestScanForUser,
   getSocialContentItems,
+  getUserPreferenceProfile,
   logUserPreferenceRun,
   saveUserPreferenceProfile,
   updateDeepTier,
@@ -25,7 +26,7 @@ import {
 } from "@/lib/db/scan-store";
 import { buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
 import { PREFERENCE_QUESTIONS } from "@/lib/social-intelligence/preference-profile";
-import type { SynthesizedAnswer } from "@/lib/social-intelligence/preference-synthesis";
+import type { SynthAnswerStatus, SynthesizedAnswer, SynthConfidence, SynthSource } from "@/lib/social-intelligence/preference-synthesis";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -41,6 +42,48 @@ const RE_PASS_TARGET = 24;
 const MAX_RE_PASSES = 2;
 
 const isAnswered = (a: SynthesizedAnswer): boolean => a.status === "answered" || a.status === "inferred";
+const isAnsweredStatus = (s: unknown): boolean => s === "answered" || s === "inferred";
+
+// keep-best across runs: carry a prior answered/inferred answer forward when THIS (stochastic) run came
+// back empty, so pivots never regress. Bounded by an age cap (don't pin a deleted-post answer forever).
+const KEEP_BEST_MAX_AGE_MS = (Number(process.env.KEEP_BEST_MAX_AGE_DAYS) || 30) * 24 * 60 * 60 * 1000;
+const SENSITIVE_IDS = new Set(PREFERENCE_QUESTIONS.filter((q) => q.sensitive).map((q) => q.id));
+
+/** Map a stored RenderablePreferenceProfile answer (rendered shape) back to a SynthesizedAnswer so it can
+ *  be carried forward. Returns null unless it was a real answered/inferred answer. */
+function priorAnswerToSynth(raw: unknown): SynthesizedAnswer | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (!isAnsweredStatus(r.status)) return null;
+  const conf = r.confidence && typeof r.confidence === "object" ? (r.confidence as Record<string, unknown>) : {};
+  return {
+    questionId: String(r.questionId ?? ""),
+    sectionId: String(r.sectionId ?? ""),
+    prompt: typeof r.prompt === "string" ? r.prompt : "",
+    status: r.status as SynthAnswerStatus,
+    answer: typeof r.answer === "string" ? r.answer : null,
+    confidence: (typeof conf.level === "string" ? conf.level : "low") as SynthConfidence,
+    source: (typeof r.sourceMode === "string" ? r.sourceMode : "not_available") as SynthSource,
+    evidenceIds: Array.isArray(r.evidenceIds) ? (r.evidenceIds as string[]) : [],
+    mediaEvidenceIds: Array.isArray(r.mediaEvidenceIds) ? (r.mediaEvidenceIds as string[]) : [],
+    why: typeof r.unknownReason === "string" ? null : null,
+    needsUserConfirmation: Boolean(r.needsUserConfirmation),
+  };
+}
+
+/** Build the carry-forward map from the prior stored profile (only fresh-enough answered answers). */
+function buildPriorAnswerMap(prior: { generatedAt?: unknown; questionAnswers?: unknown } | null): Map<string, SynthesizedAnswer> {
+  const map = new Map<string, SynthesizedAnswer>();
+  if (!prior) return map;
+  const generatedAt = typeof prior.generatedAt === "string" ? Date.parse(prior.generatedAt) : NaN;
+  if (Number.isFinite(generatedAt) && Date.now() - generatedAt > KEEP_BEST_MAX_AGE_MS) return map; // too old → don't carry
+  const answers = Array.isArray(prior.questionAnswers) ? prior.questionAnswers : [];
+  for (const raw of answers) {
+    const a = priorAnswerToSynth(raw);
+    if (a && a.questionId) map.set(a.questionId, a);
+  }
+  return map;
+}
 
 export async function POST(request: Request) {
   try {
@@ -64,10 +107,11 @@ export async function POST(request: Request) {
         scanRunId?: string | null;
         professionalContext?: string | null;
       };
-      const [contentItems, mediaAnalyses, depth] = await Promise.all([
+      const [contentItems, mediaAnalyses, depth, priorStored] = await Promise.all([
         getSocialContentItems(job.firebaseUid, { limit: 1024 }),
         getCompletedMediaAnalyses(job.firebaseUid, { limit: 1024 }),
         getArchiveDepthSummary(job.firebaseUid),
+        getUserPreferenceProfile<{ generatedAt?: unknown; questionAnswers?: unknown }>(job.firebaseUid).catch(() => null),
       ]);
       if (!contentItems.length) {
         // Nothing indexed yet — complete quietly; a later archive job will re-enqueue.
@@ -75,6 +119,7 @@ export async function POST(request: Request) {
         results.push({ id: job.id, ok: true, skipped: "no_archive" });
         continue;
       }
+      const priorAnswers = buildPriorAnswerMap(priorStored?.profile ?? null);
 
       const professionalContext = typeof meta.professionalContext === "string" && meta.professionalContext.trim()
         ? meta.professionalContext.trim()
@@ -132,7 +177,22 @@ export async function POST(request: Request) {
 
       // Rebuild the synthesis result with the merged answers, preserving original question order.
       const mergedAnswers = synthesis.answers.map((a) => merged.get(a.questionId) ?? a);
-      const mergedSynthesis = { ...synthesis, answers: mergedAnswers };
+
+      // keep-best across runs: where THIS run regressed a question to unanswered but a prior run had it
+      // answered (and the prior is fresh enough + passes the sensitive guardrail), carry the prior answer
+      // forward. New data wins whenever it has ANY signal; we only fall back to prior on no-signal. This
+      // makes answeredTotal monotonic so pivots never drop between runs.
+      let carriedForward = 0;
+      const keptAnswers = mergedAnswers.map((a) => {
+        if (isAnswered(a)) return a;
+        const prior = priorAnswers.get(a.questionId);
+        if (!prior) return a;
+        if (SENSITIVE_IDS.has(a.questionId) && prior.source !== "self_declared") return a;
+        carriedForward += 1;
+        return prior;
+      });
+      const mergedSynthesis = { ...synthesis, answers: keptAnswers };
+      answeredTotal = keptAnswers.filter(isAnswered).length;
 
       const mediaPending = depth?.totals ? depth.totals.mediaTotal - depth.totals.mediaAnalyzed : 0;
       // Reveal when coverage crosses the show threshold (snappy, even if media still trickling) OR
@@ -192,6 +252,7 @@ export async function POST(request: Request) {
             needsConfirmation: coverage.needsConfirmation,
             unknown: coverage.unknown,
             answeredTotal,
+            carriedForward,
             passes,
             durationMs,
             perSection,
@@ -210,6 +271,7 @@ export async function POST(request: Request) {
             needsConfirmation: coverage.needsConfirmation,
             unknown: coverage.unknown,
             answeredTotal,
+            carriedForward,
             passes,
             mediaPending,
           },
@@ -220,7 +282,7 @@ export async function POST(request: Request) {
       }
 
       await completeSocialRefreshJob(job.id);
-      results.push({ id: job.id, ok: true, preferenceStatus, answeredTotal, passes, mediaPending });
+      results.push({ id: job.id, ok: true, preferenceStatus, answeredTotal, carriedForward, passes, mediaPending });
     } catch (error) {
       await failSocialRefreshJob(job.id, error instanceof Error ? error.message : "recompute worker error");
       results.push({ id: job.id, ok: false, reason: "exception" });

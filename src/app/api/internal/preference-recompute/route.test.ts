@@ -70,6 +70,7 @@ const mocks = vi.hoisted(() => ({
   getCompletedMediaAnalyses: vi.fn(async () => []),
   getLatestScanForUser: vi.fn(async () => ({ id: "scan-1" })),
   getSocialContentItems: vi.fn(async () => [{ itemId: "i1" }]),
+  getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   logUserPreferenceRun: vi.fn(async () => ({ id: "log-1", createdAt: "now" })),
   saveUserPreferenceProfile: vi.fn(async () => undefined),
   updateDeepTier: vi.fn(async () => undefined),
@@ -91,6 +92,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   getCompletedMediaAnalyses: mocks.getCompletedMediaAnalyses,
   getLatestScanForUser: mocks.getLatestScanForUser,
   getSocialContentItems: mocks.getSocialContentItems,
+  getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   logUserPreferenceRun: mocks.logUserPreferenceRun,
   saveUserPreferenceProfile: mocks.saveUserPreferenceProfile,
   updateDeepTier: mocks.updateDeepTier,
@@ -134,6 +136,7 @@ describe("POST /api/internal/preference-recompute", () => {
     mocks.getCompletedMediaAnalyses.mockResolvedValue([]);
     mocks.getArchiveDepthSummary.mockResolvedValue({ totals: { mediaTotal: 0, mediaAnalyzed: 0 } });
     mocks.getLatestScanForUser.mockResolvedValue({ id: "scan-1" });
+    mocks.getUserPreferenceProfile.mockResolvedValue(null);
     mocks.toRenderablePreferenceProfile.mockImplementation(renderProfile as never);
   });
 
@@ -277,5 +280,92 @@ describe("POST /api/internal/preference-recompute", () => {
     const res = await POST(req({ authorization: "Bearer bad" }));
     expect(res.status).toBe(401);
     expect(mocks.claimSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+
+  // ── keep-best across runs: pivots never regress ─────────────────────────────────────────────
+  function priorAnswer(id: string, status: Status, sourceMode = "observed") {
+    const q = PREFERENCE_QUESTIONS.find((x) => x.id === id)!;
+    return {
+      questionId: id,
+      sectionId: q.sectionId,
+      prompt: q.prompt,
+      status,
+      answer: status === "unknown" ? null : "prior",
+      confidence: { level: "medium", score: 0.65, rationale: "" },
+      sourceMode,
+      evidenceIds: [],
+      mediaEvidenceIds: [],
+      needsUserConfirmation: false,
+    };
+  }
+  function priorProfile(answeredCount: number, ageDays = 0) {
+    return {
+      status: "completed",
+      version: "test-v3",
+      profile: {
+        generatedAt: new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000).toISOString(),
+        // self_declared so the sensitive-question guardrail (tested separately) doesn't reduce the count.
+        questionAnswers: ALL_IDS.map((id, i) => priorAnswer(id, i < answeredCount ? "answered" : "unknown", "self_declared")),
+      },
+    };
+  }
+
+  it("carries prior answers forward where this run regressed (monotonic — pivots never drop)", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValue(priorProfile(28)); // prior had 28/30, fresh
+    mocks.synthesizePreferences
+      .mockResolvedValueOnce(fullResult(6))
+      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    // New run answered 6; prior covered indices 0..27 → unknowns 6..27 (22) carried → 28 total.
+    expect(json.results[0]).toMatchObject({ answeredTotal: 28, carriedForward: 22, preferenceStatus: "completed" });
+  });
+
+  it("does NOT carry a sensitive question unless the prior was self-declared", async () => {
+    const sensitiveId = PREFERENCE_QUESTIONS.find((q) => q.sensitive)!.id;
+    mocks.getUserPreferenceProfile.mockResolvedValue({
+      status: "completed",
+      version: "test-v3",
+      profile: { generatedAt: new Date().toISOString(), questionAnswers: [priorAnswer(sensitiveId, "answered", "observed")] },
+    });
+    mocks.synthesizePreferences
+      .mockResolvedValueOnce(fullResult(0))
+      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    expect(json.results[0]).toMatchObject({ carriedForward: 0 });
+  });
+
+  it("DOES carry a sensitive question when the prior was self-declared", async () => {
+    const sensitiveId = PREFERENCE_QUESTIONS.find((q) => q.sensitive)!.id;
+    mocks.getUserPreferenceProfile.mockResolvedValue({
+      status: "completed",
+      version: "test-v3",
+      profile: { generatedAt: new Date().toISOString(), questionAnswers: [priorAnswer(sensitiveId, "answered", "self_declared")] },
+    });
+    mocks.synthesizePreferences
+      .mockResolvedValueOnce(fullResult(0))
+      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    expect(json.results[0]).toMatchObject({ carriedForward: 1, answeredTotal: 1 });
+  });
+
+  it("does NOT carry from a prior profile older than the age cap", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValue(priorProfile(28, 40)); // 40 days > 30-day cap
+    mocks.synthesizePreferences
+      .mockResolvedValueOnce(fullResult(6))
+      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
+
+    const res = await POST(req());
+    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
+
+    expect(json.results[0]).toMatchObject({ answeredTotal: 6, carriedForward: 0 });
   });
 });

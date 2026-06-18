@@ -90,6 +90,7 @@ export async function POST(request: Request) {
         url?: string;
         maxPosts?: number;
         scanRunId?: string | null;
+        refresh?: boolean;
       };
       if (!job.firebaseUid || !meta.url) {
         await failSocialRefreshJob(job.id, "missing firebaseUid or url");
@@ -116,6 +117,16 @@ export async function POST(request: Request) {
         firebaseUid: job.firebaseUid,
         jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: meta.scanRunId ?? "latest", metadata: { scanRunId: meta.scanRunId ?? null }, priority: -1 }],
       });
+
+      // Freshness refresh job: just pull the recent window to catch NEW posts (upsert adds them), recompute,
+      // and COMPLETE — do NOT re-grow the ladder (the full 1024 depth already exists; re-growing every few
+      // days would be wasteful). Branch out before the staged-grow block so `refresh` never leaks into a
+      // grow re-enqueue.
+      if (meta.refresh) {
+        await completeSocialRefreshJob(job.id);
+        results.push({ id: job.id, ok: true, platform: job.platform, indexed, refresh: true });
+        continue;
+      }
 
       // Staged growth: if this batch came back full (≈ requested) and we're below the ceiling and the
       // account has more, re-arm the SAME deep job for the next +STEP batch (resetAttempts so the climb

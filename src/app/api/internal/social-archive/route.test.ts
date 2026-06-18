@@ -140,4 +140,18 @@ describe("POST /api/internal/social-archive — staged batched deep-scrape", () 
     expect(findEnqueue("instagram")).toBeFalsy();
     expect(mocks.completeSocialRefreshJob).not.toHaveBeenCalled();
   });
+
+  it("refresh job: indexes + recomputes + completes, and NEVER grows the ladder", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([
+      { id: "job-ig", firebaseUid: "uid-1", platform: "instagram", publicId: "ankit", metadata: { url: "https://www.instagram.com/ankit/", maxPosts: 240, scanRunId: "scan-1", refresh: true }, attempts: 1 },
+    ]);
+    // Full batch from a big account — WOULD trigger a grow if this weren't a refresh job.
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(240, "900"));
+
+    await POST(req());
+
+    expect(findEnqueue("instagram")).toBeFalsy(); // no grow re-enqueue
+    expect(mocks.completeSocialRefreshJob).toHaveBeenCalledWith("job-ig");
+    expect(findEnqueue("__recompute__")).toBeTruthy(); // recompute still kicked so new posts surface
+  });
 });

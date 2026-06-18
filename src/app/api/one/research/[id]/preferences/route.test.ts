@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
   getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
+  getArchiveFreshness: vi.fn(async (): Promise<number | null> => null),
   hasPendingPreferenceWork: vi.fn(async () => false),
   indexSocialPreferenceEvidence: vi.fn(async () => ({ contentItems: 1, mediaAssets: 1 })),
   logUserPreferenceRun: vi.fn(async () => undefined),
@@ -31,6 +32,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
   getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
+  getArchiveFreshness: mocks.getArchiveFreshness,
   hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   indexSocialPreferenceEvidence: mocks.indexSocialPreferenceEvidence,
   logUserPreferenceRun: mocks.logUserPreferenceRun,
@@ -512,5 +514,68 @@ describe("GET /api/one/research/[id]/preferences", () => {
     // Never drops to the weaker v2 fast-pass when a v3 profile already exists.
     expect(mocks.saveUserPreferenceProfile).not.toHaveBeenCalled();
     expect(mocks.indexSocialPreferenceEvidence).not.toHaveBeenCalled();
+  });
+
+  // ── lazy freshness refresh on revisit ───────────────────────────────────────────────────────
+  function currentV3() {
+    return {
+      version: PREFERENCE_SYNTHESIS_VERSION,
+      status: "completed",
+      profile: {
+        summary: "current",
+        questionCoverage: { total: 30, answered: 0, inferred: 25, needsConfirmation: 0, unknown: 5, blockedByAccess: 0 },
+        updatedFrom: { platforms: ["instagram"], indexedItems: 240, mediaAssets: 100, externalLinks: 0, ocrSignals: 0 },
+        collage: [],
+      },
+    };
+  }
+  function scanWithSocials() {
+    return {
+      status: "completed",
+      normalizedResult: result,
+      input: { socialPreferenceConsent: true, socialProfiles: [{ platform: "Instagram", username: "a", profileUrl: "https://www.instagram.com/a/" }] },
+    };
+  }
+  const TEN_DAYS_AGO = Date.now() - 10 * 24 * 60 * 60 * 1000;
+
+  it("current v3 + stale archive + connected socials → enqueues a refresh deep-scrape, still completed", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValueOnce(currentV3());
+    mocks.getResearchJob.mockResolvedValueOnce(scanWithSocials());
+    mocks.getArchiveFreshness.mockResolvedValueOnce(TEN_DAYS_AGO);
+    mocks.hasPendingPreferenceWork.mockResolvedValueOnce(false);
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string };
+
+    expect(json.preferenceStatus).toBe("completed");
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "firebase-1",
+        jobs: [expect.objectContaining({ platform: "instagram", publicId: "a", metadata: expect.objectContaining({ refresh: true, maxPosts: 240 }) })],
+      }),
+    );
+  });
+
+  it("current v3 + FRESH archive → no refresh enqueue", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValueOnce(currentV3());
+    mocks.getResearchJob.mockResolvedValueOnce(scanWithSocials());
+    mocks.getArchiveFreshness.mockResolvedValueOnce(Date.now()); // just scraped → fresh
+
+    const res = await GET(request(), context());
+    await res.json();
+
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+
+  it("current v3 + stale BUT work already in flight → no refresh enqueue (no thrash)", async () => {
+    mocks.getUserPreferenceProfile.mockResolvedValueOnce(currentV3());
+    mocks.getResearchJob.mockResolvedValueOnce(scanWithSocials());
+    mocks.getArchiveFreshness.mockResolvedValueOnce(TEN_DAYS_AGO);
+    mocks.hasPendingPreferenceWork.mockResolvedValueOnce(true);
+
+    const res = await GET(request(), context());
+    await res.json();
+
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
   });
 });
