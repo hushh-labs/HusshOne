@@ -1,4 +1,4 @@
-import { normalizeInstagramUrl } from "@/lib/auth/identity";
+import { normalizeInstagramUrl, instagramHandleFromUrl } from "@/lib/auth/identity";
 
 export interface InstagramProfileStats {
   posts?: string | null;
@@ -78,4 +78,24 @@ export function hasInstagramProfile(profile: InstagramProfileFull | null | undef
   if (!profile || profile.platform !== "Instagram" || profile.source !== "scraper") return false;
   if (!profile.username || !normalizeInstagramUrl(profile.profileUrl)) return false;
   return true;
+}
+
+/** Minimal "connected" profile from a normalized Instagram URL — no scrape.
+ *  Used by the connect handshake; posts/media are built later in the
+ *  background deep-scrape pipeline. Returns null if the URL is not a
+ *  canonical Instagram profile URL. */
+export function buildInstagramHandshakeProfile(normalizedUrl: string): InstagramProfileFull | null {
+  const username = instagramHandleFromUrl(normalizedUrl);
+  if (!username) return null;
+  return {
+    platform: "Instagram",
+    username,
+    displayName: null,
+    bio: null,
+    avatarUrl: null,
+    externalUrl: null,
+    profileUrl: normalizedUrl,
+    source: "scraper",
+    connectedAt: new Date().toISOString(),
+  };
 }

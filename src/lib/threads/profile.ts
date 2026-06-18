@@ -1,4 +1,4 @@
-import { normalizeThreadsUrl } from "@/lib/auth/identity";
+import { normalizeThreadsUrl, threadsHandleFromUrl } from "@/lib/auth/identity";
 
 export interface ThreadsProfileStats {
   followers?: string | null;
@@ -72,4 +72,24 @@ export function hasThreadsProfile(profile: ThreadsProfileFull | null | undefined
   if (!profile || profile.platform !== "Threads" || profile.source !== "scraper") return false;
   if (!profile.username || !normalizeThreadsUrl(profile.profileUrl)) return false;
   return true;
+}
+
+/** Minimal "connected" profile from a normalized Threads URL — no scrape.
+ *  Used by the connect handshake; posts are built later in the background
+ *  deep-scrape pipeline. Returns null if the URL is not a canonical Threads
+ *  profile URL. */
+export function buildThreadsHandshakeProfile(normalizedUrl: string): ThreadsProfileFull | null {
+  const username = threadsHandleFromUrl(normalizedUrl);
+  if (!username) return null;
+  return {
+    platform: "Threads",
+    username,
+    displayName: null,
+    bio: null,
+    avatarUrl: null,
+    externalUrl: null,
+    profileUrl: normalizedUrl,
+    source: "scraper",
+    connectedAt: new Date().toISOString(),
+  };
 }
