@@ -21,6 +21,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   completeScanRun: vi.fn(async () => undefined),
   failScanRun: vi.fn(async () => undefined),
   recordScanDeadline: vi.fn(async () => undefined),
+  enqueueSocialRefreshJobs: vi.fn(async () => 0),
 }));
 
 vi.mock("@/lib/research/client", () => ({
@@ -451,5 +452,48 @@ describe("POST /api/one/research", () => {
 
     const research = await import("@/lib/research/client");
     expect(research.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("enqueues the first deep-scrape batch at maxPosts 240 (not 1024 in one shot)", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(
+      makeRequest({
+        name: "Ankit Kumar Singh",
+        email: "ankit@example.com",
+        latitude: 18.564739,
+        longitude: 73.740322,
+        consentAttestation: true,
+        purpose: "self_audit",
+        linkedinProfile,
+        socialPreferenceConsent: true,
+        socialProfiles: [
+          {
+            platform: "Instagram",
+            username: "ankit_ya_i_am",
+            displayName: "Ankit Kumar Singh",
+            bio: "Builder at Hushh",
+            avatarUrl: null,
+            externalUrl: null,
+            profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+            isVerified: false,
+            isPrivate: false,
+            stats: { posts: "900", followers: "1,234", following: "567" },
+            recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", caption: "Demo" }],
+            source: "scraper",
+          },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await readStream(response);
+
+    const db = await import("@/lib/db/scan-store");
+    expect(db.enqueueSocialRefreshJobs).toHaveBeenCalledTimes(1);
+    const arg = vi.mocked(db.enqueueSocialRefreshJobs).mock.calls[0]?.[0] as {
+      jobs: Array<{ platform: string; publicId: string; metadata: { maxPosts?: number } }>;
+    };
+    expect(arg.jobs[0]).toMatchObject({ platform: "instagram", publicId: "ankit_ya_i_am" });
+    expect(arg.jobs[0]?.metadata?.maxPosts).toBe(240);
   });
 });

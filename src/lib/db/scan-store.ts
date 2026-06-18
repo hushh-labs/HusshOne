@@ -826,7 +826,7 @@ export const PREFERENCE_RECOMPUTE_PLATFORM = "__recompute__";
 /** Enqueue (or re-arm) one deep-archive refresh job per connected platform. */
 export async function enqueueSocialRefreshJobs(input: {
   firebaseUid: string;
-  jobs: Array<{ platform: string; publicId: string; metadata?: unknown; priority?: number }>;
+  jobs: Array<{ platform: string; publicId: string; metadata?: unknown; priority?: number; resetAttempts?: boolean }>;
 }): Promise<number> {
   const prisma = getPrismaClient();
   if (!prisma) return 0;
@@ -848,6 +848,9 @@ export async function enqueueSocialRefreshJobs(input: {
               nextRunAt: new Date(),
               lockedAt: null,
               lastError: null,
+              // Staged grow re-enqueues set this so the climbing 240→1024 ladder doesn't exhaust the
+              // 5-attempt budget (every claim increments attempts) and die before reaching the ceiling.
+              ...(job.resetAttempts ? { attempts: 0 } : {}),
               ...(job.metadata !== undefined ? { metadata: safeJson(job.metadata) } : {}),
               ...(typeof job.priority === "number" ? { priority: job.priority } : {}),
             },

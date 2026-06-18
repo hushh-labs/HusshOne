@@ -1,7 +1,9 @@
 import { normalizeThreadsUrl, threadsHandleFromUrl } from "@/lib/auth/identity";
 import type { ThreadsAccessInfo, ThreadsAccessState, ThreadsPost, ThreadsProfileFull } from "./profile";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// Node-side fetch abort — the real bound on deep scrapes. Raised to 180s for larger staged batches.
+// Env THREADS_SCRAPER_TIMEOUT_MS overrides.
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class ThreadsScraperError extends Error {
   constructor(

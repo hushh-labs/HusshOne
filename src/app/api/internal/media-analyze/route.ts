@@ -14,7 +14,9 @@ import { analyzeMediaAsset } from "@/lib/social-intelligence/media-analyze";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const ASSETS_PER_RUN = Number(process.env.PREFERENCE_MEDIA_BATCH || "8") || 8;
+// Raised 8→24 so the analyzed-image count keeps up with the deeper staged archives (global claim ceiling
+// is 64). Env PREFERENCE_MEDIA_BATCH overrides.
+const ASSETS_PER_RUN = Number(process.env.PREFERENCE_MEDIA_BATCH || "24") || 24;
 
 export async function POST(request: Request) {
   try {

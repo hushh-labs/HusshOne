@@ -30,3 +30,10 @@ test("builds the Instagram template One expects", () => {
   assert.equal(template.scrapeMeta.accessState, "public_visible");
   assert.deepEqual(template.visibleProfileText, ["Builder at Hushh"]);
 });
+
+test("keeps up to 1024 recent posts (no leftover 120 cap)", () => {
+  const profileUrl = "https://www.instagram.com/ankit_ya_i_am/";
+  const many = Array.from({ length: 500 }, (_, i) => ({ url: `https://www.instagram.com/p/${i}/`, caption: `c${i}` }));
+  const template = buildInstagramTemplate(profileUrl, { username: "ankit_ya_i_am", recentPublicPosts: many });
+  assert.equal(template.recentPublicPosts.length, 500);
+});
