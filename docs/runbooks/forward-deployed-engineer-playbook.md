@@ -151,7 +151,9 @@ Then confirm **no instance is left behind** (the load-bearing safety check):
 gcloud compute instances list --project CUSTOMER_PROJECT --filter="labels.hussh-burst=1"
 # → expect EMPTY after the job settles. If not, see §7 reconciliation.
 ```
-> TPU is intentionally `501` in v1 (real path). Use `acceleratorKind:"gpu"`.
+> For a **TPU** burst, set `ONE_BURST_TPU_RESULT_BUCKET` (a GCS bucket the TPU node writes results to and
+> the control plane reads), grant the SA `tpu.nodes.{create,get,delete}` + `storage.objects.{create,get,delete}`
+> on that bucket, and use `acceleratorKind:"tpu"`. Without the bucket a TPU burst returns a clear **503**.
 
 ---
 

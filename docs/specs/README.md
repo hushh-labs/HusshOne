@@ -26,14 +26,18 @@ Also: [feature overview](../xtreme-compute-burst.md) and the
 
 | State | Items |
 |---|---|
-| **Built & tested** (this repo) | Placement engine; BYOC credential resolution + token-client caching; GCP provider (provision/poll/teardown); mock provider; streaming submit + recovery routes; **A2A agent-card endpoint**; **Puppy result callback**; `BurstJob` persistence. 108 burst tests, ~97% line coverage. |
-| **Specified — next to build** | Native macOS One Puppy agent; real TPU path (Cloud TPU API); Secret-Manager/KMS credential vault + Workload Identity Federation; Azure/AWS/Neo-cloud providers. |
-| **Customer-supplied to run live** | A GCP project with Compute Engine API + GPU quota; a least-privilege SA key; a pullable container image. |
+| **Built & tested** (this repo) | Placement engine; BYOC credential resolution + token-client caching; **GPU path (Compute Engine) + TPU path (Cloud TPU API)**; mock provider; streaming submit + recovery routes; **A2A agent-card endpoint**; **Puppy result callback**; **in-app "2-minute GCP setup" validation flow**; **static registry artifacts** (`registry/`); `BurstJob` persistence. 150+ burst tests, high line coverage. |
+| **Built — needs a Mac to compile/notarize** | Native macOS One Puppy agent (SwiftPM package at `macos/OnePuppyAgent/`). |
+| **Roadmap** | Secret-Manager/KMS credential vault + Workload Identity Federation; learned accelerator sizing; Azure/AWS/Neo-cloud providers. |
+| **Customer-supplied to run live** | A GCP project with Compute Engine API + GPU quota (and, for TPU, a result bucket + TPU quota); a least-privilege SA key; a pullable container image. |
 
 ## Source of truth (code)
-- Agent card: `src/lib/burst/agent-card.ts` → served at `src/app/.well-known/agent.json/route.ts`
+- Agent card + function declaration: `src/lib/burst/agent-card.ts` → served at `src/app/.well-known/agent.json/route.ts`
+- Registry upload artifacts: `registry/agent-card.json`, `registry/function-declaration.json` (drift-tested)
 - Placement: `src/lib/burst/placement.ts`
 - BYOC creds: `src/lib/burst/credentials.ts`
-- GCP provider: `src/lib/burst/providers/gcp.ts`
+- GCP providers: `src/lib/burst/providers/gcp.ts` (GPU), `src/lib/burst/providers/gcp-tpu.ts` (TPU), `gcp-common.ts` (shared)
+- In-app GCP setup flow: `src/lib/burst/setup.ts` + `src/app/api/one/burst/setup/**` + `src/app/burst/setup/`
 - Submit / recovery / puppy-result routes: `src/app/api/one/burst/**`
 - Persistence: `src/lib/db/burst-store.ts`, `prisma/schema.prisma` (`BurstJob`)
+- Native macOS One Puppy agent: `macos/OnePuppyAgent/` (SwiftPM; build/notarize on a Mac)

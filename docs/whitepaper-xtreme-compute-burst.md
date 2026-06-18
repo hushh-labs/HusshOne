@@ -160,11 +160,13 @@ instances and deletes any without a live job. Details: SLO & observability spec.
 ## 10. Verification & current status
 
 - **Implemented & tested (this repo):** placement engine, BYOC credential resolution + token-client
-  caching, GCP provider (provision/poll/teardown), mock provider, streaming submit + recovery routes,
-  the A2A agent-card endpoint, the Puppy result callback, `BurstJob` persistence — **108 burst tests,
-  ~97% line coverage** (see the test plan).
-- **Documented contracts (next to build):** the native macOS One Puppy agent; the real TPU path (Cloud
-  TPU API); Secret-Manager-backed credential storage; Azure/AWS/Neo-cloud providers.
+  caching, **GPU path (Compute Engine) and TPU path (Cloud TPU API)**, mock provider, streaming submit +
+  recovery routes, the A2A agent-card endpoint, the Puppy result callback, the in-app "2-minute GCP
+  setup" validation flow, the static registry artifacts, `BurstJob` persistence — **150+ burst tests,
+  high line coverage** (see the test plan).
+- **Native + roadmap (next to build/harden):** the native macOS One Puppy agent (spec'd, SwiftPM
+  scaffold under `macos/`); Secret-Manager-backed credential storage + Workload Identity Federation;
+  Azure/AWS/Neo-cloud providers.
 - **Requires customer inputs to exercise live:** a GCP project with Compute Engine API + GPU quota, a
   least-privilege SA key, a pullable container image (see the FDE playbook).
 
@@ -172,9 +174,9 @@ instances and deletes any without a live job. Details: SLO & observability spec.
 
 | Phase | Scope |
 |---|---|
-| GA v1 | GCP GPU burst + One Puppy placement + registry listing (this work). |
+| GA v1 | GCP **GPU + TPU** burst + One Puppy placement + agent-registry listing + in-app GCP setup (this work). |
 | v1.1 | Secret-Manager/KMS credential vault; Workload Identity Federation (keyless BYOC). |
-| v1.2 | Real TPU burst (Cloud TPU API); accelerator auto-sizing from learned cost/perf. |
+| v1.2 | Accelerator auto-sizing from learned cost/perf; TPU topology selection. |
 | v2 | Azure, AWS, and Neo-cloud providers via `ComputeBurstProvider`; cross-cloud price/perf routing. |
 
 ## Related documents

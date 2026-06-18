@@ -34,6 +34,54 @@ export interface AgentCard {
 export const AGENT_CARD_VERSION = "1.0.0";
 export const A2A_PROTOCOL_VERSION = "0.3.0";
 
+/** The canonical production origin the committed registry artifacts are built for. */
+export const PROD_ORIGIN = "https://one.hushh.ai";
+
+/** Gemini function-calling declaration for the burst capability — the managed-tool form
+    imported into the Cloud API Registry / ADK. Kept in sync with the OpenAPI request body
+    and the committed registry/function-declaration.json (drift-tested). */
+export const burstFunctionDeclaration = {
+  name: "burst_compute",
+  description:
+    "Decide where a workload runs (on-device vs cloud) and, when it exceeds local capacity, provision an " +
+    "accelerator instance in the caller's own GCP project, run the containerized workload, return the result, " +
+    "and tear the instance down.",
+  parameters: {
+    type: "object",
+    required: ["image", "acceleratorKind", "acceleratorCount", "estimate"],
+    properties: {
+      image: { type: "string", description: "Container image to run (e.g. Artifact Registry path)." },
+      command: { type: "array", items: { type: "string" } },
+      env: { type: "object", additionalProperties: { type: "string" } },
+      acceleratorKind: { type: "string", enum: ["gpu", "tpu"] },
+      acceleratorCount: { type: "integer", minimum: 1, maximum: 8 },
+      machineType: { type: "string" },
+      region: { type: "string" },
+      estimate: {
+        type: "object",
+        required: ["vramGb", "unifiedMemoryGb", "vcpus", "diskGb", "estimatedMinutes"],
+        properties: {
+          vramGb: { type: "number" },
+          unifiedMemoryGb: { type: "number" },
+          vcpus: { type: "number" },
+          diskGb: { type: "number" },
+          estimatedMinutes: { type: "number" },
+        },
+      },
+      deviceProfile: { type: "object", description: "Snapshot of the local Mac (One Puppy)." },
+      byoc: {
+        type: "object",
+        description: "The caller's own GCP credentials. Used in-memory only; never persisted.",
+        properties: {
+          serviceAccountJson: { type: "string" },
+          projectId: { type: "string" },
+          region: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }

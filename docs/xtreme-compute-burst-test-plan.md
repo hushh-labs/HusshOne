@@ -88,7 +88,7 @@ only in memory (no encrypt/decrypt per request).
 - **provision**: builds `instances.insert` with `guestAccelerators` (type+count),
   `onHostMaintenance:"TERMINATE"`, startup-script metadata, `hussh-burst` labels; **env vars**
   become `docker -e` flags and command args are quoted; honors **explicit zone + custom machine
-  type**; **TPU → 501**; **requires creds (503)**.
+  type**; **TPU → routed to the Cloud TPU API path; 503 without a result bucket**; **requires creds (503)**.
 - **retry**: transient **503 retried** then succeeds; non-transient **403 not retried**.
 - **pollStatus**: guest-attrs **404 → provisioning**; running; completed (result + exit code);
   failed (exit code in error); unrecognized marker → provisioning; requires creds; **non-404

@@ -49,11 +49,10 @@ paths:
               schema: { $ref: "#/components/schemas/BurstStreamFrame" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "501":
-          description: TPU requested on the real path (Cloud TPU API — not implemented in v1).
-          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
         "503":
-          description: No resolvable BYOC credentials / no project configured.
+          description: >
+            No resolvable BYOC credentials / no project configured, or a TPU burst was requested
+            without ONE_BURST_TPU_RESULT_BUCKET set (the GCS bucket the TPU node writes results to).
           content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
   /api/one/burst/{id}:
     get:

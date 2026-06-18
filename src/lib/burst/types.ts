@@ -93,6 +93,9 @@ export interface ProvisionResult {
   providerJobId: string;
   instanceName?: string;
   zone?: string;
+  /** Which accelerator family provisioned this — drives poll/teardown dispatch
+      (Compute Engine for gpu, Cloud TPU API for tpu). Defaults to "gpu" when absent. */
+  kind?: AcceleratorKind;
   raw?: unknown;
 }
 

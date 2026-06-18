@@ -64,10 +64,11 @@ describe("gcpBurstProvider", () => {
     expect(startup).toContain("'python' 'train.py'");
   });
 
-  it("rejects TPU bursts with 501 (Cloud TPU API not implemented in v1)", async () => {
+  it("requires a result bucket for TPU bursts (503 until ONE_BURST_TPU_RESULT_BUCKET is set)", async () => {
+    delete process.env.ONE_BURST_TPU_RESULT_BUCKET;
     vi.stubGlobal("fetch", vi.fn());
     await expect(gcpBurstProvider.provision(spec({ acceleratorKind: "tpu" }), creds)).rejects.toMatchObject({
-      statusCode: 501,
+      statusCode: 503,
     });
   });
 

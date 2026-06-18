@@ -59,6 +59,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       instanceName: job.instanceName,
       // zone wasn't stored separately; reconstruct the default zone from the region.
       zone: `${job.region}-a`,
+      // Carry the accelerator family so poll/teardown dispatch to the right path.
+      kind: job.acceleratorKind === "tpu" ? "tpu" : "gpu",
     };
 
     // Resume needs creds for the real GCP path. Per-request BYOC creds aren't stored,

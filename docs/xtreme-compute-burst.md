@@ -68,6 +68,9 @@ a per-request burst (see limitation below).
 | `BYOC_GCP_REGION` | Default region | `us-central1` |
 | `ONE_BURST_DEFAULT_MACHINE_TYPE` | Host machine type | `n1-standard-8` |
 | `ONE_BURST_DEFAULT_GPU_TYPE` | GPU accelerator type | `nvidia-tesla-t4` |
+| `ONE_BURST_TPU_RESULT_BUCKET` | **Required for TPU** — GCS bucket the TPU node writes results to | unset → TPU 503 |
+| `ONE_BURST_DEFAULT_TPU_TYPE` | TPU accelerator type | `v5litepod-8` |
+| `ONE_BURST_TPU_RUNTIME` | TPU runtime version | `tpu-ubuntu2204-base` |
 | `ONE_BURST_TEARDOWN` | `false` leaves the instance up (debug) | `true` |
 | `ONE_BURST_TIMEOUT_MS` / `ONE_BURST_STATUS_TIMEOUT_MS` | REST call timeouts | 60000 / 25000 |
 | `ONE_BURST_RETRIES` | Transient-error retries | 2 |
@@ -103,8 +106,9 @@ curl localhost:3000/api/one/burst/<burstJobId> -H "Authorization: Bearer DEV_TOK
   the same shape as above. The instance is provisioned, runs the container, and is torn down.
 
 ## Limitations / next steps
-- **TPU** — represented (`acceleratorKind: "tpu"`) but the real path returns **501** (TPUs need the
-  Cloud TPU API, a different lifecycle). Fully simulated in mock mode.
+- **TPU** — implemented on the real path via the **Cloud TPU API** (node create → run → delete), with
+  the result returned through a GCS object. Requires `ONE_BURST_TPU_RESULT_BUCKET`; without it a TPU
+  burst returns a clear **503**. Fully simulated in mock mode. (GPU uses Compute Engine guest attributes.)
 - **Recovery of a per-request BYOC burst** — creds aren't stored, so `GET /api/one/burst/[id]` can
   resume a poll only with env/ADC creds; a per-request burst reports `running` until its own stream
   finalizes it. The Secret-Manager credential-ref hardening above removes this limit.

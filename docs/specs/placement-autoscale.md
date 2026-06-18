@@ -168,9 +168,9 @@ Map a `WorkloadEstimate` → GCP machine type + GPU type + count + boot disk. De
 - Boot/scratch disk `= ceil(estimate.diskGb * 1.25) + 50 GB` (working space + image), pd-ssd; min 100 GB.
 - `acceleratorCount = clamp(ceil(memNeedGb / perGpuMem), 1, 8)`.
 
-### 5.2 TPU — next-step
+### 5.2 TPU — implemented (Cloud TPU API)
 
-TPU is a documented contract only in v1. Real provisioning returns **501**; the mock provider simulates it. When implemented: map `estimate` → TPU generation/topology (e.g. v5e `2x2` … `4x8`) on the Cloud TPU API. Until then, TPU always routes to `gcp` (rule 2) and surfaces "TPU bursting is coming soon" on the real path.
+TPU bursts are real in v1: the provider creates a Cloud TPU node (default `acceleratorType` = `v5litepod-8`, runtime `tpu-ubuntu2204-base`; override via `ONE_BURST_DEFAULT_TPU_TYPE` / `ONE_BURST_TPU_RUNTIME` / per-request `machineType`), runs the workload via the node's startup-script, returns the result through a GCS object, and deletes the node. It requires `ONE_BURST_TPU_RESULT_BUCKET` (a GCS bucket the node writes to and the control plane reads); absent → a clear **503**. TPU always routes to `gcp` (rule 2). Next-step: map `estimate` → TPU generation/topology (e.g. v5e `2x2` … `4x8`) automatically instead of a fixed default.
 
 ---
 
@@ -249,7 +249,7 @@ Device = `DEFAULT_PUPPY_PROFILE` unless noted. `memBudget = 153.6 GB`, `diskBudg
 mem fits (`40 ≤ 153.6`) but `disk 5000 > 1638.4` ⇒ disk headroom `-3361.6`. → **gcp**, disk-bound. Boot disk `= ceil(5000*1.25)+50 = 6300 GB`.
 
 **E5 — TPU + offline precedence.** `estimate{vram:1, unified:1}`, `acceleratorKind="tpu"`, device `online=false`.
-Rule 1 (offline) fires before rule 2. → **gcp**, "offline." (Order matters: offline outranks TPU; both burst regardless.) On the real path TPU then yields the 501 "coming soon" contract (§5.2).
+Rule 1 (offline) fires before rule 2. → **gcp**, "offline." (Order matters: offline outranks TPU; both burst regardless.) On the real path the TPU burst then provisions via the Cloud TPU API (§5.2).
 
 **E6 — Runtime promotion (dynamic).** E1 admitted local; at `t=4min`, `memPressurePct=88%` for 35s **and** `swapRateMBs=240` for 25s. Both fire after `D_local` and the 10s hold. → **PROMOTE**; cost gate: est. $9 < $25 → ALLOW; provision T4 (memNeed still 50 → wait: 50 > 16/24 → L4×2 / `g2-standard-24`); resume from checkpoint; teardown local. User sees "One needs more power — moving this run to your cloud."
 
@@ -271,7 +271,7 @@ Rule 1 (offline) fires before rule 2. → **gcp**, "offline." (Order matters: of
 
 - **Multi-cloud.** `ComputeBurstProvider` (in `types.ts`) already abstracts `provision/submit/pollStatus/teardown` behind `BurstProviderId`. Add Azure / AWS / Neo-cloud implementations without touching routes; extend the sizing table (§5) and pricing table (§6) per provider; add provider as a placement dimension (price/locality/quota-aware routing).
 - **Learned cost/perf models.** Replace static thresholds and the pricing table with models trained on `BurstJob` history: predict `estimatedMinutes`, real `memNeedGb` (close the estimate-vs-actual gap that drives §4 promotions), and per-zone provision success — feeding both the sizing table and the overrun factor.
-- **TPU.** Promote §5.2 from 501-contract to real Cloud TPU provisioning with a generation/topology sizing table.
+- **TPU.** Add automatic generation/topology sizing (the v1 path uses a fixed default `acceleratorType`).
 
 ---
 

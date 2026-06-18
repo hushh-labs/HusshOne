@@ -155,6 +155,7 @@ export async function getOwnedBurstJob(firebaseUid: string, burstJobId: string) 
         status: true,
         placement: true,
         provider: true,
+        acceleratorKind: true,
         result: true,
         error: true,
         providerJobId: true,
