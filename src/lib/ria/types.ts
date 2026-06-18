@@ -340,6 +340,8 @@ export interface OneDashboardResult {
      Filled by /api/one/research/[id]/preferences. This can complete before the
      main dossier because it reads the stored scan input, not the Phase-1 report. */
   preferenceStatus?: "idle" | "running" | "completed" | "failed" | "pending" | "skipped";
+  preferenceVersion?: string;
+  preferenceInputHash?: string;
   preferenceProfile?: UserPreferenceProfile;
   preferenceStartedAt?: number;
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchConnectorRecord, saveChatGptContextSnapshot, searchConnectorRecords } from "./scan-store";
+import { fetchConnectorRecord, indexSocialPreferenceEvidence, saveChatGptContextSnapshot, searchConnectorRecords } from "./scan-store";
 
 const mocks = vi.hoisted(() => ({
   prisma: {
@@ -8,6 +8,12 @@ const mocks = vi.hoisted(() => ({
     },
     chatGptContextSnapshot: {
       create: vi.fn(),
+    },
+    socialContentItem: {
+      upsert: vi.fn(),
+    },
+    socialMediaAsset: {
+      upsert: vi.fn(),
     },
   },
 }));
@@ -115,3 +121,102 @@ describe("ChatGPT context connector records", () => {
   });
 });
 
+describe("social preference evidence indexing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("upserts visible social content and media assets without LinkedIn rows", async () => {
+    mocks.prisma.oneUser.findUnique.mockResolvedValueOnce({ id: "one-user-id" });
+    mocks.prisma.socialContentItem.upsert.mockResolvedValue({});
+    mocks.prisma.socialMediaAsset.upsert.mockResolvedValue({});
+
+    const result = await indexSocialPreferenceEvidence({
+      firebaseUid: "firebase-1",
+      scanRunId: "scan-1",
+      version: "2026-06-18.social-preference-questions-v2",
+      evidence: [
+        {
+          id: "ig1",
+          platform: "instagram",
+          type: "media",
+          url: "https://www.instagram.com/p/abc/",
+          text: "Goa sea view coffee",
+          mediaUrl: "https://cdn.example.com/goa.jpg",
+          timestamp: "2026-06-18T10:00:00.000Z",
+          reason: "instagram visible text plus media context.",
+          signals: ["seaside / beach-view places"],
+        },
+        {
+          id: "li1",
+          platform: "linkedin",
+          type: "profile",
+          url: "https://www.linkedin.com/in/user",
+          text: "AI product leader",
+          mediaUrl: null,
+          timestamp: null,
+          reason: "LinkedIn career anchor",
+          signals: ["AI"],
+        },
+      ],
+    });
+
+    expect(result).toEqual({ contentItems: 1, mediaAssets: 1 });
+    expect(mocks.prisma.socialContentItem.upsert).toHaveBeenCalledTimes(1);
+    expect(mocks.prisma.socialContentItem.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId_platform_itemId: { userId: "one-user-id", platform: "instagram", itemId: "ig1" } },
+        create: expect.objectContaining({
+          publicId: "visible-feed",
+          itemUrl: "https://www.instagram.com/p/abc/",
+          itemType: "media",
+          text: "Goa sea view coffee",
+          features: expect.objectContaining({
+            indexVersion: "2026-06-18.social-preference-questions-v2",
+            source: "preference_v2_fast_pass",
+            scanRunId: "scan-1",
+            evidenceId: "ig1",
+          }),
+        }),
+      }),
+    );
+    expect(mocks.prisma.socialMediaAsset.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId_platform_assetHash: { userId: "one-user-id", platform: "instagram", assetHash: expect.any(String) } },
+        create: expect.objectContaining({
+          sourceUrl: "https://cdn.example.com/goa.jpg",
+          analysis: expect.objectContaining({
+            status: "pending",
+            provider: "vertex_gemini_cloud_vision",
+            sourceEvidenceIds: ["ig1"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("swallows optional indexing failures", async () => {
+    mocks.prisma.oneUser.findUnique.mockResolvedValueOnce({ id: "one-user-id" });
+    mocks.prisma.socialContentItem.upsert.mockRejectedValueOnce(new Error("missing table"));
+
+    const result = await indexSocialPreferenceEvidence({
+      firebaseUid: "firebase-1",
+      version: "2026-06-18.social-preference-questions-v2",
+      evidence: [
+        {
+          id: "x1",
+          platform: "x",
+          type: "post",
+          url: "https://x.com/user/status/1",
+          text: "Coffee",
+          mediaUrl: null,
+          timestamp: null,
+          reason: "x visible text",
+          signals: [],
+        },
+      ],
+    });
+
+    expect(result).toBeNull();
+  });
+});

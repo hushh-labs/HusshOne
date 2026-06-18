@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
+import type { PreferenceEvidence } from "@/lib/social-intelligence/preference-profile";
 import { getPrismaClient } from "./prisma";
 
 const USER_NOTIFICATION_TYPE = "scan_user_full_result";
@@ -77,9 +78,50 @@ interface LogUserPreferenceRunInput {
   error?: string | null;
 }
 
+interface IndexSocialPreferenceEvidenceInput {
+  firebaseUid: string;
+  scanRunId?: string | null;
+  version: string;
+  evidence: PreferenceEvidence[];
+}
+
+interface IndexedPreferenceEvidenceResult {
+  contentItems: number;
+  mediaAssets: number;
+}
+
 function hashValue(value?: string | null) {
   if (!value) return null;
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function safeJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function parseDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function publicIdFromEvidence(item: PreferenceEvidence): string {
+  const fallback = "visible-feed";
+  if (!item.url) return fallback;
+  try {
+    const url = new URL(item.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (item.platform === "threads") return (parts.find((part) => part.startsWith("@")) || fallback).replace(/^@/, "").toLowerCase();
+    if (item.platform === "x") return (parts[0] || fallback).toLowerCase();
+    if (item.platform === "instagram" && parts.length === 1) return parts[0].toLowerCase();
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeSocialPlatform(platform: PreferenceEvidence["platform"]) {
+  return platform.trim().toLowerCase();
 }
 
 /* Per-phase scan timing + outcome, persisted onto ScanRun for durable, per-user
@@ -400,6 +442,105 @@ export async function logUserPreferenceRun(input: LogUserPreferenceRunInput) {
       select: { id: true, createdAt: true },
     });
     return { id: row.id, createdAt: row.createdAt.toISOString() };
+  } catch {
+    return null;
+  }
+}
+
+export async function indexSocialPreferenceEvidence(
+  input: IndexSocialPreferenceEvidenceInput,
+): Promise<IndexedPreferenceEvidenceResult | null> {
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+  try {
+    const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+    if (!user) return null;
+    let contentItems = 0;
+    let mediaAssets = 0;
+    for (const item of input.evidence) {
+      if (item.platform === "linkedin") continue;
+      const platform = normalizeSocialPlatform(item.platform);
+      const publicId = publicIdFromEvidence(item);
+      const itemId = item.id;
+      const assetHash = item.mediaUrl ? crypto.createHash("sha256").update(item.mediaUrl).digest("hex") : null;
+      const media = item.mediaUrl
+        ? {
+            primaryUrl: item.mediaUrl,
+            urls: [item.mediaUrl],
+            assetHashes: assetHash ? [assetHash] : [],
+          }
+        : null;
+      const features = {
+        indexVersion: input.version,
+        source: "preference_v2_fast_pass",
+        scanRunId: input.scanRunId || null,
+        evidenceId: item.id,
+        reason: item.reason,
+        signals: item.signals,
+        contentHash: hashValue([item.text, item.url, item.mediaUrl].filter(Boolean).join("|")),
+      };
+      await prisma.socialContentItem.upsert({
+        where: { userId_platform_itemId: { userId: user.id, platform, itemId } },
+        create: {
+          userId: user.id,
+          platform,
+          publicId,
+          itemId,
+          itemUrl: item.url || `urn:one:evidence:${item.id}`,
+          itemType: item.type,
+          text: item.text || null,
+          timestamp: parseDate(item.timestamp),
+          ...(media ? { media: safeJson(media) } : {}),
+          metrics: safeJson({}),
+          features: safeJson(features),
+        },
+        update: {
+          publicId,
+          itemUrl: item.url || `urn:one:evidence:${item.id}`,
+          itemType: item.type,
+          text: item.text || null,
+          timestamp: parseDate(item.timestamp),
+          ...(media ? { media: safeJson(media) } : {}),
+          metrics: safeJson({}),
+          features: safeJson(features),
+        },
+      });
+      contentItems += 1;
+
+      if (item.mediaUrl && assetHash) {
+        await prisma.socialMediaAsset.upsert({
+          where: { userId_platform_assetHash: { userId: user.id, platform, assetHash } },
+          create: {
+            userId: user.id,
+            platform,
+            assetHash,
+            sourceUrl: item.mediaUrl,
+            cacheUri: null,
+            analysis: safeJson({
+              status: "pending",
+              provider: "vertex_gemini_cloud_vision",
+              source: "preference_v2_fast_pass",
+              preferenceVersion: input.version,
+              sourceEvidenceIds: [item.id],
+              scanRunId: input.scanRunId || null,
+            }),
+          },
+          update: {
+            sourceUrl: item.mediaUrl,
+            analysis: safeJson({
+              status: "pending",
+              provider: "vertex_gemini_cloud_vision",
+              source: "preference_v2_fast_pass",
+              preferenceVersion: input.version,
+              sourceEvidenceIds: [item.id],
+              scanRunId: input.scanRunId || null,
+            }),
+          },
+        });
+        mediaAssets += 1;
+      }
+    }
+    return { contentItems, mediaAssets };
   } catch {
     return null;
   }

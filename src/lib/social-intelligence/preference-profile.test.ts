@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildUserPreferenceProfile } from "./preference-profile";
+import { buildUserPreferenceProfile, PREFERENCE_QUESTIONS, PROFILE_VERSION, QUESTION_REGISTRY_VERSION } from "./preference-profile";
 
 describe("buildUserPreferenceProfile", () => {
   it("clusters visible social posts into evidence-backed preferences", () => {
@@ -70,6 +70,15 @@ describe("buildUserPreferenceProfile", () => {
     });
 
     expect(profile.updatedFrom.indexedItems).toBeGreaterThanOrEqual(5);
+    expect(profile.version).toBe(PROFILE_VERSION);
+    expect(profile.questionRegistryVersion).toBe(QUESTION_REGISTRY_VERSION);
+    expect(PREFERENCE_QUESTIONS).toHaveLength(30);
+    expect(profile.questionAnswers).toHaveLength(30);
+    expect(profile.sectionSummaries).toHaveLength(6);
+    expect(profile.questionCoverage).toMatchObject({
+      total: 30,
+      bySection: expect.any(Object),
+    });
     expect(profile.updatedFrom.mediaAssets).toBe(2);
     expect(profile.selection).toMatchObject({
       evidencePoolSize: expect.any(Number),
@@ -92,7 +101,31 @@ describe("buildUserPreferenceProfile", () => {
         "AI, product, privacy, and startup building",
       ]),
     );
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "travel_perfect_escape")).toMatchObject({
+      status: expect.stringMatching(/answered|inferred|needs_confirmation/),
+      normalizedValue: "beach",
+      evidenceIds: expect.arrayContaining([expect.any(String)]),
+    });
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "style_power_color")).toMatchObject({
+      status: expect.stringMatching(/answered|inferred|needs_confirmation/),
+      evidenceIds: expect.arrayContaining([expect.any(String)]),
+    });
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "food_death_row_meal")).toMatchObject({
+      status: "needs_confirmation",
+      evidenceIds: expect.arrayContaining([expect.any(String)]),
+    });
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "romance_non_negotiables")).toMatchObject({
+      status: "needs_confirmation",
+      answer: null,
+      unknownReason: "unsafe_to_infer",
+      evidenceIds: [],
+    });
     expect(profile.collage.some((item) => item.imageUrl === "https://cdn.example.com/goa.jpg")).toBe(true);
+    expect(profile.mediaIntelligence).toMatchObject({
+      status: "pending",
+      provider: "vertex_gemini_cloud_vision",
+      queuedAssets: 2,
+    });
     expect(profile.guardrails).toMatchObject({
       linkedinUntouched: true,
       noPrivateContent: true,

@@ -4,11 +4,17 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import {
   getResearchJob,
   getUserPreferenceProfileByInputHash,
+  indexSocialPreferenceEvidence,
   logUserPreferenceRun,
   saveUserPreferenceProfile,
   updateDeepTier,
 } from "@/lib/db/scan-store";
-import { buildUserPreferenceProfile, type UserPreferenceProfile } from "@/lib/social-intelligence/preference-profile";
+import {
+  buildUserPreferenceProfile,
+  PROFILE_VERSION,
+  QUESTION_REGISTRY_VERSION,
+  type UserPreferenceProfile,
+} from "@/lib/social-intelligence/preference-profile";
 import type { OneDashboardResult, OneSubjectInput, SocialProfileFull } from "@/lib/ria/types";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 
@@ -26,8 +32,25 @@ function statusCodeOf(error: unknown): number {
 function profileInputHash(input: { linkedinProfile?: unknown; socialProfiles?: unknown }): string {
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify({ linkedinProfile: input.linkedinProfile ?? null, socialProfiles: input.socialProfiles ?? [] }))
+    .update(
+      JSON.stringify({
+        profileVersion: PROFILE_VERSION,
+        questionRegistryVersion: QUESTION_REGISTRY_VERSION,
+        linkedinProfile: input.linkedinProfile ?? null,
+        socialProfiles: input.socialProfiles ?? [],
+      }),
+    )
     .digest("hex");
+}
+
+function isCurrentPreferenceProfile(profile: unknown): profile is UserPreferenceProfile {
+  return Boolean(
+    profile &&
+      typeof profile === "object" &&
+      !Array.isArray(profile) &&
+      (profile as { version?: unknown }).version === PROFILE_VERSION &&
+      (profile as { questionRegistryVersion?: unknown }).questionRegistryVersion === QUESTION_REGISTRY_VERSION,
+  );
 }
 
 function preferenceCounts(profile: ReturnType<typeof buildUserPreferenceProfile>) {
@@ -35,6 +58,8 @@ function preferenceCounts(profile: ReturnType<typeof buildUserPreferenceProfile>
     indexedItems: profile.updatedFrom.indexedItems,
     mediaAssets: profile.updatedFrom.mediaAssets,
     externalLinks: profile.updatedFrom.externalLinks,
+    questionRegistryVersion: profile.questionRegistryVersion,
+    questionCoverage: profile.questionCoverage,
     evidencePoolSize: profile.selection.evidencePoolSize,
     selectedEvidenceCount: profile.selection.selectedEvidenceCount,
     selectedSignalCount: profile.selection.selectedSignalCount,
@@ -74,7 +99,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       typeof scan.normalizedResult === "object" &&
       !Array.isArray(scan.normalizedResult);
     const result = hasCompletedResult ? (scan.normalizedResult as OneDashboardResult & Record<string, unknown>) : null;
-    if (result && (result.preferenceStatus === "completed" || result.preferenceStatus === "failed" || result.preferenceStatus === "skipped")) {
+    if (
+      result &&
+      (result.preferenceStatus === "failed" || result.preferenceStatus === "skipped" || isCurrentPreferenceProfile(result.preferenceProfile))
+    ) {
       return NextResponse.json({ ok: true, preferenceStatus: result.preferenceStatus, result });
     }
 
@@ -110,7 +138,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     const inputHash = profileInputHash({ linkedinProfile: stored.linkedinProfile, socialProfiles: stored.socialProfiles });
     const existing = await getUserPreferenceProfileByInputHash<UserPreferenceProfile>(verified.uid, inputHash).catch(() => null);
-    if (existing?.status === "completed") {
+    if (existing?.status === "completed" && isCurrentPreferenceProfile(existing)) {
       const durationMs = Date.now() - startedAt;
       const counts = preferenceCounts(existing);
       await logUserPreferenceRun({
@@ -140,6 +168,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       }
       const merged = await updateDeepTier(verified.uid, id, {
         preferenceStatus: "completed",
+        preferenceVersion: existing.version,
+        preferenceInputHash: inputHash,
         preferenceProfile: existing,
         preferenceStartedAt: undefined,
       });
@@ -147,7 +177,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         ok: true,
         preferenceStatus: "completed",
         preferenceProfile: existing,
-        result: merged ?? { ...result, preferenceStatus: "completed", preferenceProfile: existing },
+        result: merged ?? { ...result, preferenceStatus: "completed", preferenceVersion: existing.version, preferenceInputHash: inputHash, preferenceProfile: existing },
       });
     }
 
@@ -163,6 +193,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       linkedinProfile: stored.linkedinProfile as LinkedInProfileFull | undefined,
       socialProfiles: stored.socialProfiles as SocialProfileFull[] | undefined,
     });
+    const indexed = await indexSocialPreferenceEvidence({
+      firebaseUid: verified.uid,
+      scanRunId: id,
+      version: profile.version,
+      evidence: profile.evidence,
+    }).catch(() => null);
     await saveUserPreferenceProfile({
       firebaseUid: verified.uid,
       scanRunId: id,
@@ -174,7 +210,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       staleAfter: profile.refresh.staleAfter,
     }).catch(() => null);
     const durationMs = Date.now() - startedAt;
-    const counts = preferenceCounts(profile);
+    const counts = { ...preferenceCounts(profile), indexedContentItems: indexed?.contentItems ?? null, indexedMediaAssets: indexed?.mediaAssets ?? null };
     await logUserPreferenceRun({
       firebaseUid: verified.uid,
       scanRunId: id,
@@ -203,6 +239,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     }
     const merged = await updateDeepTier(verified.uid, id, {
       preferenceStatus: "completed",
+      preferenceVersion: profile.version,
+      preferenceInputHash: inputHash,
       preferenceProfile: profile,
       preferenceStartedAt: undefined,
     });
@@ -210,7 +248,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       ok: true,
       preferenceStatus: "completed",
       preferenceProfile: profile,
-      result: merged ?? { ...result, preferenceStatus: "completed", preferenceProfile: profile },
+      result: merged ?? { ...result, preferenceStatus: "completed", preferenceVersion: profile.version, preferenceInputHash: inputHash, preferenceProfile: profile },
     });
   } catch (error) {
     const status = statusCodeOf(error);
