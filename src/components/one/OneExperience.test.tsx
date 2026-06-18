@@ -120,6 +120,36 @@ const instagramProfile = {
   source: "scraper",
 };
 
+const threadsProfile = {
+  platform: "Threads",
+  username: "ankit_ya_i_am",
+  displayName: "Ankit Kumar Singh",
+  bio: "Builder at Hushh",
+  avatarUrl: null,
+  profileUrl: "https://www.threads.com/@ankit_ya_i_am",
+  isVerified: false,
+  isPrivate: false,
+  source: "scraper",
+};
+
+const xProfile = {
+  platform: "X",
+  username: "ankit",
+  displayName: "Ankit Kumar Singh",
+  bio: "Builder at Hushh",
+  avatarUrl: null,
+  bannerUrl: null,
+  location: null,
+  website: null,
+  joinedDate: null,
+  followersCount: null,
+  followingCount: null,
+  profileUrl: "https://x.com/ankit",
+  isVerified: false,
+  isProtected: false,
+  source: "scraper",
+};
+
 describe("OneExperience", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -279,6 +309,28 @@ describe("OneExperience", () => {
     fireEvent.click(await screen.findByRole("button", { name: /linkedin/i }));
     expect(screen.getByLabelText("Connected LinkedIn profile URL")).toHaveValue("https://www.linkedin.com/in/ankit-kumar-singh");
     expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
+  it("shows connected optional social URLs inside expanded connector fields", async () => {
+    mocks.currentUser = signedInUser();
+    scopedLocal("firebase-1", "one_li_full", JSON.stringify(richLinkedInProfile()));
+    scopedLocal("firebase-1", "one_ig_full", JSON.stringify([instagramProfile]));
+    scopedLocal("firebase-1", "one_threads_full", JSON.stringify([threadsProfile]));
+    scopedLocal("firebase-1", "one_x_full", JSON.stringify([xProfile]));
+    mockFetch(async () => Response.json({ ok: false }, { status: 404 }));
+
+    render(<OneExperience />);
+
+    expect(await screen.findByText("Verified via LinkedIn")).toBeInTheDocument();
+    expect(screen.getAllByText(/@ankit_ya_i_am added/i).length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: /instagram/i }));
+    expect(screen.getByLabelText("Connected Instagram profile URL")).toHaveValue("https://www.instagram.com/ankit_ya_i_am/");
+
+    fireEvent.click(screen.getByRole("button", { name: /threads/i }));
+    expect(screen.getByLabelText("Connected Threads profile URL")).toHaveValue("https://www.threads.com/@ankit_ya_i_am");
+
+    fireEvent.click(screen.getByRole("button", { name: /^x/i }));
+    expect(screen.getByLabelText("Connected X profile URL")).toHaveValue("https://x.com/ankit");
   });
 
   it("can connect optional socials from the first social URL intake before LinkedIn unlocks Send One", async () => {

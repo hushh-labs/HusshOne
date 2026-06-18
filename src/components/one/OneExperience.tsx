@@ -488,12 +488,14 @@ function ConnectInstagramInline({
   type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
+  const [editingConnected, setEditingConnected] = useState(false);
   const [touched, setTouched] = useState(false);
   const [err, setErr] = useState("");
   const [pendingAccess, setPendingAccess] = useState<InstagramAccessInfo | null>(null);
   const normalized = normalizeInstagramUrl(url);
   const invalid = touched && !!url && !normalized;
   const connected = profiles[0] ?? null;
+  const connectedUrl = connected ? normalizeInstagramUrl(connected.profileUrl) || connected.profileUrl : "";
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -533,6 +535,7 @@ function ConnectInstagramInline({
         throw new Error(payload.error || "We could not read this Instagram profile.");
       }
       setUrl("");
+      setEditingConnected(false);
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
@@ -544,6 +547,38 @@ function ConnectInstagramInline({
   };
 
   const busy = phase === "fetching";
+  if (connected && connectedUrl && !editingConnected) {
+    return (
+      <div className="field-group connector-form" style={{ gap: 8 }}>
+        <label htmlFor="instagram-connected-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(connected)</span></label>
+        <div className="social-url-row">
+          <input
+            id="instagram-connected-url"
+            className="input"
+            value={connectedUrl}
+            readOnly
+            aria-label="Connected Instagram profile URL"
+          />
+          <button
+            className="ghost-btn"
+            type="button"
+            onClick={() => {
+              setUrl(connectedUrl);
+              setTouched(false);
+              setErr("");
+              setPendingAccess(null);
+              setEditingConnected(true);
+            }}
+          >
+            Change
+          </button>
+        </div>
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      </div>
+    );
+  }
   return (
     <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="instagram-url">Instagram profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
@@ -564,7 +599,7 @@ function ConnectInstagramInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add Instagram"}
+          {busy ? "Adding..." : connected ? "Update Instagram" : "Add Instagram"}
         </button>
       </div>
       {connected ? (
@@ -595,12 +630,14 @@ function ConnectThreadsInline({
   type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
+  const [editingConnected, setEditingConnected] = useState(false);
   const [touched, setTouched] = useState(false);
   const [err, setErr] = useState("");
   const [pendingAccess, setPendingAccess] = useState<ThreadsAccessInfo | null>(null);
   const normalized = normalizeThreadsUrl(url);
   const invalid = touched && !!url && !normalized;
   const connected = profiles[0] ?? null;
+  const connectedUrl = connected ? normalizeThreadsUrl(connected.profileUrl) || connected.profileUrl : "";
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -640,6 +677,7 @@ function ConnectThreadsInline({
         throw new Error(payload.error || "We could not read this Threads profile.");
       }
       setUrl("");
+      setEditingConnected(false);
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
@@ -651,6 +689,38 @@ function ConnectThreadsInline({
   };
 
   const busy = phase === "fetching";
+  if (connected && connectedUrl && !editingConnected) {
+    return (
+      <div className="field-group connector-form" style={{ gap: 8 }}>
+        <label htmlFor="threads-connected-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(connected)</span></label>
+        <div className="social-url-row">
+          <input
+            id="threads-connected-url"
+            className="input"
+            value={connectedUrl}
+            readOnly
+            aria-label="Connected Threads profile URL"
+          />
+          <button
+            className="ghost-btn"
+            type="button"
+            onClick={() => {
+              setUrl(connectedUrl);
+              setTouched(false);
+              setErr("");
+              setPendingAccess(null);
+              setEditingConnected(true);
+            }}
+          >
+            Change
+          </button>
+        </div>
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      </div>
+    );
+  }
   return (
     <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="threads-url">Threads profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
@@ -671,7 +741,7 @@ function ConnectThreadsInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add Threads"}
+          {busy ? "Adding..." : connected ? "Update Threads" : "Add Threads"}
         </button>
       </div>
       {connected ? (
@@ -702,12 +772,14 @@ function ConnectXInline({
   type Phase = "idle" | "fetching" | "connected" | "pending" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
+  const [editingConnected, setEditingConnected] = useState(false);
   const [touched, setTouched] = useState(false);
   const [err, setErr] = useState("");
   const [pendingAccess, setPendingAccess] = useState<XAccessInfo | null>(null);
   const normalized = normalizeXUrl(url);
   const invalid = touched && !!url && !normalized;
   const connected = profiles[0] ?? null;
+  const connectedUrl = connected ? normalizeXUrl(connected.profileUrl) || connected.profileUrl : "";
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -747,6 +819,7 @@ function ConnectXInline({
         throw new Error(payload.error || "We could not read this X profile.");
       }
       setUrl("");
+      setEditingConnected(false);
       setPhase("connected");
       onConnected(payload.profile);
     } catch (e) {
@@ -758,6 +831,38 @@ function ConnectXInline({
   };
 
   const busy = phase === "fetching";
+  if (connected && connectedUrl && !editingConnected) {
+    return (
+      <div className="field-group connector-form" style={{ gap: 8 }}>
+        <label htmlFor="x-connected-url">X profile URL <span style={{ color: "var(--muted)" }}>(connected)</span></label>
+        <div className="social-url-row">
+          <input
+            id="x-connected-url"
+            className="input"
+            value={connectedUrl}
+            readOnly
+            aria-label="Connected X profile URL"
+          />
+          <button
+            className="ghost-btn"
+            type="button"
+            onClick={() => {
+              setUrl(connectedUrl);
+              setTouched(false);
+              setErr("");
+              setPendingAccess(null);
+              setEditingConnected(true);
+            }}
+          >
+            Change
+          </button>
+        </div>
+        <span className="field-hint">
+          {Icons.check(12)} @{connected.username} added
+        </span>
+      </div>
+    );
+  }
   return (
     <form className="field-group connector-form" onSubmit={submit} style={{ gap: 8 }}>
       <label htmlFor="x-url">X profile URL <span style={{ color: "var(--muted)" }}>(optional)</span></label>
@@ -778,7 +883,7 @@ function ConnectXInline({
           aria-invalid={invalid}
         />
         <button className="ghost-btn" type="submit" disabled={busy || !normalized}>
-          {busy ? "Adding..." : "Add X"}
+          {busy ? "Adding..." : connected ? "Update X" : "Add X"}
         </button>
       </div>
       {connected ? (
