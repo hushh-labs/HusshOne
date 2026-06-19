@@ -1,0 +1,76 @@
+name: deploy-prod
+
+# Ships main to production (one.hushh.ai) on Cloud Run.
+#
+# Target — service `one` in project `hushone-app`, region `us-central1` — is the
+# service the domain actually maps to. Do NOT point this at `one-hushh-ai` /
+# `hushh-tech-prod`: that deploy "succeeds" but the public site never changes.
+#
+# Auth uses Workload Identity Federation (no long-lived keys). Before this runs you
+# must set two repo secrets and grant the deploy service account the right roles —
+# see the one-time setup checked in alongside this file.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two prod deploys at once; let an in-flight deploy finish (don't cancel it).
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # required for Workload Identity Federation
+    env:
+      SERVICE: one
+      PROJECT: hushone-app
+      REGION: us-central1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fast-fail gate: compile + TypeScript must pass before the slower Cloud Build.
+      - name: Build (gate)
+        run: npm run build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Source deploy: Cloud Build builds the Dockerfile and pushes the image. Existing
+      # env vars, secrets, and scaling on the service are preserved.
+      - name: Deploy to Cloud Run (service one / hushone-app)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --source . \
+            --region "$REGION" \
+            --project "$PROJECT" \
+            --quiet
+
+      # Verify the live domain actually serves the new revision. one.hushh.ai hits the
+      # service directly (no CDN), so a correct deploy is visible immediately.
+      - name: Verify /docs is live
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://one.hushh.ai/docs)
+          echo "GET https://one.hushh.ai/docs -> $code"
+          test "$code" = "200"
+
+      - name: Production smoke / contract test
+        env:
+          BASE_URL: https://one.hushh.ai
+        run: node scripts/prod-smoke.mjs

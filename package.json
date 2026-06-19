@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/build-onboarding-kit.mjs",
     "build": "next build",
+    "build:kit": "node scripts/build-onboarding-kit.mjs",
     "start": "next start",
     "postinstall": "prisma generate",
     "lint": "eslint",

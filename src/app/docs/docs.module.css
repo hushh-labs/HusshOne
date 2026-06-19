@@ -210,6 +210,74 @@
   margin: 28px 0;
 }
 
+/* Onboarding kit / downloads */
+.downloadRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 8px 0 24px;
+}
+.downloadBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #2997ff;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 11px 18px;
+  border-radius: 10px;
+}
+.downloadBtn:hover {
+  background: #1a86ee;
+}
+.downloadMeta {
+  font-size: 12.5px;
+  color: #8a8a92;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.fileList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.fileChip {
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #c7c7cc;
+  text-decoration: none;
+  border: 1px solid #242428;
+  border-radius: 7px;
+  padding: 4px 9px;
+  background: #121214;
+}
+.fileChip:hover {
+  border-color: #2e2e34;
+  color: #fff;
+}
+.featured {
+  display: block;
+  border: 1px solid #234;
+  background: linear-gradient(180deg, #10212e, #0e1620);
+  border-radius: 12px;
+  padding: 18px 20px;
+  text-decoration: none;
+  margin: 0 0 32px;
+}
+.featured:hover {
+  border-color: #2997ff;
+}
+.featuredKicker {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #2997ff;
+  margin: 0 0 6px;
+}
+
 @media (max-width: 880px) {
   .sidebar {
     display: none;

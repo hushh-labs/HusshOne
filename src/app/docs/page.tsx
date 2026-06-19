@@ -16,6 +16,15 @@ export default function DocsIndex() {
         </p>
       </div>
 
+      <Link href="/docs/onboarding-kit" className={styles.featured}>
+        <p className={styles.featuredKicker}>⬇ Self-serve onboarding</p>
+        <p className={styles.cardTitle}>Download the onboarding kit</p>
+        <p className={styles.cardBlurb}>
+          A provisioning script, a Terraform module, and a machine-readable manifest — so a person or an automated
+          infrastructure system can stand up your cloud and get One bursting.
+        </p>
+      </Link>
+
       {DOC_SECTIONS.map((section) => (
         <section key={section.title} style={{ marginBottom: 32 }}>
           <p className={styles.sectionTitle}>{section.title}</p>

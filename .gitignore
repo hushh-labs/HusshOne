@@ -49,3 +49,6 @@ next-env.d.ts
 research-exports/
 # standalone experiment output (scripts/exp/*) — also PII; never commit
 exp-output/
+
+# Generated onboarding kit (rebuilt by prebuild)
+/public/downloads/
