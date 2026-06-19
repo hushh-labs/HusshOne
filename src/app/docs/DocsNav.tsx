@@ -13,6 +13,12 @@ export default function DocsNav() {
         🤫 One — Burst Compute
       </Link>
       <p className={styles.brandSub}>Documentation</p>
+      <Link
+        href="/docs/onboarding-kit"
+        className={`${styles.navLink} ${pathname === "/docs/onboarding-kit" ? styles.navLinkActive : ""}`}
+      >
+        ⬇ Onboarding kit
+      </Link>
       {DOC_SECTIONS.map((section) => (
         <div key={section.title}>
           <p className={styles.sectionTitle}>{section.title}</p>
