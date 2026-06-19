@@ -6,9 +6,11 @@ const mocks = vi.hoisted(() => ({
   failSocialRefreshJob: vi.fn(async () => undefined),
   enqueueSocialRefreshJobs: vi.fn(async () => 1),
   indexSocialArchive: vi.fn(async () => ({ contentItems: 0, mediaAssets: 0, perPlatform: {} })),
+  upsertLinkedInConnection: vi.fn(async () => undefined),
   scrapeInstagram: vi.fn(),
   scrapeThreads: vi.fn(),
   scrapeX: vi.fn(),
+  scrapeLinkedIn: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/internal", () => ({ verifyInternalJobRequest: vi.fn(() => undefined) }));
@@ -18,11 +20,13 @@ vi.mock("@/lib/db/scan-store", () => ({
   failSocialRefreshJob: mocks.failSocialRefreshJob,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
   indexSocialArchive: mocks.indexSocialArchive,
+  upsertLinkedInConnection: mocks.upsertLinkedInConnection,
   PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
 }));
 vi.mock("@/lib/instagram/scraper-profile", () => ({ scrapeInstagramProfileUrl: mocks.scrapeInstagram }));
 vi.mock("@/lib/threads/scraper-profile", () => ({ scrapeThreadsProfileUrl: mocks.scrapeThreads }));
 vi.mock("@/lib/x/scraper-profile", () => ({ scrapeXProfileUrl: mocks.scrapeX }));
+vi.mock("@/lib/linkedin/scraper-profile", () => ({ scrapeLinkedInProfileUrl: mocks.scrapeLinkedIn }));
 vi.mock("@/lib/social-intelligence/preference-profile", () => ({ PROFILE_VERSION: "test-profile-v" }));
 
 import { POST } from "./route";
@@ -187,5 +191,60 @@ describe("POST /api/internal/social-archive — staged batched deep-scrape", () 
     expect(findEnqueue("instagram")).toBeFalsy(); // no grow re-enqueue
     expect(mocks.completeSocialRefreshJob).toHaveBeenCalledWith("job-ig");
     expect(findEnqueue("__recompute__")).toBeTruthy(); // recompute still kicked so new posts surface
+  });
+
+  function liJob() {
+    return {
+      id: "job-li",
+      firebaseUid: "uid-1",
+      platform: "linkedin",
+      publicId: "ankit",
+      metadata: { url: "https://www.linkedin.com/in/ankit" },
+      attempts: 1,
+    };
+  }
+  const richLi = {
+    profile: {
+      sub: "ankit",
+      name: "Ankit",
+      givenName: "Ankit",
+      familyName: "K",
+      email: null,
+      emailVerified: false,
+      locale: null,
+      pictureUrl: null,
+      profileUrl: "https://www.linkedin.com/in/ankit",
+      headline: "Engineer",
+      verifications: [],
+      grantedScopes: [],
+      source: "scraper",
+      skills: ["AI"],
+    },
+    raw: {},
+    normalizedUrl: "https://www.linkedin.com/in/ankit",
+  };
+
+  it("linkedin re-enrich: rich scrape → upserts the connection + completes (no index/recompute)", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([liJob()]);
+    mocks.scrapeLinkedIn.mockResolvedValueOnce(richLi);
+
+    await POST(req());
+
+    expect(mocks.upsertLinkedInConnection).toHaveBeenCalledWith("uid-1", expect.objectContaining({ source: "scraper" }));
+    expect(mocks.completeSocialRefreshJob).toHaveBeenCalledWith("job-li");
+    expect(mocks.indexSocialArchive).not.toHaveBeenCalled();
+    expect(findEnqueue("__recompute__")).toBeFalsy();
+    expect(mocks.failSocialRefreshJob).not.toHaveBeenCalled();
+  });
+
+  it("linkedin re-enrich: scraper down → retries (failJob), no upsert/complete", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([liJob()]);
+    mocks.scrapeLinkedIn.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    await POST(req());
+
+    expect(mocks.failSocialRefreshJob).toHaveBeenCalledWith("job-li", expect.stringContaining("linkedin re-enrich"));
+    expect(mocks.upsertLinkedInConnection).not.toHaveBeenCalled();
+    expect(mocks.completeSocialRefreshJob).not.toHaveBeenCalled();
   });
 });

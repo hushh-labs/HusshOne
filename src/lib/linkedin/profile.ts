@@ -10,7 +10,7 @@
  * companies — the strongest disambiguator); verificationReport adds `verifications`.
  */
 import type { ProbeResult, RawApiResult } from "./oauth";
-import { normalizeLinkedInUrl } from "@/lib/auth/identity";
+import { linkedinHandleFromUrl, normalizeLinkedInUrl } from "@/lib/auth/identity";
 
 export interface LinkedInProfile {
   sub: string;
@@ -75,6 +75,9 @@ export interface LinkedInProfileFull extends LinkedInProfile {
   profileStats?: LinkedInProfileStats;
   /** Where this profile came from: "oauth" (limited), "mcp" (user live-login), or "scraper" (URL enrichment). */
   source?: "oauth" | "mcp" | "scraper";
+  /** false = a degraded URL-only "handshake" connection (the scraper VM was unavailable at connect time);
+      the real career data is pulled later by the background LinkedIn re-enrich job. Absent/true = rich. */
+  enriched?: boolean;
 }
 
 /** True only for the URL-paste enrichment profile that is rich enough to anchor
@@ -90,6 +93,39 @@ export function hasUrlEnrichedLinkedInProfile(profile: LinkedInProfileFull | nul
       (profile.skills ?? []).some((skill) => typeof skill === "string" && skill.trim()) ||
       (profile.certifications ?? []).some((item) => item && item.name),
   );
+}
+
+/** Lighter gate than hasUrlEnrichedLinkedInProfile: a valid LinkedIn *connection* — a normalizable
+    /in/ URL from the scraper path — regardless of whether the rich career data has landed yet. Used so a
+    GUEST is not hard-blocked when the LinkedIn scraper VM is down: a URL-only "handshake" connection lets
+    them proceed (limited mode) while the background re-enrich fills the real data in. */
+export function hasLinkedInConnection(profile: LinkedInProfileFull | null | undefined): profile is LinkedInProfileFull {
+  if (!profile || profile.source !== "scraper") return false;
+  return Boolean(normalizeLinkedInUrl(profile.profileUrl ?? ""));
+}
+
+/** Minimal URL-only LinkedIn profile for the resilient connect handshake (scraper VM unavailable). Passes
+    hasLinkedInConnection but NOT hasUrlEnrichedLinkedInProfile; enriched:false marks it for background
+    re-enrich + "limited mode" UI + a non-"SOLVED" Phase-1 identity block. Returns null on a bad URL. */
+export function buildLinkedInHandshakeProfile(normalizedUrl: string): LinkedInProfileFull | null {
+  const handle = linkedinHandleFromUrl(normalizedUrl);
+  if (!handle || !normalizeLinkedInUrl(normalizedUrl)) return null;
+  return {
+    sub: handle,
+    name: "",
+    givenName: "",
+    familyName: "",
+    email: null,
+    emailVerified: false,
+    locale: null,
+    pictureUrl: null,
+    profileUrl: normalizedUrl,
+    headline: null,
+    verifications: [],
+    grantedScopes: ["scraper:linkedin-handshake"],
+    source: "scraper",
+    enriched: false,
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -33,7 +33,7 @@ import {
   signInWithOneCustomToken,
   signOutOfGoogle,
 } from "@/lib/firebase/client";
-import { hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
+import { hasLinkedInConnection, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "@/lib/linkedin/profile";
 import { hasInstagramProfile, type InstagramAccessInfo, type InstagramProfileFull } from "@/lib/instagram/profile";
 import { hasThreadsProfile, type ThreadsAccessInfo, type ThreadsProfileFull } from "@/lib/threads/profile";
 import { hasXProfile, type XAccessInfo, type XProfileFull } from "@/lib/x/profile";
@@ -969,13 +969,14 @@ function ConnectLinkedInInline({
         body: JSON.stringify({ url: normalized }),
       });
       const payload = (await res.json().catch(() => ({}))) as {
-        ok?: boolean; profile?: LinkedInProfileFull; error?: string;
+        ok?: boolean; profile?: LinkedInProfileFull; error?: string; degraded?: boolean;
       };
       if (!res.ok || !payload.ok || !payload.profile) {
         throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
       }
       setUrl("");
       setPhase("connected");
+      track(payload.degraded ? "linkedin_connected_degraded" : "linkedin_connected");
       onConnected(payload.profile);
     } catch (e) {
       const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
@@ -986,7 +987,7 @@ function ConnectLinkedInInline({
   };
 
   const busy = phase === "fetching";
-  if (hasUrlEnrichedLinkedInProfile(profile)) {
+  if (hasLinkedInConnection(profile)) {
     return (
       <div className="field-group connector-form pc-required-link" style={{ gap: 8 }}>
         <label htmlFor={`${inputId}-connected`}>
@@ -1007,7 +1008,12 @@ function ConnectLinkedInInline({
           ) : null}
         </div>
         <span className="field-hint">
-          {Icons.check(12)} {required ? "LinkedIn is required for guest sessions." : "LinkedIn connected — One now reads your real career, not just your name."}
+          {Icons.check(12)}{" "}
+          {hasUrlEnrichedLinkedInProfile(profile)
+            ? required
+              ? "LinkedIn connected — One reads your real career."
+              : "LinkedIn connected — One now reads your real career, not just your name."
+            : "Added in limited mode — One will read your full LinkedIn in the background. Scan again later for a sharper read."}
         </span>
       </div>
     );
@@ -1089,7 +1095,7 @@ function PreCollect({
 }) {
   const initials = initialsForName(user.name);
   const verifications = profile?.verifications ?? [];
-  const hasLinkedIn = hasUrlEnrichedLinkedInProfile(profile);
+  const hasLinkedIn = hasLinkedInConnection(profile);
   const anchorLabel = hasLinkedIn
     ? "Verified via LinkedIn"
     : authProvider === "dev"
@@ -3070,7 +3076,7 @@ export default function OneExperience() {
     setUpgradeNotice(
       "One just leveled up. Send One again to unlock your upgraded intelligence — deeper preference insights read from your social posts and media.",
     );
-    const linkedInConnected = hasUrlEnrichedLinkedInProfile(liProfile);
+    const linkedInConnected = hasLinkedInConnection(liProfile);
     setStage(nextStage ?? (requiresLinkedIn && !linkedInConnected ? "connect" : "precollect"));
   };
 
@@ -3176,7 +3182,7 @@ export default function OneExperience() {
       return;
     }
     setIdentity(u);
-    setStage(requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile) ? "connect" : "precollect");
+    setStage(requiresLinkedIn && !hasLinkedInConnection(liProfile) ? "connect" : "precollect");
   };
 
   const onGuestStart = () => {
@@ -3688,7 +3694,7 @@ export default function OneExperience() {
       if (savedLi) {
         try {
           profile = JSON.parse(savedLi) as LinkedInProfileFull;
-          if (!hasUrlEnrichedLinkedInProfile(profile)) {
+          if (!hasLinkedInConnection(profile)) {
             profile = null;
             scopedDel(user, LS_LI_FULL);
             scopedDel(user, LS_LI_CONNECTED);
@@ -3705,7 +3711,7 @@ export default function OneExperience() {
           const res = await fetch("/api/linkedin/profile", { headers: { Authorization: authorization } });
           if (res.ok) {
             const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; profile?: LinkedInProfileFull };
-            if (payload.ok && hasUrlEnrichedLinkedInProfile(payload.profile)) {
+            if (payload.ok && hasLinkedInConnection(payload.profile)) {
               profile = payload.profile;
               scopedSet(user, LS_LI_FULL, JSON.stringify(profile));
               scopedSet(user, LS_LI_CONNECTED, "1");
@@ -3807,7 +3813,7 @@ export default function OneExperience() {
         }
       }
       setXProfiles(connectedXProfiles);
-      const linkedInConnected = hasUrlEnrichedLinkedInProfile(profile);
+      const linkedInConnected = hasLinkedInConnection(profile);
       const linkedInRequired = provider === "guest";
 
       // Provider-aware connect gate: guest sessions need rich LinkedIn; Google/dev users
@@ -4343,7 +4349,7 @@ export default function OneExperience() {
   const startCollect = () => {
     if (geoBusy || stage === "collect") return; // guard double-submit / overlapping scans
     setUpgradeNotice(""); // they're re-running on the new layer — clear the upgrade prompt
-    if (requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile)) {
+    if (requiresLinkedIn && !hasLinkedInConnection(liProfile)) {
       scopedDel(authUser, LS_LI_FULL);
       scopedDel(authUser, LS_LI_CONNECTED);
       setLiProfile(null);
@@ -4429,7 +4435,7 @@ export default function OneExperience() {
     setConfirmed([]);
     setDismissed([]);
     setDiscoverError("");
-    setStage(requiresLinkedIn && !hasUrlEnrichedLinkedInProfile(liProfile) ? "connect" : "precollect");
+    setStage(requiresLinkedIn && !hasLinkedInConnection(liProfile) ? "connect" : "precollect");
   };
 
   // From the calm "pending" (deadline-handoff) screen → re-check whether the scan finished.

@@ -3,6 +3,7 @@ import { POST } from "./route";
 
 const mocks = vi.hoisted(() => ({
   persistConnectedProfile: vi.fn(async () => undefined),
+  enqueueSocialRefreshJobs: vi.fn(async () => 1),
 }));
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -18,6 +19,10 @@ vi.mock("@/lib/linkedin/connection", () => ({
   persistConnectedProfile: mocks.persistConnectedProfile,
 }));
 
+vi.mock("@/lib/db/scan-store", () => ({
+  enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
+}));
+
 function makeRequest(body: Record<string, unknown>) {
   return new Request("http://localhost/api/linkedin/enrich-url", {
     method: "POST",
@@ -26,7 +31,7 @@ function makeRequest(body: Record<string, unknown>) {
   });
 }
 
-function scraperResponse(overrides: Record<string, unknown> = {}) {
+function richScraperResponse(overrides: Record<string, unknown> = {}) {
   return {
     ok: true,
     count: 1,
@@ -55,55 +60,65 @@ function scraperResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("POST /api/linkedin/enrich-url", () => {
+const enqueueArg = () =>
+  (vi.mocked(mocks.enqueueSocialRefreshJobs).mock.calls[0] as unknown[] | undefined)?.[0] as
+    | { firebaseUid: string; jobs: Array<{ platform: string; publicId: string; metadata?: { url?: string } }> }
+    | undefined;
+
+describe("POST /api/linkedin/enrich-url (resilient)", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.clearAllMocks();
     vi.stubEnv("LINKEDIN_SCRAPER_URL", "http://scraper.local");
     vi.stubEnv("LINKEDIN_SCRAPER_API_KEY", "test-key");
-    mocks.persistConnectedProfile.mockClear();
-    global.fetch = vi.fn(async () => Response.json(scraperResponse())) as never;
+    global.fetch = vi.fn(async () => Response.json(richScraperResponse())) as never;
   });
 
-  it("enriches, maps, and persists a LinkedIn profile URL", async () => {
+  it("VM up → rich scrape: full profile persisted, NOT degraded, no bg job", async () => {
     const res = await POST(makeRequest({ url: "linkedin.com/in/anilsachdev" }));
-    const json = (await res.json()) as { ok?: boolean; profile?: { name?: string; source?: string; email?: string }; normalizedUrl?: string };
+    const json = (await res.json()) as { ok?: boolean; degraded?: boolean; profile?: { name?: string; source?: string } };
 
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
-    expect(json.normalizedUrl).toBe("https://www.linkedin.com/in/anilsachdev");
-    expect(json.profile).toMatchObject({ name: "Anil Sachdev", source: "scraper", email: "user@example.com" });
+    expect(json.degraded).toBeUndefined();
+    expect(json.profile).toMatchObject({ name: "Anil Sachdev", source: "scraper" });
     expect(mocks.persistConnectedProfile).toHaveBeenCalledTimes(1);
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://scraper.local/scrape",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
-        body: JSON.stringify({ url: "https://www.linkedin.com/in/anilsachdev" }),
-      }),
-    );
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid URLs before calling the scraper", async () => {
+  it("invalid URL → 422, no scrape, no persist", async () => {
     const res = await POST(makeRequest({ url: "https://www.linkedin.com/company/hushh" }));
-    const json = (await res.json()) as { ok?: boolean; code?: string };
+    const json = (await res.json()) as { ok?: boolean };
 
-    expect(res.status).toBe(400);
-    expect(json).toMatchObject({ ok: false, code: "invalid_linkedin_url" });
+    expect(res.status).toBe(422);
+    expect(json.ok).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
   });
 
-  it("does not persist sparse scraper output as a connected profile", async () => {
+  it("VM down (scrape throws) → degraded connect (200), URL-only profile + bg re-enrich enqueued", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    }) as never;
+
+    const res = await POST(makeRequest({ url: "https://www.linkedin.com/in/anilsachdev" }));
+    const json = (await res.json()) as { ok?: boolean; degraded?: boolean; profile?: { source?: string; enriched?: boolean; profileUrl?: string } };
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.degraded).toBe(true);
+    expect(json.profile).toMatchObject({ source: "scraper", enriched: false, profileUrl: "https://www.linkedin.com/in/anilsachdev" });
+    expect(mocks.persistConnectedProfile).toHaveBeenCalledTimes(1);
+    expect(enqueueArg()?.jobs?.[0]).toMatchObject({ platform: "linkedin", metadata: { url: "https://www.linkedin.com/in/anilsachdev" } });
+  });
+
+  it("scrape returns sparse/insufficient → degraded connect (200) + bg re-enrich enqueued", async () => {
     global.fetch = vi.fn(async () =>
       Response.json(
-        scraperResponse({
+        richScraperResponse({
           templates: {
             linkedinProfileScraper: {
-              userProfile: {
-                fullName: "Sparse User",
-                title: "· 3rd",
-                url: "https://www.linkedin.com/in/sparse-user/",
-              },
+              userProfile: { fullName: "Sparse User", title: "· 3rd", url: "https://www.linkedin.com/in/sparse-user/" },
               experiences: [],
               education: [],
               skills: [],
@@ -116,41 +131,13 @@ describe("POST /api/linkedin/enrich-url", () => {
     ) as never;
 
     const res = await POST(makeRequest({ url: "https://www.linkedin.com/in/sparse-user" }));
-    const json = (await res.json()) as { ok?: boolean; error?: string };
+    const json = (await res.json()) as { ok?: boolean; degraded?: boolean; profile?: { enriched?: boolean } };
 
-    expect(res.status).toBe(422);
-    expect(json.ok).toBe(false);
-    expect(json.error).toContain("enough LinkedIn profile detail");
-    expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
-  });
-
-  it("returns controlled errors for scraper authwall responses and does not persist", async () => {
-    global.fetch = vi.fn(async () =>
-      Response.json({
-        ok: false,
-        count: 1,
-        results: [{ ok: false, type: "LinkedInAuthwall", error: "LinkedIn returned authwall/login" }],
-      }),
-    ) as never;
-
-    const res = await POST(makeRequest({ url: "https://www.linkedin.com/in/anilsachdev" }));
-    const json = (await res.json()) as { ok?: boolean; code?: string; error?: string };
-
-    expect(res.status).toBe(503);
-    expect(json.ok).toBe(false);
-    expect(json.code).toBe("LinkedInAuthwall");
-    expect(json.error).toContain("authwall");
-    expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
-  });
-
-  it("returns controlled errors for scraper 401/503 and does not persist", async () => {
-    global.fetch = vi.fn(async () => Response.json({ ok: false, error: "Unauthorized" }, { status: 401 })) as never;
-
-    const res = await POST(makeRequest({ url: "https://www.linkedin.com/in/anilsachdev" }));
-    const json = (await res.json()) as { ok?: boolean; code?: string };
-
-    expect(res.status).toBe(503);
-    expect(json).toMatchObject({ ok: false, code: "linkedin_scraper_upstream_error" });
-    expect(mocks.persistConnectedProfile).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.degraded).toBe(true);
+    expect(json.profile?.enriched).toBe(false);
+    expect(mocks.persistConnectedProfile).toHaveBeenCalledTimes(1);
+    expect(enqueueArg()?.jobs?.[0]?.platform).toBe("linkedin");
   });
 });

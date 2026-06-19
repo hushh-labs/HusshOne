@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildLinkedInProfile, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
+import {
+  buildLinkedInHandshakeProfile,
+  buildLinkedInProfile,
+  hasLinkedInConnection,
+  hasUrlEnrichedLinkedInProfile,
+  type LinkedInProfileFull,
+} from "./profile";
 import type { ProbeResult, RawApiResult } from "./oauth";
 
 function probe(key: string, ok: boolean, data: unknown): ProbeResult {
@@ -114,5 +120,33 @@ describe("hasUrlEnrichedLinkedInProfile", () => {
     expect(hasUrlEnrichedLinkedInProfile({ ...base, source: "oauth", skills: ["Fund Operations"] })).toBe(false);
     expect(hasUrlEnrichedLinkedInProfile({ ...base, profileUrl: "https://www.linkedin.com/company/hushh", skills: ["AI"] })).toBe(false);
     expect(hasUrlEnrichedLinkedInProfile(base)).toBe(false);
+  });
+});
+
+describe("hasLinkedInConnection + buildLinkedInHandshakeProfile (degraded connect)", () => {
+  it("hasLinkedInConnection accepts a URL-only scraper profile (no rich sections needed)", () => {
+    const handshake = buildLinkedInHandshakeProfile("https://www.linkedin.com/in/anilsachdev");
+    expect(handshake).not.toBeNull();
+    expect(hasLinkedInConnection(handshake)).toBe(true);
+    // ...but the strict enriched guard still rejects it.
+    expect(hasUrlEnrichedLinkedInProfile(handshake)).toBe(false);
+  });
+
+  it("hasLinkedInConnection rejects non-/in/ URLs and non-scraper sources", () => {
+    const handshake = buildLinkedInHandshakeProfile("https://www.linkedin.com/in/anilsachdev")!;
+    expect(hasLinkedInConnection({ ...handshake, profileUrl: "https://www.linkedin.com/company/hushh" })).toBe(false);
+    expect(hasLinkedInConnection({ ...handshake, source: "oauth" })).toBe(false);
+    expect(hasLinkedInConnection(null)).toBe(false);
+  });
+
+  it("buildLinkedInHandshakeProfile yields a minimal enriched:false profile and null on bad URL", () => {
+    const handshake = buildLinkedInHandshakeProfile("https://www.linkedin.com/in/anilsachdev");
+    expect(handshake).toMatchObject({
+      sub: "anilsachdev",
+      source: "scraper",
+      enriched: false,
+      profileUrl: "https://www.linkedin.com/in/anilsachdev",
+    });
+    expect(buildLinkedInHandshakeProfile("https://www.linkedin.com/company/hushh")).toBeNull();
   });
 });

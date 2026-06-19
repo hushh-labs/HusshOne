@@ -3,7 +3,7 @@ import {
   normalizeLinkedInUrl,
 } from "@/lib/auth/identity";
 import {
-  hasUrlEnrichedLinkedInProfile,
+  hasLinkedInConnection,
   type LinkedInCertification,
   type LinkedInEducation,
   type LinkedInExperience,
@@ -94,6 +94,7 @@ export function parseLinkedInProfileInput(value: unknown): LinkedInProfileFull |
     verifications: list(p.verifications, 10),
     grantedScopes: list(p.grantedScopes, 20),
     source: p.source === "mcp" ? "mcp" : p.source === "oauth" ? "oauth" : p.source === "scraper" ? "scraper" : undefined,
+    ...(p.enriched === false ? { enriched: false } : {}),
     location: s(p.location, 160) || null,
     about: s(p.about, 2000) || null,
     ...(experience.length ? { experience } : {}),
@@ -115,8 +116,11 @@ export function validateLinkedInProfileInput(
     }
     return undefined;
   }
-  if (!hasUrlEnrichedLinkedInProfile(profile)) {
-    throw badInput("Use the LinkedIn URL enrichment step before sending a full LinkedIn profile to One.");
+  // Accept any valid LinkedIn *connection* (a normalizable /in/ URL from the scraper path), including a
+  // degraded URL-only handshake (enriched:false) — so a guest is not rejected when the scraper VM was down
+  // at connect time. The rich career data fills in via the background re-enrich; a re-scan picks it up.
+  if (!hasLinkedInConnection(profile)) {
+    throw badInput("Paste a valid LinkedIn profile URL (linkedin.com/in/…) to continue.");
   }
   return profile;
 }

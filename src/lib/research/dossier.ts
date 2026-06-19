@@ -393,7 +393,14 @@ export function buildPersonDossierQuestion(input: OneSubjectInput): string {
   // bot-blocked to the grounded search engine — so even though the pasted URL is a clean public
   // /in/ link, there's nothing to gain by "reading" it. Force the no-fetch spine whenever we have
   // enriched data (about / structured experience / scraper source), and drive searches off it.
-  const haveFullProfile = !!(li && (li.about || (li.experience && li.experience.length) || li.source === "scraper" || li.source === "mcp"));
+  // A degraded URL-only connect (enriched:false — the scraper VM was down at connect time) is NOT full
+  // data: keep fetchableLinkedIn so the agent reads the public /in/ URL to resolve identity, rather than
+  // being told "identity solved, don't fetch" with an empty profile.
+  const haveFullProfile = !!(
+    li &&
+    li.enriched !== false &&
+    (li.about || (li.experience && li.experience.length) || li.source === "scraper" || li.source === "mcp")
+  );
   const fetchableLinkedIn =
     /linkedin\.com\/in\//i.test(liUrl) && !/profile-thirdparty-redirect/i.test(liUrl) && !haveFullProfile;
   const liNameExtra = li

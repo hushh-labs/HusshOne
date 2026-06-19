@@ -9,11 +9,14 @@ import {
   enqueueSocialRefreshJobs,
   failSocialRefreshJob,
   indexSocialArchive,
+  upsertLinkedInConnection,
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
 import { scrapeInstagramProfileUrl } from "@/lib/instagram/scraper-profile";
 import { scrapeThreadsProfileUrl } from "@/lib/threads/scraper-profile";
 import { scrapeXProfileUrl } from "@/lib/x/scraper-profile";
+import { scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
+import { hasUrlEnrichedLinkedInProfile } from "@/lib/linkedin/profile";
 import { PROFILE_VERSION } from "@/lib/social-intelligence/preference-profile";
 import type { SocialProfileFull } from "@/lib/ria/types";
 
@@ -21,6 +24,9 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const DEEP_PLATFORMS = ["instagram", "threads", "x"];
+// LinkedIn is drained here too (re-enrich jobs from a degraded URL-only connect), but it takes a separate
+// branch below — no staged-grow / archive index / recompute, just scrape → upsert the LinkedIn connection.
+const CLAIM_PLATFORMS = [...DEEP_PLATFORMS, "linkedin"];
 // Staged batched deep-scrape: the first scrape targets FIRST_TARGET posts, then each successful run grows
 // the SAME job by STEP up to CEILING (or until the account is exhausted). Asking for 1024 in one shot was
 // timing out on the node-side fetch (~120s); modest batches finish reliably and depth fills in over the
@@ -81,7 +87,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Unauthorized" }, { status: 401 });
   }
 
-  const jobs = await claimSocialRefreshJobs(JOBS_PER_RUN, { platforms: DEEP_PLATFORMS });
+  const jobs = await claimSocialRefreshJobs(JOBS_PER_RUN, { platforms: CLAIM_PLATFORMS });
   const results: Array<Record<string, unknown>> = [];
 
   for (const job of jobs) {
@@ -97,6 +103,27 @@ export async function POST(request: Request) {
         results.push({ id: job.id, ok: false, reason: "missing_input" });
         continue;
       }
+
+      // LinkedIn re-enrich: a degraded URL-only connect (scraper VM was down at connect time) enqueues this
+      // to pull the real career data once the VM recovers. Scrape → if rich, overwrite the connection;
+      // else retry with backoff. No archive index / preference recompute / staged-grow (LinkedIn ≠ socials).
+      if (job.platform === "linkedin") {
+        const result = await scrapeLinkedInProfileUrl(meta.url).catch(() => null);
+        const enriched = result && hasUrlEnrichedLinkedInProfile(result.profile);
+        console.log(
+          JSON.stringify({ event: "one.scrape.result", platform: "linkedin", publicId: job.publicId, enriched: !!enriched }),
+        );
+        if (enriched) {
+          await upsertLinkedInConnection(job.firebaseUid, result.profile);
+          await completeSocialRefreshJob(job.id);
+          results.push({ id: job.id, ok: true, platform: "linkedin", enriched: true });
+        } else {
+          await failSocialRefreshJob(job.id, "linkedin re-enrich: scraper unavailable / still thin — retry");
+          results.push({ id: job.id, ok: false, platform: "linkedin", retryForEnrich: true });
+        }
+        continue;
+      }
+
       const profile = await scrapeProfile(job.platform, meta.url, meta.maxPosts ?? 1024);
       if (!profile) {
         // access pending, rate-limited, or scraper error — retry with backoff (failJob re-queues)

@@ -447,8 +447,10 @@ describe("POST /api/one/research", () => {
     );
     const json = (await response.json()) as { error?: string };
 
+    // OAuth-lite (source !== "scraper") is still rejected — only a scraper-sourced /in/ connection counts
+    // (a degraded URL-only handshake is fine, but oauth-lite is not a connection). User returns to URL capture.
     expect(response.status).toBe(400);
-    expect(json.error).toContain("full LinkedIn profile");
+    expect(json.error).toContain("LinkedIn profile URL");
 
     const research = await import("@/lib/research/client");
     expect(research.startResearch).not.toHaveBeenCalled();
