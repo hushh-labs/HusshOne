@@ -180,7 +180,7 @@ async function autoScrollV1(page, maxPosts) {
       for (; pass < maxScrollPasses; pass += 1) {
         const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
         window.scrollTo(0, height);
-        await wait(800);
+        await wait(700 + Math.floor(Math.random() * 600)); // Phase-2: jittered pacing (~0.7-1.3s) — less bot-like, fewer 429s
         const next = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
         postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
           /\/(?:p|reel)\/[^/]+/i.test(link.getAttribute("href") || ""),

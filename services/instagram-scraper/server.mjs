@@ -55,6 +55,20 @@ const server = http.createServer(async (request, response) => {
       (requestUrl.pathname === "/scrape" || requestUrl.pathname === "/access-request" || requestUrl.pathname === "/access-check")
     ) {
       if (!isAuthorized(request)) return sendJson(response, 401, { ok: false, error: "Unauthorized" });
+      // Phase-2 pacing: after a recent 429, honor the cooldown instead of hammering Instagram (which only
+      // escalates the IP block). The One worker's resilient staging backs off and retries later.
+      if (requestUrl.pathname === "/scrape") {
+        const cooldownMs = activeCooldownMs();
+        if (cooldownMs > 0) {
+          return sendJson(response, 429, {
+            ok: false,
+            error: "Instagram scraper is cooling down after a recent rate-limit — backing off to protect the session/IP.",
+            type: "InstagramCooldown",
+            cooldownUntil: sessionHealthState.cooldownUntil,
+            retryAfterMs: cooldownMs,
+          });
+        }
+      }
       const body = await readJson(request);
       const urls = normalizeInputUrls(body);
       if (!urls.length) return sendJson(response, 400, { ok: false, error: "Provide `url` or `urls` with Instagram profile URL(s)." });
@@ -261,6 +275,11 @@ function isAuthorized(request) {
 function isLocalRequest(request) {
   const address = String(request.socket.remoteAddress || "");
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1" || address.startsWith("::ffff:127.");
+}
+
+function activeCooldownMs() {
+  const until = sessionHealthState.cooldownUntil ? Date.parse(sessionHealthState.cooldownUntil) : NaN;
+  return Number.isFinite(until) ? Math.max(0, until - Date.now()) : 0;
 }
 
 function recordSessionOutcome(result) {
