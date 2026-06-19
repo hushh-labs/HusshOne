@@ -69,8 +69,9 @@ Never print the key. Don't paste secrets into chat.
 | IG `usableForDeepScrape:false` / `requiresHumanLogin:true` / `hasSessionId:false` | logged out | 🔴 needs noVNC re-login |
 | IG `last429At` recent / `cooldownUntil` future / browser login page shows HTTP 429 | datacenter IP rate-limited | 🔴 needs proxy (or cooldown) |
 | X/Threads `ok:true, liveBrowser:true` | up + browser attached | 🟡 PASS-ish (login-validity not exposed; confirm via a real scan or a maxPosts=1 probe) |
-| LinkedIn `/health` 200, `/session/status` 404 | up; no session endpoint | 🟡 health-only — confirm via a real scan |
-| LinkedIn `/scrape` → HTTP 502 / timeout (~165s, 0 bytes) | full profile scrape failing (degraded session / authwall / gateway timeout) | 🔴 re-login + investigate |
+| LinkedIn `/health` 200, `/session/status` 404 | up; no session endpoint (older server) | 🟡 health-only — confirm via a real scan |
+| LinkedIn `/scrape` returns 200 + `fullName`/`title` (e.g. "Sundar Pichai", "CEO at Google") | working | ✅ PASS |
+| LinkedIn `/scrape` HTTP 502/000 on a SHORT client timeout | the full-detail scrape (experience/education/skills subpages) is just SLOW — NOT a down signal | ⚠️ retry with a longer timeout / lighter request before calling it down |
 
 ## Fixes
 - **Logged out (re-login):** `services/<svc>-scraper/scripts/gcp-vm/open-login-browser.sh` (project
