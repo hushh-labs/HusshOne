@@ -1,5 +1,12 @@
 import { instagramHandleFromUrl, normalizeInstagramUrl } from "@/lib/auth/identity";
-import type { InstagramAccessInfo, InstagramAccessState, InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "./profile";
+import type {
+  InstagramAccessInfo,
+  InstagramAccessState,
+  InstagramHighlight,
+  InstagramProfileFull,
+  InstagramPublicPost,
+  InstagramScrapeMeta,
+} from "./profile";
 
 // Node-side fetch abort. This (not the VM's page.goto timeout) is what kills deep scrapes; raised to 180s
 // so the larger staged batches (≈840→1024) can finish. Env INSTAGRAM_SCRAPER_TIMEOUT_MS overrides.
@@ -33,6 +40,7 @@ type InstagramScraperTemplate = {
   highlights?: unknown;
   recentPublicPosts?: unknown;
   access?: unknown;
+  scrapeMeta?: unknown;
   visibleProfileText?: unknown;
 };
 
@@ -177,6 +185,40 @@ function mapVisibleProfileText(value: unknown): string[] {
     .slice(0, 80);
 }
 
+function mapScrapeMeta(value: unknown): InstagramScrapeMeta | undefined {
+  const rec = asRecord(value);
+  if (!Object.keys(rec).length) return undefined;
+  const num = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n) : undefined;
+  };
+  const access = accessState(rec.accessState);
+  return {
+    parser: strOrNull(rec.parser, 80),
+    title: strOrNull(rec.title, 200),
+    url: strOrNull(rec.url, 500),
+    authwall: rec.authwall === true || undefined,
+    notFound: rec.notFound === true || undefined,
+    chromeError: rec.chromeError === true || undefined,
+    httpErrorCode: strOrNull(rec.httpErrorCode, 10),
+    rateLimited: rec.rateLimited === true || undefined,
+    accessState: access,
+    lineCount: num(rec.lineCount),
+    requestedMaxPosts: num(rec.requestedMaxPosts),
+    returnedPosts: num(rec.returnedPosts),
+    returnedPostLinks: num(rec.returnedPostLinks),
+    scrollEngine: strOrNull(rec.scrollEngine, 20),
+    scrollPasses: num(rec.scrollPasses),
+    stablePasses: num(rec.stablePasses),
+    stopReason: strOrNull(rec.stopReason, 80),
+    scrollStopReason: strOrNull(rec.scrollStopReason, 80),
+    maxScrollPasses: num(rec.maxScrollPasses),
+    stableLimit: num(rec.stableLimit),
+    detailHydrationLimit: num(rec.detailHydrationLimit),
+    detailHydratedPosts: num(rec.detailHydratedPosts),
+  };
+}
+
 export function mapInstagramResultToProfile(result: InstagramScraperResult): InstagramProfileFull {
   const template = result.template;
   if (!template) {
@@ -217,6 +259,8 @@ export function mapInstagramResultToProfile(result: InstagramScraperResult): Ins
   if (posts.length) profile.recentPublicPosts = posts;
   const visibleProfileText = mapVisibleProfileText(template.visibleProfileText);
   if (visibleProfileText.length) profile.visibleProfileText = visibleProfileText;
+  const scrapeMeta = mapScrapeMeta(template.scrapeMeta);
+  if (scrapeMeta) profile.scrapeMeta = scrapeMeta;
   return profile;
 }
 
@@ -233,9 +277,11 @@ export function mapInstagramResponseToProfile(
       ? 422
       : /notfound|not found/i.test(text)
         ? 404
-        : /authwall|login|checkpoint|challenge/i.test(text)
-          ? 503
-          : 502;
+      : /authwall|login|checkpoint|challenge/i.test(text)
+        ? 503
+        : /rate|limited|too many/i.test(text)
+          ? 429
+        : 502;
     throw new InstagramScraperError(error, status, type);
   }
   const profile = mapInstagramResultToProfile({ ...first, profileUrl: first.profileUrl || normalizedUrl });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { normalizeInstagramProfileUrl, instagramUsernameFromUrl } from "./scripts/lib/instagram-url.mjs";
 import {
   checkInstagramProfileAccess,
+  inspectInstagramSession,
   requestInstagramProfileAccess,
   scrapeInstagramProfile,
 } from "./scripts/lib/live-browser-scraper.mjs";
@@ -18,6 +19,13 @@ const browserUrl = process.env.INSTAGRAM_BROWSER_URL || "http://127.0.0.1:9222";
 const noVncUrl = process.env.INSTAGRAM_NOVNC_URL || "http://127.0.0.1:6080/vnc.html?host=127.0.0.1&port=6080";
 const chromeProfileDir = process.env.PUPPETEER_USER_DATA_DIR || "/var/lib/instagram-scraper/chrome-profile";
 const instagramLoginUrl = "https://www.instagram.com/accounts/login/";
+const scrollEngine = process.env.INSTAGRAM_SCROLL_ENGINE === "v2" ? "v2" : "v1";
+const detailHydrationLimit = Math.max(0, Math.min(24, Number(process.env.INSTAGRAM_DETAIL_HYDRATION_LIMIT || 0) || 0));
+const sessionHealthState = {
+  last429At: null,
+  cooldownUntil: null,
+  lastSuccessfulScrapeAt: null,
+};
 
 const server = http.createServer(async (request, response) => {
   try {
@@ -29,7 +37,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && requestUrl.pathname === "/session/status") {
       if (!isAuthorized(request)) return sendJson(response, 401, { ok: false, error: "Unauthorized" });
-      return sendJson(response, 200, buildSessionStatus());
+      return sendJson(response, 200, await buildSessionStatus());
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/login-intent") {
@@ -56,6 +64,7 @@ const server = http.createServer(async (request, response) => {
       const results = [];
       for (const url of urls) {
         const result = await scrapeOne(url, { action: actionForPath(requestUrl.pathname), maxPosts });
+        recordSessionOutcome(result);
         await writeResult(result);
         await writeAccessRecord(result);
         results.push(result);
@@ -103,6 +112,18 @@ async function scrapeOne(profileUrl, options = {}) {
     if (raw?.scrapeMeta?.notFound) {
       return { ok: false, profileId, profileUrl, error: "Instagram profile was not found.", type: "InstagramNotFound", access, raw, template };
     }
+    if (isBlockedResponse(raw, access)) {
+      return {
+        ok: false,
+        profileId,
+        profileUrl,
+        error: errorForAccess(access),
+        type: typeForAccessState(access.state),
+        access,
+        raw,
+        template,
+      };
+    }
     if (!isVisibleAccess(access)) {
       return {
         ok: false,
@@ -134,7 +155,21 @@ function actionForPath(pathname) {
 }
 
 function isAuthwallResponse(raw) {
-  return raw?.scrapeMeta?.authwall === true || /accounts\/login|challenge/i.test(String(raw?.scrapeMeta?.url || ""));
+  const state = raw?.access?.state || raw?.scrapeMeta?.accessState;
+  return (
+    raw?.scrapeMeta?.authwall === true ||
+    state === "login_required" ||
+    state === "checkpoint_required" ||
+    /accounts\/login|challenge/i.test(String(raw?.scrapeMeta?.url || ""))
+  );
+}
+
+function isBlockedResponse(raw, access) {
+  if (access.state === "rate_limited" || access.state === "blocked") return true;
+  const meta = raw?.scrapeMeta || {};
+  if (meta.rateLimited === true || meta.httpErrorCode === "429") return true;
+  if (meta.chromeError === true && access.canScrapePosts !== true) return true;
+  return false;
 }
 
 function normalizeAccess(raw, template) {
@@ -177,6 +212,10 @@ function typeForAccessState(state) {
 }
 
 function errorForAccess(access) {
+  if (access.state === "rate_limited") return access.reason || "Instagram rate-limited the VM browser session. Retry after cooldown or re-check the VM session.";
+  if (access.state === "login_required") return access.reason || "Instagram requires the VM browser to log in.";
+  if (access.state === "checkpoint_required") return access.reason || "Instagram requires a manual checkpoint in the VM browser.";
+  if (access.state === "blocked") return access.reason || "Instagram did not allow this VM browser session to view the profile.";
   if (access.state === "private_not_following") return "Instagram profile is private and the VM account is not following it yet.";
   if (access.state === "follow_requested" || access.state === "pending_approval") {
     return "Instagram follow request is pending owner approval. One will continue without Instagram social context for now.";
@@ -224,7 +263,26 @@ function isLocalRequest(request) {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1" || address.startsWith("::ffff:127.");
 }
 
-function buildSessionStatus() {
+function recordSessionOutcome(result) {
+  const state = result?.access?.state || result?.raw?.access?.state || result?.raw?.scrapeMeta?.accessState;
+  const now = new Date();
+  if (state === "rate_limited" || result?.raw?.scrapeMeta?.httpErrorCode === "429") {
+    sessionHealthState.last429At = now.toISOString();
+    sessionHealthState.cooldownUntil = new Date(now.getTime() + 15 * 60_000).toISOString();
+  }
+  if (result?.ok && result?.access?.canScrapePosts === true) {
+    sessionHealthState.lastSuccessfulScrapeAt = now.toISOString();
+  }
+}
+
+async function buildSessionStatus() {
+  let inspection = null;
+  if (liveBrowserEnabled) {
+    inspection = await inspectInstagramSession().catch((error) => ({
+      inspected: false,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
   return {
     ok: true,
     service: "instagram-scraper",
@@ -234,6 +292,28 @@ function buildSessionStatus() {
     chromeProfileDir,
     loginUrl: instagramLoginUrl,
     outputDir,
+    scrollEngine,
+    detailHydrationLimit,
+    hasSessionId: inspection?.hasSessionId ?? null,
+    hasDsUserId: inspection?.hasDsUserId ?? null,
+    usableForDeepScrape: inspection?.usableForDeepScrape ?? null,
+    requiresHumanLogin: inspection?.requiresHumanLogin ?? (liveBrowserEnabled ? null : false),
+    last429At: sessionHealthState.last429At,
+    cooldownUntil: sessionHealthState.cooldownUntil,
+    lastSuccessfulScrapeAt: sessionHealthState.lastSuccessfulScrapeAt,
+    sessionInspection: inspection
+      ? {
+          inspected: inspection.inspected === true,
+          usableForDeepScrape: inspection.usableForDeepScrape ?? null,
+          requiresHumanLogin: inspection.requiresHumanLogin ?? null,
+          chromeError: inspection.chromeError ?? null,
+          httpErrorCode: inspection.httpErrorCode ?? null,
+          rateLimited: inspection.rateLimited ?? null,
+          checkpoint: inspection.checkpoint ?? null,
+          loginRequired: inspection.loginRequired ?? null,
+          error: inspection.error || null,
+        }
+      : { inspected: false, reason: liveBrowserEnabled ? "inspection_unavailable" : "live_browser_disabled" },
     notes: [
       "Use /login-intent through an SSH/local tunnel when Instagram asks for login, 2FA, CAPTCHA, or checkpoint handling.",
       "Leave the VM Chrome window open after login; normal /scrape requests reuse the same persistent Chromium profile.",
@@ -244,7 +324,13 @@ function buildSessionStatus() {
 }
 
 function buildLoginIntentHtml() {
-  const status = buildSessionStatus();
+  const status = {
+    liveBrowser: liveBrowserEnabled,
+    browserUrl,
+    noVncUrl,
+    chromeProfileDir,
+    loginUrl: instagramLoginUrl,
+  };
   return `<!doctype html>
 <html lang="en">
   <head>

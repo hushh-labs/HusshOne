@@ -6,6 +6,8 @@ const DEFAULT_TIMEOUT_MS = Number(process.env.INSTAGRAM_PROFILE_SCRAPER_TIMEOUT_
 const DEFAULT_MAX_POSTS = Number(process.env.INSTAGRAM_MAX_POSTS_PER_PROFILE || 1024);
 const DEFAULT_SCROLL_PASSES = Number(process.env.INSTAGRAM_MAX_SCROLL_PASSES || 250);
 const DEFAULT_STABLE_SCROLL_PASSES = Number(process.env.INSTAGRAM_STABLE_SCROLL_PASSES || 5);
+const DEFAULT_SCROLL_ENGINE = process.env.INSTAGRAM_SCROLL_ENGINE === "v2" ? "v2" : "v1";
+const DEFAULT_DETAIL_HYDRATION_LIMIT = Math.max(0, Math.min(24, Number(process.env.INSTAGRAM_DETAIL_HYDRATION_LIMIT || 0) || 0));
 
 export async function scrapeInstagramProfile(profileUrl, options = {}) {
   return runInstagramProfileBrowser(profileUrl, {
@@ -53,20 +55,74 @@ async function runInstagramProfileBrowser(profileUrl, options = {}) {
         raw.access = { ...raw.access, requestedAction };
       }
       if (!raw.access || raw.access.canScrapePosts || raw.access.state === "public_visible" || raw.access.state === "approved_visible") {
-        await autoScroll(page, maxPosts);
+        const scrollMeta = await autoScroll(page, maxPosts);
         await delay(1200);
-        return await page.evaluate(extractInstagramProfileFromDom, { maxPosts });
+        return await extractProfileWithMeta(page, { maxPosts, scrollMeta });
       }
-      return raw;
+      return withScrapeMeta(raw, {
+        requestedMaxPosts: maxPosts,
+        returnedPosts: Array.isArray(raw?.recentPublicPosts) ? raw.recentPublicPosts.length : 0,
+        scrollEngine: DEFAULT_SCROLL_ENGINE,
+        scrollPasses: 0,
+        stablePasses: 0,
+        stopReason: raw?.access?.state || "access_not_visible",
+        scrollStopReason: raw?.access?.state || "access_not_visible",
+        detailHydrationLimit: DEFAULT_DETAIL_HYDRATION_LIMIT,
+        detailHydratedPosts: 0,
+      });
     }
-    await autoScroll(page, maxPosts);
+    const scrollMeta = await autoScroll(page, maxPosts);
     await delay(1200);
-    return await page.evaluate(extractInstagramProfileFromDom, { maxPosts });
+    return await extractProfileWithMeta(page, { maxPosts, scrollMeta });
   } finally {
     if (page) await page.close().catch(() => undefined);
     if (useLiveBrowser) await browser.disconnect();
     else await browser.close().catch(() => undefined);
   }
+}
+
+async function extractProfileWithMeta(page, { maxPosts, scrollMeta }) {
+  let raw = await page.evaluate(extractInstagramProfileFromDom, { maxPosts });
+  const detailLimit = Math.min(DEFAULT_DETAIL_HYDRATION_LIMIT, raw?.recentPublicPosts?.length || 0);
+  let detailHydratedPosts = 0;
+  if (detailLimit > 0 && raw?.access?.canScrapePosts === true) {
+    const hydrated = await hydrateVisiblePostDetails(page, raw.recentPublicPosts.slice(0, detailLimit));
+    detailHydratedPosts = hydrated.filter(Boolean).length;
+    raw = {
+      ...raw,
+      recentPublicPosts: raw.recentPublicPosts.map((post, index) => (index < hydrated.length && hydrated[index] ? { ...post, ...hydrated[index] } : post)),
+    };
+  }
+  return withScrapeMeta(raw, {
+    ...scrollMeta,
+    requestedMaxPosts: maxPosts,
+    returnedPosts: Array.isArray(raw?.recentPublicPosts) ? raw.recentPublicPosts.length : 0,
+    detailHydrationLimit: DEFAULT_DETAIL_HYDRATION_LIMIT,
+    detailHydratedPosts,
+    stopReason: stopReasonForRaw(raw, scrollMeta),
+    scrollStopReason: stopReasonForRaw(raw, scrollMeta),
+  });
+}
+
+function withScrapeMeta(raw, extra) {
+  return {
+    ...raw,
+    scrapeMeta: {
+      ...(raw?.scrapeMeta || {}),
+      ...extra,
+      accessState: raw?.access?.state || raw?.scrapeMeta?.accessState || null,
+    },
+  };
+}
+
+function stopReasonForRaw(raw, scrollMeta = {}) {
+  if (raw?.access?.state === "rate_limited") return "rate_limited";
+  if (raw?.access?.state === "login_required") return "login_required";
+  if (raw?.access?.state === "checkpoint_required") return "checkpoint_required";
+  if (raw?.scrapeMeta?.chromeError) return raw?.scrapeMeta?.httpErrorCode === "429" ? "rate_limited" : "chrome_error";
+  if (raw?.scrapeMeta?.authwall) return "authwall";
+  if (raw?.scrapeMeta?.notFound) return "not_found";
+  return scrollMeta.stopReason || "unknown";
 }
 
 function shouldClickFollowRequest(raw) {
@@ -108,30 +164,164 @@ function resolveChromePath() {
 }
 
 async function autoScroll(page, maxPosts) {
-  await page.evaluate(
+  if (DEFAULT_SCROLL_ENGINE === "v2") return autoScrollV2(page, maxPosts);
+  return autoScrollV1(page, maxPosts);
+}
+
+async function autoScrollV1(page, maxPosts) {
+  return await page.evaluate(
     async (limit, maxScrollPasses, stableLimit) => {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       let previousHeight = 0;
       let stable = 0;
-      for (let pass = 0; pass < maxScrollPasses; pass += 1) {
+      let postCount = 0;
+      let stopReason = "max_scroll_passes";
+      let pass = 0;
+      for (; pass < maxScrollPasses; pass += 1) {
         const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
         window.scrollTo(0, height);
         await wait(800);
         const next = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-        const postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
+        postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
           /\/(?:p|reel)\/[^/]+/i.test(link.getAttribute("href") || ""),
         ).length;
         stable = next === previousHeight ? stable + 1 : 0;
         previousHeight = next;
-        if (postCount >= limit) break;
-        if (stable >= stableLimit) break;
+        if (postCount >= limit) {
+          stopReason = "limit_reached";
+          break;
+        }
+        if (stable >= stableLimit) {
+          stopReason = "stable_feed";
+          break;
+        }
       }
       window.scrollTo(0, 0);
+      return {
+        scrollEngine: "v1",
+        requestedMaxPosts: limit,
+        scrollPasses: pass,
+        stablePasses: stable,
+        returnedPostLinks: postCount,
+        stopReason,
+        scrollStopReason: stopReason,
+        maxScrollPasses,
+        stableLimit,
+      };
     },
     maxPosts,
     DEFAULT_SCROLL_PASSES,
     DEFAULT_STABLE_SCROLL_PASSES,
   );
+}
+
+async function autoScrollV2(page, maxPosts) {
+  return await page.evaluate(
+    async (limit, maxScrollPasses, stableLimit) => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const postLinks = () =>
+        [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
+          .map((link) => link.getAttribute("href") || "")
+          .filter((href) => /\/(?:p|reel)\/[^/]+/i.test(href));
+      const pageState = () => {
+        const text = document.body.innerText || "";
+        const url = location.href || "";
+        const httpError = text.match(/\bHTTP ERROR\s+(\d{3})\b/i)?.[1] || null;
+        return {
+          rateLimited:
+            httpError === "429" ||
+            /try again later|please wait a few minutes|feedback required|temporarily blocked|too many requests/i.test(text),
+          authwall: /\/accounts\/login|\/challenge/i.test(location.pathname) || /\bLog in to Instagram\b/i.test(text),
+          chromeError: /^chrome-error:\/\//i.test(url) || /This page isn.t working|ERR_[A-Z_]+|\bHTTP ERROR\s+\d{3}\b/i.test(text),
+        };
+      };
+      let previousHeight = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+      let previousCount = postLinks().length;
+      let stable = 0;
+      let pass = 0;
+      let stopReason = previousCount >= limit ? "limit_reached" : "max_scroll_passes";
+
+      for (; pass < maxScrollPasses && previousCount < limit; pass += 1) {
+        const state = pageState();
+        if (state.rateLimited) {
+          stopReason = "rate_limited";
+          break;
+        }
+        if (state.authwall) {
+          stopReason = "authwall";
+          break;
+        }
+        if (state.chromeError) {
+          stopReason = "chrome_error";
+          break;
+        }
+
+        window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+        await wait(900 + Math.min(stable * 350, 1600));
+        const nextHeight = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+        const nextCount = postLinks().length;
+
+        if (nextCount >= limit) {
+          previousCount = nextCount;
+          stopReason = "limit_reached";
+          break;
+        }
+
+        if (nextCount <= previousCount && nextHeight <= previousHeight) {
+          stable += 1;
+          if (stable % 2 === 1) {
+            window.scrollBy(0, -Math.round(window.innerHeight * 0.8));
+            await wait(450);
+          }
+          if (stable >= stableLimit) {
+            stopReason = "stable_feed";
+            previousCount = nextCount;
+            break;
+          }
+        } else {
+          stable = 0;
+        }
+        previousHeight = nextHeight;
+        previousCount = nextCount;
+      }
+
+      window.scrollTo(0, 0);
+      return {
+        scrollEngine: "v2",
+        requestedMaxPosts: limit,
+        scrollPasses: pass,
+        stablePasses: stable,
+        returnedPostLinks: previousCount,
+        stopReason,
+        scrollStopReason: stopReason,
+        maxScrollPasses,
+        stableLimit,
+      };
+    },
+    maxPosts,
+    DEFAULT_SCROLL_PASSES,
+    DEFAULT_STABLE_SCROLL_PASSES,
+  );
+}
+
+async function hydrateVisiblePostDetails(page, posts) {
+  const details = [];
+  const profileUrl = page.url();
+  for (const post of posts) {
+    if (!post?.url) {
+      details.push(null);
+      continue;
+    }
+    try {
+      await page.goto(post.url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+      await delay(1200);
+      details.push(await page.evaluate(extractInstagramPostDetailFromDom));
+    } catch (error) {
+      details.push({ detailError: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS }).catch(() => undefined);
+  return details;
 }
 
 async function dismissInstagramInterruption(page) {
@@ -172,6 +362,8 @@ export function extractInstagramProfileFromDom(options = {}) {
   const ogTitle = meta("property", "og:title") || meta("name", "twitter:title") || title;
   const ogDescription = meta("property", "og:description") || meta("name", "description") || "";
   const avatarUrl = meta("property", "og:image") || meta("name", "twitter:image") || null;
+  const httpErrorCode = text.match(/\bHTTP ERROR\s+(\d{3})\b/i)?.[1] || null;
+  const chromeError = /^chrome-error:\/\//i.test(location.href) || /This page isn.t working|ERR_[A-Z_]+|\bHTTP ERROR\s+\d{3}\b/i.test(text);
   const authwall =
     /\/accounts\/login|\/challenge/i.test(location.pathname) ||
     /^Login/i.test(title) ||
@@ -206,6 +398,9 @@ export function extractInstagramProfileFromDom(options = {}) {
       url,
       authwall,
       notFound,
+      chromeError,
+      httpErrorCode,
+      rateLimited: access.state === "rate_limited",
       accessState: access.state,
       lineCount: allLines.length,
     },
@@ -418,9 +613,11 @@ export function extractInstagramProfileFromDom(options = {}) {
     const relationship = relationshipSignals();
     const checkpoint = /checkpoint|challenge|confirm it's you|help us confirm/i.test(text) || /\/challenge/i.test(location.pathname);
     const loginRequired = authwall && !checkpoint;
-    const rateLimited = /try again later|please wait a few minutes|feedback required|temporarily blocked/i.test(text);
-    const blocked = /user not found|profile isn't available|restricted|blocked/i.test(text) && !notFound;
-    const canScrapePosts = posts.length > 0 && !authwall && !notFound && !rateLimited;
+    const rateLimited =
+      httpErrorCode === "429" ||
+      /try again later|please wait a few minutes|feedback required|temporarily blocked|too many requests/i.test(text);
+    const blocked = (chromeError || /user not found|profile isn't available|restricted|blocked/i.test(text)) && !notFound;
+    const canScrapePosts = posts.length > 0 && !authwall && !notFound && !rateLimited && !chromeError;
     let state = "public_visible";
     let reason = null;
 
@@ -432,7 +629,7 @@ export function extractInstagramProfileFromDom(options = {}) {
       reason = "Instagram requires the VM browser to log in.";
     } else if (rateLimited) {
       state = "rate_limited";
-      reason = "Instagram asked the session to slow down.";
+      reason = "Instagram asked the VM browser session to slow down.";
     } else if (notFound) {
       state = "not_found";
       reason = "Instagram says this profile is not available.";
@@ -480,8 +677,10 @@ export function extractInstagramProfileFromDom(options = {}) {
   }
 
   function accessEvidence() {
+    const priority = allLines.find((line) => /HTTP ERROR|try again later|please wait a few minutes|feedback required|temporarily blocked|too many requests/i.test(line));
+    if (priority) return clean(priority, 300);
     const match = allLines.find((line) =>
-      /This (?:account|profile) is private|Follow to see|Requested|Log in|checkpoint|try again later|Sorry, this page/i.test(line),
+      /This (?:account|profile) is private|Follow to see|Requested|Log in|checkpoint|try again later|HTTP ERROR|This page isn.t working|Sorry, this page/i.test(line),
     );
     return match ? clean(match, 300) : null;
   }
@@ -532,6 +731,69 @@ export function extractInstagramProfileFromDom(options = {}) {
     } catch {
       return String(value || "");
     }
+  }
+}
+
+export function extractInstagramPostDetailFromDom() {
+  const clean = (value, max) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  const text = document.body.innerText || "";
+  const meta = (attr, key) => document.querySelector(`meta[${attr}="${key}"]`)?.getAttribute("content")?.trim() || "";
+  const caption = meta("property", "og:description") || meta("name", "description") || "";
+  const timestamp = document.querySelector("time[datetime]")?.getAttribute("datetime") || null;
+  return {
+    detailCaption: clean(caption, 1000) || null,
+    detailTimestamp: clean(timestamp, 80) || null,
+    detailVisibleText: clean(text, 1200) || null,
+    detailSource: "post_page_dom",
+  };
+}
+
+export async function inspectInstagramSession() {
+  if (process.env.INSTAGRAM_LIVE_BROWSER !== "true") {
+    return { inspected: false, reason: "live_browser_disabled" };
+  }
+  const browser = await connectBrowser();
+  let page;
+  try {
+    page = await browser.newPage();
+    await page.goto("https://www.instagram.com/", { waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => undefined);
+    await delay(1000);
+    const cookies = await page.cookies("https://www.instagram.com/");
+    const cookieNames = new Set(cookies.map((cookie) => String(cookie.name || "").toLowerCase()));
+    const pageState = await page
+      .evaluate(() => {
+        const text = document.body.innerText || "";
+        const httpErrorCode = text.match(/\bHTTP ERROR\s+(\d{3})\b/i)?.[1] || null;
+        const chromeError = /^chrome-error:\/\//i.test(location.href) || /This page isn.t working|ERR_[A-Z_]+|\bHTTP ERROR\s+\d{3}\b/i.test(text);
+        const checkpoint = /checkpoint|challenge|confirm it's you|help us confirm/i.test(text) || /\/challenge/i.test(location.pathname);
+        const loginRequired = /\/accounts\/login/i.test(location.pathname) || /\bLog in to Instagram\b/i.test(text);
+        const rateLimited =
+          httpErrorCode === "429" ||
+          /try again later|please wait a few minutes|feedback required|temporarily blocked|too many requests/i.test(text);
+        return {
+          url: location.href,
+          title: document.title || null,
+          httpErrorCode,
+          chromeError,
+          checkpoint,
+          loginRequired,
+          rateLimited,
+        };
+      })
+      .catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+    const hasSessionId = cookieNames.has("sessionid");
+    const hasDsUserId = cookieNames.has("ds_user_id");
+    return {
+      inspected: true,
+      hasSessionId,
+      hasDsUserId,
+      usableForDeepScrape: Boolean(hasSessionId && !pageState.checkpoint && !pageState.loginRequired && !pageState.rateLimited && !pageState.chromeError),
+      requiresHumanLogin: Boolean(!hasSessionId || pageState.checkpoint || pageState.loginRequired),
+      ...pageState,
+    };
+  } finally {
+    if (page) await page.close().catch(() => undefined);
+    await browser.disconnect();
   }
 }
 

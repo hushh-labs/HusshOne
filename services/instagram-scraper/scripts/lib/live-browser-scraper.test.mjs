@@ -148,6 +148,26 @@ test("detects login walls and checkpoints as authwall states", () => {
   dom.window.close();
 });
 
+test("detects Chrome HTTP 429 pages as rate-limited instead of public-visible", () => {
+  const dom = withDom(
+    "https://www.instagram.com/sundarpichai/",
+    `<!doctype html><html><head><title>www.instagram.com</title></head><body><main></main></body></html>`,
+    ["This page isn't working", "If the problem continues, contact the site owner.", "HTTP ERROR 429", "Reload"].join("\n"),
+  );
+
+  const profile = extractInstagramProfileFromDom({ maxPosts: 120 });
+  assert.equal(profile.username, "sundarpichai");
+  assert.equal(profile.access.state, "rate_limited");
+  assert.equal(profile.access.canScrapePosts, false);
+  assert.equal(profile.access.reason, "Instagram asked the VM browser session to slow down.");
+  assert.equal(profile.access.evidenceText, "HTTP ERROR 429");
+  assert.equal(profile.scrapeMeta.chromeError, true);
+  assert.equal(profile.scrapeMeta.httpErrorCode, "429");
+  assert.equal(profile.scrapeMeta.rateLimited, true);
+  assert.deepEqual(profile.recentPublicPosts, []);
+  dom.window.close();
+});
+
 test("detects sparse or blocked not-found pages", () => {
   const dom = withDom(
     "https://www.instagram.com/missing_user/",

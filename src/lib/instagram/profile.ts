@@ -55,6 +55,31 @@ export interface InstagramAccessInfo {
   nextCheckAfter?: string | null;
 }
 
+export interface InstagramScrapeMeta {
+  parser?: string | null;
+  title?: string | null;
+  url?: string | null;
+  authwall?: boolean;
+  notFound?: boolean;
+  chromeError?: boolean;
+  httpErrorCode?: string | null;
+  rateLimited?: boolean;
+  accessState?: InstagramAccessState | null;
+  lineCount?: number;
+  requestedMaxPosts?: number;
+  returnedPosts?: number;
+  returnedPostLinks?: number;
+  scrollEngine?: "v1" | "v2" | string | null;
+  scrollPasses?: number;
+  stablePasses?: number;
+  stopReason?: string | null;
+  scrollStopReason?: string | null;
+  maxScrollPasses?: number;
+  stableLimit?: number;
+  detailHydrationLimit?: number;
+  detailHydratedPosts?: number;
+}
+
 export interface InstagramProfileFull {
   platform: "Instagram";
   username: string;
@@ -69,6 +94,7 @@ export interface InstagramProfileFull {
   highlights?: InstagramHighlight[];
   recentPublicPosts?: InstagramPublicPost[];
   access?: InstagramAccessInfo;
+  scrapeMeta?: InstagramScrapeMeta;
   visibleProfileText?: string[];
   source: "scraper";
   connectedAt?: string;
