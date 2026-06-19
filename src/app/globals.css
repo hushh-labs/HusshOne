@@ -650,14 +650,18 @@ button { font-family: inherit; cursor: pointer; }
   line-height: 1.55;
 }
 .pref-top {
+  /* Headline block on top, the metric strip as a full-width spec bar beneath it.
+     (Side-by-side cramped 5 wide labels like "UNDERSTOOD" into a ~60px column,
+     so they overflowed and overlapped — full width gives each metric real room.) */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
-  gap: clamp(18px, 4vw, 48px);
-  align-items: end;
+  grid-template-columns: 1fr;
+  gap: clamp(16px, 3vw, 22px);
+  align-items: start;
 }
 .pref-metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 4px;
   border: 1px solid var(--hussh-hairline);
   border-radius: 14px;
   overflow: hidden;
@@ -686,7 +690,7 @@ button { font-family: inherit; cursor: pointer; }
 .pref-depth-partial { background: #faf3ea; border-color: rgba(212,165,116,0.4); color: var(--hussh-gold-deep); }
 .pref-metrics span {
   min-width: 0;
-  padding: 14px 10px;
+  padding: 16px 14px;
   border-right: 1px solid var(--hussh-hairline);
   text-align: center;
 }
@@ -705,10 +709,14 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: 6px;
   font-style: normal;
   font-family: var(--font-body);
-  font-size: 10.5px;
-  letter-spacing: 0.05em;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
   text-transform: uppercase;
   color: var(--hussh-dim);
+  /* never let a wide label ("UNDERSTOOD") bleed into the next column */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pref-tracking {
   display: grid;
