@@ -15,6 +15,7 @@
     "test:watch": "vitest",
     "test:prod": "node scripts/prod-smoke.mjs",
     "sim:burst": "ONE_SIM_VERBOSE=1 vitest run src/lib/burst/simulation.scenario.test.ts",
+    "sim:burst:e2e": "node scripts/burst-e2e.mjs",
     "test:burst": "vitest run src/lib/burst src/app/api/one/burst src/app/.well-known src/lib/db/burst-store.test.ts",
     "test:burst:coverage": "vitest run src/lib/burst src/app/api/one/burst src/app/.well-known src/lib/db/burst-store.test.ts --coverage --coverage.provider=v8 --coverage.include=src/lib/burst/** --coverage.include=src/app/api/one/burst/** --coverage.include=src/app/.well-known/** --coverage.include=src/lib/db/burst-store.ts --coverage.reporter=text",
     "db:generate": "prisma generate",
