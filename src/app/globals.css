@@ -768,7 +768,8 @@ button { font-family: inherit; cursor: pointer; }
 .pref-question-sections {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  align-items: start; /* cards take their natural height — no stretched empty boxes */
+  gap: 14px;
   margin-top: 24px;
 }
 .pref-question-section {
@@ -831,31 +832,36 @@ button { font-family: inherit; cursor: pointer; }
   border-top: 1px solid var(--hussh-hairline);
 }
 .pref-question-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(92px, 132px);
-  gap: 14px;
-  padding: 14px 18px;
+  /* Vertical stack: question → answer (full width, readable) → confidence pill.
+     (The old 1fr|132px grid let long pills like "Inferred · Medium · 65% · 3
+     Evidence" overflow their cell and overlap the question text.) */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--hair-soft);
 }
 .pref-question-row:last-child { border-bottom: none; }
+.pref-question-row > div { width: 100%; }
 .pref-question-row span {
   display: block;
   font-size: 12.5px;
-  line-height: 1.35;
+  line-height: 1.4;
   color: var(--hussh-dim);
 }
 .pref-question-row strong {
   display: block;
-  margin-top: 5px;
-  font-size: 13.5px;
+  margin-top: 4px;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.45;
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 .pref-question-row small {
-  align-self: start;
-  justify-self: end;
+  align-self: flex-start;
+  max-width: 100%;
   padding: 4px 11px;
   border: 1px solid var(--hussh-hairline);
   border-radius: 999px;
@@ -867,8 +873,9 @@ button { font-family: inherit; cursor: pointer; }
   letter-spacing: 0.01em;
   text-transform: capitalize;
   color: var(--hussh-dim);
-  text-align: center;
-  white-space: nowrap;
+  /* wrap-safe — a long pill can never bleed across the row */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pref-question-answered small,
 .pref-question-inferred small {
