@@ -9,6 +9,11 @@ TAG="${TAG:-instagram-scraper-api}"
 API_FIREWALL="${API_FIREWALL:-instagram-scraper-api-8080}"
 STATIC_IP_NAME="${STATIC_IP_NAME:-instagram-scraper-ip}"
 API_KEY_FILE="${API_KEY_FILE:-$PWD/secrets/vm-api-key}"
+# Optional residential/mobile egress proxy. Set to a full proxy URL (http://user:pass@gateway:port, incl.
+# sticky-session usernames, or http://gateway:port for IP-whitelist) to route Chrome egress through it and
+# bypass Instagram's datacenter-IP 429s. Empty = direct egress (unchanged behavior).
+SCRAPER_PROXY_URL="${SCRAPER_PROXY_URL:-}"
+SCRAPER_PROXY_LISTEN_PORT="${SCRAPER_PROXY_LISTEN_PORT:-8000}"
 
 if [[ -z "${PROJECT}" ]]; then
   echo "PROJECT is required. Set PROJECT or gcloud config set project <id>." >&2
@@ -96,6 +101,7 @@ sudo chown -R instagram-scraper:instagram-scraper /opt/husshone-instagram-scrape
 
 cd /opt/husshone-instagram-scraper
 sudo -u instagram-scraper npm ci --omit=dev
+sudo chmod +x /opt/husshone-instagram-scraper/scripts/gcp-vm/start-login-browser.sh
 
 sudo tee /etc/systemd/system/instagram-scraper-xvfb.service >/dev/null <<'UNIT'
 [Unit]
@@ -166,18 +172,40 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 UNIT
 
+sudo tee /etc/systemd/system/instagram-scraper-proxy.service >/dev/null <<'UNIT'
+[Unit]
+Description=Instagram scraper egress proxy forwarder (proxy-chain to residential/mobile upstream)
+After=network-online.target
+
+[Service]
+Type=simple
+User=instagram-scraper
+Group=instagram-scraper
+WorkingDirectory=/opt/husshone-instagram-scraper
+EnvironmentFile=/etc/instagram-scraper.env
+# Exits 0 when SCRAPER_PROXY_URL is unset (forwarder disabled) — Restart=on-failure leaves it inactive.
+ExecStart=/usr/bin/node /opt/husshone-instagram-scraper/scripts/gcp-vm/proxy-forwarder.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 sudo tee /etc/systemd/system/instagram-login-browser.service >/dev/null <<'UNIT'
 [Unit]
 Description=Manual Instagram login browser for persistent scraper profile
-After=instagram-scraper-xvfb.service
+After=instagram-scraper-xvfb.service instagram-scraper-proxy.service
 Requires=instagram-scraper-xvfb.service
+Wants=instagram-scraper-proxy.service
 
 [Service]
 Type=simple
 User=instagram-scraper
 Group=instagram-scraper
 EnvironmentFile=/etc/instagram-scraper.env
-ExecStart=/usr/bin/chromium --user-data-dir=/var/lib/instagram-scraper/chrome-profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-dev-shm-usage --disable-blink-features=AutomationControlled --start-maximized https://www.instagram.com/
+# Wrapper adds --proxy-server only when SCRAPER_PROXY_URL is set; otherwise launches direct (unchanged).
+ExecStart=/opt/husshone-instagram-scraper/scripts/gcp-vm/start-login-browser.sh
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
@@ -209,10 +237,12 @@ INSTAGRAM_PROFILE_SCRAPER_HEADLESS=false
 INSTAGRAM_PROFILE_SCRAPER_TIMEOUT_MS=120000
 INSTAGRAM_MAX_URLS_PER_REQUEST=3
 OUTPUT_DIR=/var/lib/instagram-scraper/outputs
+SCRAPER_PROXY_URL=$SCRAPER_PROXY_URL
+SCRAPER_PROXY_LISTEN_PORT=$SCRAPER_PROXY_LISTEN_PORT
 EOF
 
 gcloud compute ssh "$VM_NAME" --project "$PROJECT" --zone "$ZONE" --command \
-  "sudo chown root:root /etc/instagram-scraper.env && sudo chmod 600 /etc/instagram-scraper.env && sudo systemctl enable --now instagram-scraper-xvfb instagram-scraper-x11vnc instagram-scraper-novnc instagram-login-browser instagram-scraper-api && sudo systemctl restart instagram-scraper-api"
+  "sudo chown root:root /etc/instagram-scraper.env && sudo chmod 600 /etc/instagram-scraper.env && sudo systemctl enable --now instagram-scraper-xvfb instagram-scraper-x11vnc instagram-scraper-novnc instagram-scraper-proxy instagram-login-browser instagram-scraper-api && sudo systemctl restart instagram-scraper-proxy instagram-login-browser instagram-scraper-api"
 
 EXTERNAL_IP="$(gcloud compute instances describe "$VM_NAME" --project "$PROJECT" --zone "$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
 
