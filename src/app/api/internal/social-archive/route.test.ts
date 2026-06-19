@@ -42,13 +42,14 @@ function igJob(maxPosts: number) {
   };
 }
 
-function igProfile(postCount: number, accountPosts: string | null) {
+function igProfile(postCount: number, accountPosts: string | null, access?: { state?: string; canScrapePosts?: boolean }) {
   return {
     status: "profile" as const,
     profile: {
       platform: "Instagram",
       username: "ankit",
       stats: { posts: accountPosts },
+      ...(access ? { access } : {}),
       recentPublicPosts: Array.from({ length: postCount }, (_, i) => ({ url: `https://www.instagram.com/p/${i}/` })),
     },
   };
@@ -82,15 +83,48 @@ describe("POST /api/internal/social-archive — staged batched deep-scrape", () 
     expect(findEnqueue("__recompute__")).toBeTruthy();
   });
 
-  it("completes (no grow) when the account is exhausted (returned < requested − tolerance)", async () => {
+  it("completes (no grow) for a genuinely small account (returned ≈ account total)", async () => {
     mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(240)]);
-    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(100, "900"));
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(100, "100")); // account only has ~100 posts
 
     await POST(req());
 
     expect(findEnqueue("instagram")).toBeFalsy();
     expect(mocks.completeSocialRefreshJob).toHaveBeenCalledWith("job-ig");
+    expect(mocks.failSocialRefreshJob).not.toHaveBeenCalled();
     expect(findEnqueue("__recompute__")).toBeTruthy();
+  });
+
+  it("completes (no grow) when returned is low and the account total is unknown (can't confirm more)", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(240)]);
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(33, null)); // got 33, stats unparseable → accept
+
+    await POST(req());
+
+    expect(findEnqueue("instagram")).toBeFalsy();
+    expect(mocks.completeSocialRefreshJob).toHaveBeenCalledWith("job-ig");
+    expect(mocks.failSocialRefreshJob).not.toHaveBeenCalled();
+  });
+
+  it("RETRIES (does not freeze) when the VM returns far fewer than the account clearly has", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(240)]);
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(33, "900")); // account has 900, got 33 → throttle/degraded
+
+    await POST(req());
+
+    expect(mocks.failSocialRefreshJob).toHaveBeenCalledWith("job-ig", expect.stringContaining("retry for depth"));
+    expect(mocks.completeSocialRefreshJob).not.toHaveBeenCalled();
+    expect(findEnqueue("instagram")).toBeFalsy(); // no grow re-enqueue; backoff retry via failJob
+  });
+
+  it("RETRIES on a degraded session (0 posts / canScrapePosts:false) instead of completing", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(240)]);
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(0, null, { state: "public_visible", canScrapePosts: false }));
+
+    await POST(req());
+
+    expect(mocks.failSocialRefreshJob).toHaveBeenCalledWith("job-ig", expect.stringContaining("retry for depth"));
+    expect(mocks.completeSocialRefreshJob).not.toHaveBeenCalled();
   });
 
   it("completes (no grow) once the 1024 ceiling is requested", async () => {

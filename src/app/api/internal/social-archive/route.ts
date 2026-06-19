@@ -104,6 +104,13 @@ export async function POST(request: Request) {
         results.push({ id: job.id, ok: false, reason: "no_profile" });
         continue;
       }
+
+      const requested = typeof meta.maxPosts === "number" ? meta.maxPosts : FIRST_TARGET;
+      const returned = scrapedPostCount(job.platform, profile);
+      const total = accountTotalCount(job.platform, profile);
+      const access = (profile as { access?: { state?: string; canScrapePosts?: boolean } }).access;
+      const sm = (profile as { scrapeMeta?: { scrollStopReason?: string; stopReason?: string } }).scrapeMeta;
+
       const indexed = await indexSocialArchive({
         firebaseUid: job.firebaseUid,
         scanRunId: meta.scanRunId ?? null,
@@ -118,6 +125,25 @@ export async function POST(request: Request) {
         jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: meta.scanRunId ?? "latest", metadata: { scanRunId: meta.scanRunId ?? null }, priority: -1 }],
       });
 
+      // one.scrape.result — the honest per-scrape signal: how deep we got, what the account claims, why
+      // scrolling stopped, and whether the VM session could read posts at all. Surfaces in Cloud Logging so
+      // low-depth scrapes are diagnosable (degraded session vs rate-limit vs genuinely small account).
+      console.log(
+        JSON.stringify({
+          event: "one.scrape.result",
+          platform: job.platform,
+          publicId: job.publicId,
+          requested,
+          returned,
+          accountTotal: total,
+          accessState: access?.state ?? null,
+          canScrapePosts: access?.canScrapePosts ?? null,
+          scrollStopReason: sm?.scrollStopReason ?? sm?.stopReason ?? null,
+          refresh: !!meta.refresh,
+          scanRunId: meta.scanRunId ?? null,
+        }),
+      );
+
       // Freshness refresh job: just pull the recent window to catch NEW posts (upsert adds them), recompute,
       // and COMPLETE — do NOT re-grow the ladder (the full 1024 depth already exists; re-growing every few
       // days would be wasteful). Branch out before the staged-grow block so `refresh` never leaks into a
@@ -128,15 +154,20 @@ export async function POST(request: Request) {
         continue;
       }
 
-      // Staged growth: if this batch came back full (≈ requested) and we're below the ceiling and the
-      // account has more, re-arm the SAME deep job for the next +STEP batch (resetAttempts so the climb
-      // doesn't burn the 5-attempt budget). Otherwise the account is exhausted or we hit the ceiling →
-      // complete. Re-enqueue flips the just-claimed row back to "queued"; never also complete it.
-      const requested = typeof meta.maxPosts === "number" ? meta.maxPosts : FIRST_TARGET;
-      const returned = scrapedPostCount(job.platform, profile);
-      const total = accountTotalCount(job.platform, profile);
+      // Staged growth + resilient staging:
+      //  • full batch + account has more + below ceiling → grow the SAME job by +STEP (resetAttempts so the
+      //    legit climb doesn't burn the 5-attempt budget).
+      //  • SHORT/empty batch while the account clearly has more (or the VM said canScrapePosts:false) → this
+      //    is a transient throttle / degraded VM session, NOT exhaustion. Retry with backoff (failJob) so a
+      //    bad moment can't permanently freeze the archive at a shallow depth; depth resumes once the session
+      //    recovers. (returned===0 / canScrapePosts:false is the degraded-session signature.)
+      //  • otherwise (small account / target covers total / ceiling) → complete.
       const reachedAccount = total != null && requested >= total;
-      const moreAvailable = requested < CEILING && returned >= requested - TOLERANCE && !reachedAccount;
+      const batchFilled = returned >= requested - TOLERANCE;
+      const cantScrape = access?.canScrapePosts === false;
+      const moreAvailable = requested < CEILING && batchFilled && !reachedAccount;
+      const shortfallHasMore =
+        !batchFilled && !reachedAccount && (returned === 0 || cantScrape || (total != null && total > returned + TOLERANCE));
       if (moreAvailable) {
         const nextTarget = Math.min(requested + STEP, CEILING);
         await enqueueSocialRefreshJobs({
@@ -144,6 +175,12 @@ export async function POST(request: Request) {
           jobs: [{ platform: job.platform, publicId: job.publicId, metadata: { ...meta, maxPosts: nextTarget }, resetAttempts: true }],
         });
         results.push({ id: job.id, ok: true, platform: job.platform, indexed, returned, requested, nextTarget });
+      } else if (shortfallHasMore) {
+        await failSocialRefreshJob(
+          job.id,
+          `short batch: got ${returned}/${requested}, account≈${total ?? "?"}, canScrape=${access?.canScrapePosts ?? "?"} — retry for depth`,
+        );
+        results.push({ id: job.id, ok: false, platform: job.platform, returned, requested, total, retryForDepth: true });
       } else {
         await completeSocialRefreshJob(job.id);
         results.push({ id: job.id, ok: true, platform: job.platform, indexed, returned, requested, done: true });
