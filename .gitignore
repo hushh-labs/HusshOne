@@ -52,3 +52,6 @@ exp-output/
 
 # Generated onboarding kit (rebuilt by prebuild)
 /public/downloads/
+
+# Local burst demo page (used for recording; not shipped)
+/public/burst-live.html
