@@ -7,6 +7,7 @@ import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { mockBurstProvider } from "./providers/mock";
 import { DEFAULT_PUPPY_PROFILE } from "./placement";
+import { benchmarkHardware, recommendHardware } from "./hardware";
 import { MODEL, SCENARIOS, analyze, monthlyComparison, type ScenarioAnalysis } from "./simulation";
 import type { JobSpec } from "./types";
 
@@ -84,6 +85,19 @@ describe("Xtreme Compute Burst — workload simulation", () => {
           expect(poll.status).toBe("completed");
           expect(poll.exitCode).toBe(0);
           log(`      ✓ JOB COMPLETED in the cloud (exit ${poll.exitCode})`);
+
+          // Best-hardware-for-the-workload match + a benchmark vs naive picks.
+          const hw = recommendHardware(s.estimate.vramGb, s.acceleratorKind, s.acceleratorCount);
+          log(`      • best hardware  : ${hw.count}× ${hw.accel.label} ($${hw.usdPerHour}/hr) — ${hw.rationale}`);
+          const bench = benchmarkHardware(s.estimate.vramGb, s.acceleratorKind, s.acceleratorCount, s.estimate.estimatedMinutes);
+          for (const b of bench) {
+            const tag = b.role === "matched" ? "✓ matched " : `  ${b.role.padEnd(8)}`;
+            log(`        ${tag} ${b.feasible ? `${b.label} · ${b.wallMinutes}m · $${b.costUsd}` : `${b.label} · ${b.note}`}`);
+          }
+          const matched = bench.find((b) => b.role === "matched")!;
+          const oversized = bench.find((b) => b.role === "oversized")!;
+          expect(matched.feasible).toBe(true);
+          expect(matched.costUsd!).toBeLessThanOrEqual(oversized.costUsd! + 0.001);
           log(`      • time-to-result : ${fmtT(a.cloudWallSec)}  (on-device: ${a.infeasibleLocally ? "INFEASIBLE — can't fit the Mac" : "n/a"})`);
           log(`      • burst cost     : ${usd(a.burstUsd)}  (pay-per-second on ${s.machine.id})`);
           log(`      • accuracy gain  : +${(a.accuracyGain * 100).toFixed(0)} pts vs shrink-to-fit (${(s.accuracyFull * 100).toFixed(0)}% full → ${(s.accuracyShrunkToFit * 100).toFixed(0)}% local proxy)`);
