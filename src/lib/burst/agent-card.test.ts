@@ -6,7 +6,7 @@ describe("buildAgentCard (A2A)", () => {
     const card = buildAgentCard("https://one.hushh.ai");
     expect(card.protocolVersion).toBe(A2A_PROTOCOL_VERSION);
     expect(card.version).toBe(AGENT_CARD_VERSION);
-    expect(card.name).toMatch(/Xtreme Compute Burst/);
+    expect(card.name).toMatch(/Xtreme Super Computing Burst/);
     expect(card.url).toBe("https://one.hushh.ai/api/one/burst");
     expect(card.capabilities.streaming).toBe(true);
     expect(card.defaultOutputModes).toContain("application/x-ndjson");

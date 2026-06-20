@@ -5,9 +5,9 @@ import styles from "./customers.module.css";
 
 export const dynamic = "force-static";
 
-const TITLE = "Customer stories — One Burst Compute";
+const TITLE = "Customer stories — Xtreme Super Computing Burst, a capability of 🤫 One";
 const DESC =
-  "How teams use One to run heavy AI and data workloads in their own cloud — matching the best hardware for the job, saving time and money, and shipping better output. Real placement, real completion.";
+  "Xtreme Super Computing Burst is a capability of your 🤫 One agent: it runs heavy AI and data workloads in your own cloud — matching the best hardware for the job, saving time and money, and shipping better output. Real placement, real completion.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -22,7 +22,7 @@ export default function CustomersPage() {
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "ItemList",
-    name: "One Burst Compute — customer stories",
+    name: "Xtreme Super Computing Burst (a capability of 🤫 One) — customer stories",
     itemListElement: CASE_STUDIES.map((c, i) => ({
       "@type": "ListItem",
       position: i + 1,
@@ -35,11 +35,12 @@ export default function CustomersPage() {
     <div className={styles.page}>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <div className={styles.wrap}>
-        <p className={styles.kicker}>Customer stories</p>
+        <p className={styles.kicker}>Xtreme Super Computing Burst · a capability of 🤫 One</p>
         <h1 className={styles.h1}>The best hardware for every workload — in your own cloud.</h1>
         <p className={styles.lede}>
-          One understands each workload, benchmarks the options, and runs it where it finishes best — on your Mac when it
-          fits, or burst to a right-sized cloud supercomputer when it doesn&apos;t. Here&apos;s what that looks like.
+          Xtreme Super Computing Burst is one of your 🤫 One agent&apos;s capabilities: One understands each workload,
+          benchmarks the options, and runs it where it finishes best — on your Mac when it fits, or burst to a
+          right-sized cloud supercomputer when it doesn&apos;t. Here&apos;s what that looks like.
         </p>
 
         <div className={styles.stats}>

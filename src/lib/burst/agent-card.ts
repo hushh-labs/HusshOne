@@ -31,7 +31,7 @@ export interface AgentCard {
 }
 
 // Bumped when the agent's contract (skills, endpoints, auth) changes.
-export const AGENT_CARD_VERSION = "1.1.0";
+export const AGENT_CARD_VERSION = "1.2.0";
 export const A2A_PROTOCOL_VERSION = "0.3.0";
 
 /** The canonical production origin the committed registry artifacts are built for. */
@@ -91,11 +91,12 @@ export function buildAgentCard(origin: string): AgentCard {
   const base = trimTrailingSlash(origin);
   return {
     protocolVersion: A2A_PROTOCOL_VERSION,
-    name: "Hushh One — Xtreme Compute Burst",
+    name: "Hushh One — Xtreme Super Computing Burst",
     description:
-      "Personal supercomputing for Apple Silicon. When your Mac (“One Puppy”) runs out of " +
-      "headroom, One transparently bursts the workload to your own GCP project (GPU today, TPU next) " +
-      "and brings the result home — no cloud expertise required, your keys never leave your control.",
+      "Xtreme Super Computing Burst is a capability of your 🤫 One agent — personal supercomputing for " +
+      "Apple Silicon. When your Mac (“One Puppy”) runs out of headroom, One transparently bursts the " +
+      "workload to your own GCP project (GPU today, TPU next) and brings the result home — no cloud " +
+      "expertise required, your keys never leave your control. Offered by Hushh (🤫).",
     url: `${base}/api/one/burst`,
     preferredTransport: "HTTP+JSON",
     provider: { organization: "Hushh", url: "https://hushh.ai" },

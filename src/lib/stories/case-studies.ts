@@ -1,5 +1,6 @@
-/* Single source of truth for the One Burst Compute case studies + agent-consumable
-   offers. Powers the SEO pages (/customers), the JSON feed (/api/stories), the A2A
+/* Single source of truth for the Xtreme Super Computing Burst case studies + agent-
+   consumable offers. Burst is a capability of the 🤫 One agent. Powers the SEO pages
+   (/customers), the JSON feed (/api/stories), the A2A
    agent card, the AP2 offer catalog (/.well-known/ap2/offers.json), the MCP overview
    tool, and the generated one-page PDFs — so every surface stays in sync.
 
