@@ -92,6 +92,40 @@ export function hasUrlEnrichedLinkedInProfile(profile: LinkedInProfileFull | nul
   );
 }
 
+/** Compact career-spine summary for the preference synthesis `professionalContext` slot — this is how
+ *  LinkedIn (a profile, not a post feed) enters the intelligence layer: it grounds the preference
+ *  inferences (especially mental-models / professional questions) in the user's real career instead of
+ *  guessing from social posts alone. Pure; returns null when there's nothing useful. Kept short — the
+ *  synthesis already carries the social evidence. */
+export function buildProfessionalContext(profile: LinkedInProfileFull | null | undefined): string | null {
+  if (!profile) return null;
+  const parts: string[] = [];
+  const headline = strOrNull(profile.headline);
+  if (headline) parts.push(`Headline: ${headline}`);
+  const location = strOrNull(profile.location ?? null);
+  if (location) parts.push(`Location: ${location}`);
+  const roles = (profile.experience ?? [])
+    .filter((e) => e && (e.title || e.company))
+    .slice(0, 6)
+    .map((e) => {
+      const role = [e.title, e.company].filter(Boolean).join(" @ ");
+      const span = [e.startDate, e.current ? "present" : e.endDate].filter(Boolean).join("–");
+      return `- ${role}${span ? ` (${span})` : ""}`;
+    });
+  if (roles.length) parts.push(`Experience:\n${roles.join("\n")}`);
+  const schools = (profile.education ?? [])
+    .filter((e) => e && e.school)
+    .slice(0, 3)
+    .map((e) => `- ${[e.school, e.degree, e.field].filter(Boolean).join(", ")}`);
+  if (schools.length) parts.push(`Education:\n${schools.join("\n")}`);
+  const skills = (profile.skills ?? []).filter((s) => typeof s === "string" && s.trim()).slice(0, 20);
+  if (skills.length) parts.push(`Skills: ${skills.join(", ")}`);
+  const about = strOrNull(profile.about ?? null);
+  if (about) parts.push(`About: ${about.slice(0, 600)}`);
+  const text = parts.join("\n").trim();
+  return text ? text.slice(0, 2000) : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }

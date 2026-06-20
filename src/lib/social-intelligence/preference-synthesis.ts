@@ -36,7 +36,9 @@ const FETCH_TIMEOUT_MS = 150_000;
 // NO bump (the headline is computed at render time).
 // rev "2": widened per-section context budgets (40→150 snippets etc.) so deeper archives actually feed
 // the model — "data accha → preference strong".
-const PREFERENCE_DATA_SHAPE_REV = "2";
+// rev "3": LinkedIn career spine now feeds synthesis as professionalContext (grounds professional/
+// mental-model inferences) — force a recompute so existing users pick it up.
+const PREFERENCE_DATA_SHAPE_REV = "3";
 
 // Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
 // model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how

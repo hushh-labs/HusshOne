@@ -555,12 +555,12 @@ export interface IndexSocialArchiveResult {
 }
 
 /* Which platforms get the DESTRUCTIVE rolling-window eviction (delete rows beyond the newest 512).
-   Instagram-only for now — Threads/X are not in scope yet (their scrapers are being fixed separately),
-   so we don't trim their existing archives until the user opts them in. The 512 scrape/index CAP still
-   applies to every platform (harmless); only the irreversible eviction is gated. Expand via
-   ARCHIVE_ROLLING_PLATFORMS="instagram,threads,x" when those platforms are ready. */
+   All three deep platforms now roll (Instagram + X both verified scraping deep; Threads rolls once its
+   VM session is re-logged-in — eviction is a no-op while it returns 0 posts, so enabling it early is
+   safe). The 512 scrape/index CAP applies to every platform regardless; this set only gates the
+   irreversible eviction. Override via ARCHIVE_ROLLING_PLATFORMS (comma-separated). */
 const ROLLING_WINDOW_PLATFORMS = new Set(
-  (process.env.ARCHIVE_ROLLING_PLATFORMS ?? "instagram")
+  (process.env.ARCHIVE_ROLLING_PLATFORMS ?? "instagram,threads,x")
     .split(",")
     .map((p) => p.trim().toLowerCase())
     .filter(Boolean),

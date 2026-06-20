@@ -17,6 +17,7 @@ import {
   getArchiveDepthSummary,
   getCompletedMediaAnalyses,
   getLatestScanForUser,
+  getLinkedInConnection,
   getSocialContentItems,
   getUserPreferenceProfile,
   logUserPreferenceRun,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/db/scan-store";
 import { buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
 import { ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
+import { buildProfessionalContext } from "@/lib/linkedin/profile";
 import { PREFERENCE_QUESTIONS } from "@/lib/social-intelligence/preference-profile";
 import type { SynthAnswerStatus, SynthesizedAnswer, SynthConfidence, SynthSource } from "@/lib/social-intelligence/preference-synthesis";
 
@@ -114,11 +116,12 @@ export async function POST(request: Request) {
         scanRunId?: string | null;
         professionalContext?: string | null;
       };
-      const [contentItems, mediaAnalyses, depth, priorStored] = await Promise.all([
+      const [contentItems, mediaAnalyses, depth, priorStored, linkedIn] = await Promise.all([
         getSocialContentItems(job.firebaseUid, { limit: ARCHIVE_READ_LIMIT }),
         getCompletedMediaAnalyses(job.firebaseUid, { limit: ARCHIVE_READ_LIMIT }),
         getArchiveDepthSummary(job.firebaseUid),
         getUserPreferenceProfile<{ generatedAt?: unknown; questionAnswers?: unknown }>(job.firebaseUid).catch(() => null),
+        getLinkedInConnection(job.firebaseUid).catch(() => null),
       ]);
       if (!contentItems.length) {
         // Nothing indexed yet — complete quietly; a later archive job will re-enqueue.
@@ -128,9 +131,14 @@ export async function POST(request: Request) {
       }
       const priorAnswers = buildPriorAnswerMap(priorStored?.profile ?? null);
 
-      const professionalContext = typeof meta.professionalContext === "string" && meta.professionalContext.trim()
-        ? meta.professionalContext.trim()
-        : undefined;
+      // LinkedIn (a profile, not a post feed) enters the intelligence layer HERE: its career spine grounds
+      // the preference inferences (esp. mental-models / professional questions) instead of guessing from
+      // social posts alone. Falls back to any professionalContext passed on the job.
+      const professionalContext =
+        buildProfessionalContext(linkedIn) ??
+        (typeof meta.professionalContext === "string" && meta.professionalContext.trim()
+          ? meta.professionalContext.trim()
+          : undefined);
 
       const synthesis = await synthesizePreferences({ contentItems, mediaAnalyses, professionalContext });
       if (!synthesis) {
