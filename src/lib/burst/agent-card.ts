@@ -31,7 +31,7 @@ export interface AgentCard {
 }
 
 // Bumped when the agent's contract (skills, endpoints, auth) changes.
-export const AGENT_CARD_VERSION = "1.0.0";
+export const AGENT_CARD_VERSION = "1.1.0";
 export const A2A_PROTOCOL_VERSION = "0.3.0";
 
 /** The canonical production origin the committed registry artifacts are built for. */
@@ -142,6 +142,19 @@ export function buildAgentCard(origin: string): AgentCard {
           "on the local Mac (“One Puppy”) or burst to the cloud, with the reason.",
         tags: ["placement", "scheduling", "cost", "advice"],
         examples: ["Should this job run on my Mac or in the cloud?"],
+      },
+      {
+        id: "estimate-and-offer",
+        name: "Estimate cost and match the best hardware",
+        description:
+          "Given a workload, recommend the accelerator with the best performance-per-dollar that fits (not the biggest box, " +
+          "not one too small) and an estimated pay-per-second cost in the caller's own cloud — before running. " +
+          "AP2-compatible offer catalog: /.well-known/ap2/offers.json. Customer stories: /customers.",
+        tags: ["cost", "estimate", "hardware", "benchmarking", "ap2", "offers"],
+        examples: [
+          "What hardware and roughly what cost for a 70B fine-tune?",
+          "Estimate this job before you run it.",
+        ],
       },
     ],
   };

@@ -8,7 +8,7 @@
     "organization": "Hushh",
     "url": "https://hushh.ai"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "iconUrl": "https://one.hushh.ai/icon.png",
   "documentationUrl": "https://one.hushh.ai/docs/xtreme-compute-burst",
   "capabilities": {
@@ -74,6 +74,23 @@
       ],
       "examples": [
         "Should this job run on my Mac or in the cloud?"
+      ]
+    },
+    {
+      "id": "estimate-and-offer",
+      "name": "Estimate cost and match the best hardware",
+      "description": "Given a workload, recommend the accelerator with the best performance-per-dollar that fits (not the biggest box, not one too small) and an estimated pay-per-second cost in the caller's own cloud — before running. AP2-compatible offer catalog: /.well-known/ap2/offers.json. Customer stories: /customers.",
+      "tags": [
+        "cost",
+        "estimate",
+        "hardware",
+        "benchmarking",
+        "ap2",
+        "offers"
+      ],
+      "examples": [
+        "What hardware and roughly what cost for a 70B fine-tune?",
+        "Estimate this job before you run it."
       ]
     }
   ]

@@ -19,8 +19,22 @@ import {
   verifiedOneUserFromConnector,
   type ConnectorUser,
 } from "./oauth";
+import { CASE_STUDIES, PORTFOLIO, burstOffers } from "@/lib/stories/case-studies";
 
 type JsonObject = Record<string, unknown>;
+
+/** Public (no-auth) overview payload for the MCP discovery tool. */
+function burstOverviewPayload() {
+  return {
+    product: "One — Xtreme Compute Burst",
+    summary:
+      "Personal supercomputing for Apple Silicon: runs on-device when it fits, bursts to the best-matched accelerator in your own cloud (BYOC) when it doesn't.",
+    portfolio: PORTFOLIO,
+    offers: burstOffers(),
+    caseStudies: CASE_STUDIES.map((c) => ({ slug: c.slug, title: c.title, industry: c.industry, summary: c.summary, url: `https://one.hushh.ai/customers/${c.slug}` })),
+    links: { web: "https://one.hushh.ai/customers", agentCard: "https://one.hushh.ai/.well-known/agent.json", offers: "https://one.hushh.ai/.well-known/ap2/offers.json", feed: "https://one.hushh.ai/api/stories" },
+  };
+}
 
 export class ConnectorToolError extends Error {
   constructor(
@@ -125,6 +139,14 @@ const chatGptContextOutputSchema = {
 };
 
 export const connectorTools = [
+  {
+    name: "one_burst_overview",
+    title: "One — Burst Compute overview",
+    description:
+      "Public overview of One's Xtreme Compute Burst: what it does, customer stories, and indicative pay-per-second offers by accelerator. No authentication required — use this to discover the product.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+  },
   {
     name: "search",
     title: "Search one by hushh",
@@ -363,6 +385,9 @@ export async function callConnectorToolForUser(user: ConnectorUser, name: string
 }
 
 export async function callConnectorTool(request: Request, name: string, rawArgs: unknown) {
+  // Public discovery tool — no authentication required.
+  if (name === "one_burst_overview") return ok(burstOverviewPayload());
+
   let user: ConnectorUser;
   try {
     user = await authedTool(request);
