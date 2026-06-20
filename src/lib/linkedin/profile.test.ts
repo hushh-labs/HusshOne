@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLinkedInProfile, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
+import { buildLinkedInProfile, buildProfessionalContext, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
 import type { ProbeResult, RawApiResult } from "./oauth";
 
 function probe(key: string, ok: boolean, data: unknown): ProbeResult {
@@ -114,5 +114,45 @@ describe("hasUrlEnrichedLinkedInProfile", () => {
     expect(hasUrlEnrichedLinkedInProfile({ ...base, source: "oauth", skills: ["Fund Operations"] })).toBe(false);
     expect(hasUrlEnrichedLinkedInProfile({ ...base, profileUrl: "https://www.linkedin.com/company/hushh", skills: ["AI"] })).toBe(false);
     expect(hasUrlEnrichedLinkedInProfile(base)).toBe(false);
+  });
+});
+
+describe("buildProfessionalContext", () => {
+  const base: LinkedInProfileFull = {
+    sub: "anilsachdev",
+    name: "Anil Sachdev",
+    givenName: "Anil",
+    familyName: "Sachdev",
+    email: null,
+    emailVerified: false,
+    locale: null,
+    pictureUrl: null,
+    profileUrl: "https://www.linkedin.com/in/anilsachdev",
+    headline: "Chief Operating Officer",
+    verifications: [],
+    grantedScopes: [],
+    source: "scraper",
+  };
+
+  it("returns null for missing or signal-free profiles", () => {
+    expect(buildProfessionalContext(null)).toBeNull();
+    expect(buildProfessionalContext({ ...base, headline: null })).toBeNull();
+  });
+
+  it("summarizes the career spine for the synthesis professionalContext slot", () => {
+    const ctx = buildProfessionalContext({
+      ...base,
+      location: "Mumbai, India",
+      experience: [{ title: "COO", company: "OTS Capital", current: true, startDate: "2020" }],
+      education: [{ school: "IIT Bombay", degree: "B.Tech" }],
+      skills: ["Fund Operations", "Strategy"],
+      about: "Operator and investor.",
+    });
+    expect(ctx).toContain("Chief Operating Officer");
+    expect(ctx).toContain("COO @ OTS Capital");
+    expect(ctx).toContain("Mumbai, India");
+    expect(ctx).toContain("Fund Operations");
+    expect(ctx).toContain("IIT Bombay");
+    expect(ctx).toContain("Operator and investor.");
   });
 });
