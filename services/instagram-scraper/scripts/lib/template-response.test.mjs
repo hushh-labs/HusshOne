@@ -37,3 +37,36 @@ test("keeps up to 1024 recent posts (no leftover 120 cap)", () => {
   const template = buildInstagramTemplate(profileUrl, { username: "ankit_ya_i_am", recentPublicPosts: many });
   assert.equal(template.recentPublicPosts.length, 500);
 });
+
+test("passes through deep-scrape metadata without changing the profile shape", () => {
+  const profileUrl = "https://www.instagram.com/sundarpichai/";
+  const template = buildInstagramTemplate(profileUrl, {
+    username: "sundarpichai",
+    recentPublicPosts: [],
+    access: { state: "rate_limited", canScrapePosts: false },
+    scrapeMeta: {
+      chromeError: true,
+      httpErrorCode: "429",
+      rateLimited: true,
+      requestedMaxPosts: 120,
+      returnedPosts: 0,
+      returnedPostLinks: 0,
+      scrollEngine: "v1",
+      scrollPasses: 2,
+      stablePasses: 1,
+      stopReason: "rate_limited",
+      maxScrollPasses: 250,
+      stableLimit: 5,
+      detailHydrationLimit: 0,
+      detailHydratedPosts: 0,
+    },
+  });
+
+  assert.equal(template.access.state, "rate_limited");
+  assert.equal(template.scrapeMeta.chromeError, true);
+  assert.equal(template.scrapeMeta.httpErrorCode, "429");
+  assert.equal(template.scrapeMeta.requestedMaxPosts, 120);
+  assert.equal(template.scrapeMeta.returnedPosts, 0);
+  assert.equal(template.scrapeMeta.scrollEngine, "v1");
+  assert.equal(template.scrapeMeta.stopReason, "rate_limited");
+});
