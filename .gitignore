@@ -55,3 +55,4 @@ exp-output/
 
 # Local burst demo page (used for recording; not shipped)
 /public/burst-live.html
+/public/burst-live-vertical.html
