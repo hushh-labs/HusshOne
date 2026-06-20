@@ -667,7 +667,7 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden;
   background: var(--white);
 }
-/* v3 archive-depth strip — per-platform "684/1024 · 512 media" pills + "analyzing media…" badge. */
+/* v3 archive-depth strip — per-platform "312/512 · 200 media" pills + "analyzing media…" badge. */
 .pref-depth {
   display: flex;
   flex-wrap: wrap;

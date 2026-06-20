@@ -52,7 +52,7 @@ describe("POST /api/internal/social-refresh-sweep", () => {
     expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledTimes(2);
     const arg = firstEnqueue();
     expect(arg.firebaseUid).toBe("u1");
-    expect(arg.jobs[0].metadata).toMatchObject({ refresh: true, maxPosts: 240, url: "https://www.instagram.com/a/" });
+    expect(arg.jobs[0].metadata).toMatchObject({ refresh: true, maxPosts: 90, url: "https://www.instagram.com/a/" });
   });
 
   it("returns swept:0 when nothing is stale", async () => {

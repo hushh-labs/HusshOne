@@ -1,12 +1,15 @@
-/* Pure extraction of the FULL social archive (up to 1024 visible items/profile) from scraped
-   profiles into normalized content-item + media-asset rows. This is the v3 preference archive —
-   independent of the compact Phase-1 prompt. No DB, no Next, no network: scan-store persists the
-   rows and the media worker reads the media assets. Kept pure so it is exhaustively unit-testable. */
+/* Pure extraction of the social archive (a rolling window of the newest 512 visible items/profile)
+   from scraped profiles into normalized content-item + media-asset rows. This is the v3 preference
+   archive — independent of the compact Phase-1 prompt. No DB, no Next, no network: scan-store persists
+   the rows (and evicts the oldest beyond this window) and the media worker reads the media assets.
+   Kept pure so it is exhaustively unit-testable. */
 import crypto from "node:crypto";
 import type { SocialProfileFull } from "@/lib/ria/types";
 
-/** Hard ceiling on indexed items per profile. Matches the scraper depth target. */
-export const ARCHIVE_MAX_ITEMS_PER_PROFILE = 1024;
+/** Rolling-window size: the newest N items/profile we keep + feed the intelligence layer. 512 fresh
+ *  posts beat an unbounded pile of stale ones — and the synthesis layer reads far fewer per topic, so
+ *  a deeper archive adds little. scan-store enforces this as a latest-in/oldest-out window. */
+export const ARCHIVE_MAX_ITEMS_PER_PROFILE = 512;
 
 export type ArchiveMediaType = "image" | "video" | "thumbnail";
 

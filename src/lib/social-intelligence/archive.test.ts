@@ -28,7 +28,7 @@ function instagram(posts: number): SocialProfileFull {
 }
 
 describe("extractSocialArchive", () => {
-  it("indexes Instagram posts with media assets, typing reels and capping at 1024", () => {
+  it("indexes Instagram posts with media assets, typing reels and capping at the rolling window (512)", () => {
     const archive = extractSocialArchive([instagram(2000)]);
     expect(archive.content).toHaveLength(ARCHIVE_MAX_ITEMS_PER_PROFILE);
     expect(archive.perPlatform.instagram.items).toBe(ARCHIVE_MAX_ITEMS_PER_PROFILE);

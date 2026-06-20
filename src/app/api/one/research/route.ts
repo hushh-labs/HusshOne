@@ -42,7 +42,7 @@ const DEADLINE_MS = 1_650_000;
 // Don't START Phase-2 inline if less than this remains before the deadline; recovery
 // (a fresh request) runs synthesis instead so it isn't cut off mid-way.
 const PHASE2_RESERVE_MS = 200_000;
-// Standalone social archives can collect up to 1024+ visible items. Keep the Phase-1
+// Social archives keep a rolling window of the newest ~512 items/platform. Keep the Phase-1
 // prompt bounded; the preference layer indexes/synthesizes the richer archive separately.
 const SOCIAL_PROMPT_POST_LIMIT = 300;
 
@@ -487,9 +487,9 @@ export async function POST(request: Request) {
     });
     scanRunId = scan.scanRunId;
     // v3 preference track: enqueue a deep-archive refresh job per connected social platform, drained by
-    // the background archive/media worker. The FIRST scrape targets 240 posts (not 1024 in one shot,
-    // which times out on the node-side fetch); the worker then grows the same job +120 per run up to the
-    // 1024 ceiling. Fire-and-forget — the mandatory Phase-1 scan must never be blocked or failed by
+    // the background archive/media worker. The FIRST scrape targets 240 posts (not the full window in one
+    // shot, which times out on the node-side fetch); the worker then grows the same job +120 per run up to
+    // the 512 rolling-window ceiling. Fire-and-forget — the mandatory Phase-1 scan must never be blocked or failed by
     // optional preference enrichment.
     if (input.socialPreferenceConsent === true && input.socialProfiles?.length) {
       const jobs = input.socialProfiles

@@ -164,7 +164,7 @@ function mapTimelineItems(value: unknown): XTimelineItem[] {
       isReply: rec.isReply === true || rawTab === "replies" || undefined,
       replyContext: strOrNull(rec.replyContext, 500),
     });
-    if (out.length >= 1024) break;
+    if (out.length >= 512) break; // rolling-window ceiling (see ARCHIVE_MAX_ITEMS_PER_PROFILE)
   }
   return out;
 }

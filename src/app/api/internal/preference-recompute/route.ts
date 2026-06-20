@@ -25,6 +25,7 @@ import {
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
 import { buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
+import { ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
 import { PREFERENCE_QUESTIONS } from "@/lib/social-intelligence/preference-profile";
 import type { SynthAnswerStatus, SynthesizedAnswer, SynthConfidence, SynthSource } from "@/lib/social-intelligence/preference-synthesis";
 
@@ -33,6 +34,12 @@ export const maxDuration = 300;
 
 const JOBS_PER_RUN = 1;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+// The archive keeps a 512 rolling window PER (user, platform). Read enough to cover every kept row
+// across the deep platforms (instagram/threads/x) so a single global newest-first read never starves a
+// less-recently-active platform out of synthesis. Bounded by getSocialContentItems' 4096 hard cap.
+const DEEP_PLATFORM_COUNT = 3;
+const ARCHIVE_READ_LIMIT = ARCHIVE_MAX_ITEMS_PER_PROFILE * DEEP_PLATFORM_COUNT;
 
 // Coverage gate + re-pass tuning. SHOW_THRESHOLD is the minimum answered/inferred count before the
 // layer is allowed to flip to "completed"; RE_PASS_TARGET is the coverage we try to reach via re-passes
@@ -108,8 +115,8 @@ export async function POST(request: Request) {
         professionalContext?: string | null;
       };
       const [contentItems, mediaAnalyses, depth, priorStored] = await Promise.all([
-        getSocialContentItems(job.firebaseUid, { limit: 1024 }),
-        getCompletedMediaAnalyses(job.firebaseUid, { limit: 1024 }),
+        getSocialContentItems(job.firebaseUid, { limit: ARCHIVE_READ_LIMIT }),
+        getCompletedMediaAnalyses(job.firebaseUid, { limit: ARCHIVE_READ_LIMIT }),
         getArchiveDepthSummary(job.firebaseUid),
         getUserPreferenceProfile<{ generatedAt?: unknown; questionAnswers?: unknown }>(job.firebaseUid).catch(() => null),
       ]);
@@ -201,7 +208,7 @@ export async function POST(request: Request) {
       const preferenceStatus = answeredTotal >= SHOW_THRESHOLD || mediaPending <= 0 ? "completed" : "partial";
 
       // Render-compatible profile: reuses the dashboard's existing PreferenceIntelligence UI and
-      // carries the live archive depth so the user sees e.g. "Instagram 684/1024 · 512 analyzed".
+      // carries the live archive depth so the user sees e.g. "Instagram 312/512 · 200 analyzed".
       const profile = toRenderablePreferenceProfile(mergedSynthesis, depth, {
         generatedAt: new Date().toISOString(),
         preferenceStatus,

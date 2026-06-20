@@ -2,7 +2,7 @@ import { instagramHandleFromUrl, normalizeInstagramUrl } from "@/lib/auth/identi
 import type { InstagramAccessInfo, InstagramAccessState, InstagramHighlight, InstagramProfileFull, InstagramPublicPost } from "./profile";
 
 // Node-side fetch abort. This (not the VM's page.goto timeout) is what kills deep scrapes; raised to 180s
-// so the larger staged batches (≈840→1024) can finish. Env INSTAGRAM_SCRAPER_TIMEOUT_MS overrides.
+// so the larger staged batches (≈360→512) can finish. Env INSTAGRAM_SCRAPER_TIMEOUT_MS overrides.
 const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class InstagramScraperError extends Error {
@@ -146,7 +146,7 @@ function mapPosts(value: unknown): InstagramPublicPost[] {
       comments: strOrNull(rec.comments, 40),
       visibleText: strOrNull(rec.visibleText, 300),
     });
-    if (out.length >= 1024) break;
+    if (out.length >= 512) break; // rolling-window ceiling (see ARCHIVE_MAX_ITEMS_PER_PROFILE)
   }
   return out;
 }
