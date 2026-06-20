@@ -127,9 +127,9 @@ describe("POST /api/internal/social-archive — staged batched deep-scrape", () 
     expect(mocks.completeSocialRefreshJob).not.toHaveBeenCalled();
   });
 
-  it("completes (no grow) once the 1024 ceiling is requested", async () => {
-    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(1024)]);
-    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(1024, "5000"));
+  it("completes (no grow) once the 512 rolling-window ceiling is requested", async () => {
+    mocks.claimSocialRefreshJobs.mockResolvedValueOnce([igJob(512)]);
+    mocks.scrapeInstagram.mockResolvedValueOnce(igProfile(512, "5000"));
 
     await POST(req());
 

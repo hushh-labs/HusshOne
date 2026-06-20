@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/notifications/types";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type { PreferenceEvidence } from "@/lib/social-intelligence/preference-profile";
-import { extractSocialArchive } from "@/lib/social-intelligence/archive";
+import { extractSocialArchive, ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
 import type { SocialProfileFull } from "@/lib/ria/types";
 import { getPrismaClient } from "./prisma";
 
@@ -542,10 +542,11 @@ export async function indexSocialPreferenceEvidence(
   }
 }
 
-/* ── v3 preference archive: full 1024-item capture + read path + media-asset queue ───────────
-   The deep-scrape worker calls indexSocialArchive with freshly scraped 1024-deep profiles; the
-   synthesis reads back the archive; the media worker drains pending SocialMediaAsset rows. Every
-   function is defensive (missing table/column or any error → null/empty, never breaks a scan). */
+/* ── v3 preference archive: 512 rolling-window capture + read path + media-asset queue ───────────
+   The deep-scrape worker calls indexSocialArchive with freshly scraped profiles; we upsert each post
+   and then evict the oldest beyond the newest 512 per (user, platform) → a true latest-in/oldest-out
+   window. The synthesis reads back the archive; the media worker drains pending SocialMediaAsset rows.
+   Every function is defensive (missing table/column or any error → null/empty, never breaks a scan). */
 
 export interface IndexSocialArchiveResult {
   contentItems: number;
@@ -553,8 +554,23 @@ export interface IndexSocialArchiveResult {
   perPlatform: Record<string, { items: number; media: number }>;
 }
 
-/** Persist the FULL archive (up to 1024 visible items/profile + their media assets). Media rows
- *  are created `pending`; an existing row's completed analysis is preserved on re-index. */
+/* Which platforms get the DESTRUCTIVE rolling-window eviction (delete rows beyond the newest 512).
+   Instagram-only for now — Threads/X are not in scope yet (their scrapers are being fixed separately),
+   so we don't trim their existing archives until the user opts them in. The 512 scrape/index CAP still
+   applies to every platform (harmless); only the irreversible eviction is gated. Expand via
+   ARCHIVE_ROLLING_PLATFORMS="instagram,threads,x" when those platforms are ready. */
+const ROLLING_WINDOW_PLATFORMS = new Set(
+  (process.env.ARCHIVE_ROLLING_PLATFORMS ?? "instagram")
+    .split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+/** Persist the archive as a rolling window (newest ARCHIVE_MAX_ITEMS_PER_PROFILE items/profile + their
+ *  media assets): upsert each scraped post, then evict the oldest beyond the window per (user, platform)
+ *  for the platforms in ROLLING_WINDOW_PLATFORMS. Media rows are created `pending` and are intentionally
+ *  NOT evicted (global dedup by assetHash + expensive completed analysis is preserved); the 512 window
+ *  bounds content items, not the media table. An existing row's completed analysis is kept on re-index. */
 export async function indexSocialArchive(input: {
   firebaseUid: string;
   scanRunId?: string | null;
@@ -599,6 +615,29 @@ export async function indexSocialArchive(input: {
         contentItems += 1;
       } catch {
         /* skip a malformed row, keep indexing the rest */
+      }
+    }
+    // Rolling window: per (user, platform) this index touched, keep only the newest
+    // ARCHIVE_MAX_ITEMS_PER_PROFILE items and evict the rest (latest-in/oldest-out). Order mirrors the
+    // read path (getSocialContentItems) so what we keep is exactly what synthesis reads. Gated to
+    // ROLLING_WINDOW_PLATFORMS (Instagram-only by default) so platforms not yet in scope keep their rows.
+    // Best-effort — a failed eviction must never break a scan, it just leaves a few extra rows next time.
+    for (const platform of new Set(archive.content.map((r) => r.platform))) {
+      if (!ROLLING_WINDOW_PLATFORMS.has(platform)) continue;
+      try {
+        const keep = await prisma.socialContentItem.findMany({
+          where: { userId: user.id, platform },
+          orderBy: [{ timestamp: { sort: "desc", nulls: "last" } }, { lastSeenAt: "desc" }],
+          take: ARCHIVE_MAX_ITEMS_PER_PROFILE,
+          select: { id: true },
+        });
+        if (keep.length >= ARCHIVE_MAX_ITEMS_PER_PROFILE) {
+          await prisma.socialContentItem.deleteMany({
+            where: { userId: user.id, platform, id: { notIn: keep.map((k) => k.id) } },
+          });
+        }
+      } catch {
+        /* eviction is best-effort; never break a scan */
       }
     }
     let mediaAssets = 0;
@@ -761,8 +800,8 @@ export async function getSocialContentItems(
     if (!user) return [];
     const rows = await prisma.socialContentItem.findMany({
       where: { userId: user.id, ...(opts.platform ? { platform: opts.platform } : {}) },
-      orderBy: [{ timestamp: "desc" }, { lastSeenAt: "desc" }],
-      take: Math.max(1, Math.min(opts.limit ?? 1024, 4096)),
+      orderBy: [{ timestamp: { sort: "desc", nulls: "last" } }, { lastSeenAt: "desc" }],
+      take: Math.max(1, Math.min(opts.limit ?? ARCHIVE_MAX_ITEMS_PER_PROFILE, 4096)),
     });
     return rows.map((r) => ({
       platform: r.platform,
@@ -912,7 +951,7 @@ export async function enqueueSocialRefreshJobs(input: {
               nextRunAt: new Date(),
               lockedAt: null,
               lastError: null,
-              // Staged grow re-enqueues set this so the climbing 240→1024 ladder doesn't exhaust the
+              // Staged grow re-enqueues set this so the climbing 240→512 ladder doesn't exhaust the
               // 5-attempt budget (every claim increments attempts) and die before reaching the ceiling.
               ...(job.resetAttempts ? { attempts: 0 } : {}),
               ...(job.metadata !== undefined ? { metadata: safeJson(job.metadata) } : {}),

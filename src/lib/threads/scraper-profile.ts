@@ -149,7 +149,7 @@ function mapThreads(value: unknown): ThreadsPost[] {
         : undefined,
       visibleText: strOrNull(rec.visibleText, 1200),
     });
-    if (out.length >= 1024) break;
+    if (out.length >= 512) break; // rolling-window ceiling (see ARCHIVE_MAX_ITEMS_PER_PROFILE)
   }
   return out;
 }

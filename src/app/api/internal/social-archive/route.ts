@@ -1,6 +1,7 @@
-/* Internal worker: drain SocialRefreshJob deep-scrape jobs → scrape the platform at 1024 depth →
-   index the full archive (SocialContentItem + SocialMediaAsset). Guarded by ONE_INTERNAL_JOB_TOKEN
-   (Cloud Scheduler). Each successful index enqueues a preference-recompute job for the user. */
+/* Internal worker: drain SocialRefreshJob deep-scrape jobs → scrape the platform up to the 512 rolling
+   window → index the archive (SocialContentItem + SocialMediaAsset; scan-store evicts the oldest beyond
+   512). Guarded by ONE_INTERNAL_JOB_TOKEN (Cloud Scheduler). Each successful index enqueues a
+   preference-recompute job for the user. */
 import { NextResponse } from "next/server";
 import { verifyInternalJobRequest } from "@/lib/auth/internal";
 import {
@@ -22,13 +23,14 @@ export const maxDuration = 300;
 
 const DEEP_PLATFORMS = ["instagram", "threads", "x"];
 // Staged batched deep-scrape: the first scrape targets FIRST_TARGET posts, then each successful run grows
-// the SAME job by STEP up to CEILING (or until the account is exhausted). Asking for 1024 in one shot was
-// timing out on the node-side fetch (~120s); modest batches finish reliably and depth fills in over the
-// 3-min scheduler ticks. JOBS_PER_RUN=1 so a single deep batch can't blow the worker's 300s maxDuration.
+// the SAME job by STEP up to CEILING (or until the account is exhausted). Asking for the full depth in one
+// shot was timing out on the node-side fetch (~120s); modest batches finish reliably and depth fills in
+// over the 3-min scheduler ticks. JOBS_PER_RUN=1 so a single deep batch can't blow the 300s maxDuration.
+// CEILING is the rolling-window size (newest 512 kept; oldest evicted on index).
 const JOBS_PER_RUN = 1;
 const FIRST_TARGET = 240;
 const STEP = 120;
-const CEILING = 1024;
+const CEILING = 512;
 const TOLERANCE = 12; // in-VM dedupe can return a few fewer than requested — don't mis-read as exhausted
 
 /** How many posts the scraper actually returned this run (raw, pre-index-dedupe) — the honest signal for
@@ -97,7 +99,10 @@ export async function POST(request: Request) {
         results.push({ id: job.id, ok: false, reason: "missing_input" });
         continue;
       }
-      const profile = await scrapeProfile(job.platform, meta.url, meta.maxPosts ?? 1024);
+      // Clamp to CEILING so any legacy job queued with a higher maxPosts (the old 1024 ladder) completes
+      // cleanly instead of churning the retry budget chasing depth the rolling window won't keep.
+      const target = Math.min(typeof meta.maxPosts === "number" ? meta.maxPosts : FIRST_TARGET, CEILING);
+      const profile = await scrapeProfile(job.platform, meta.url, target);
       if (!profile) {
         // access pending, rate-limited, or scraper error — retry with backoff (failJob re-queues)
         await failSocialRefreshJob(job.id, "scrape returned no profile (access pending / rate limited / error)");
@@ -105,7 +110,7 @@ export async function POST(request: Request) {
         continue;
       }
 
-      const requested = typeof meta.maxPosts === "number" ? meta.maxPosts : FIRST_TARGET;
+      const requested = target;
       const returned = scrapedPostCount(job.platform, profile);
       const total = accountTotalCount(job.platform, profile);
       const access = (profile as { access?: { state?: string; canScrapePosts?: boolean } }).access;
@@ -116,7 +121,7 @@ export async function POST(request: Request) {
         scanRunId: meta.scanRunId ?? null,
         version: PROFILE_VERSION,
         profiles: [profile],
-        maxItemsPerProfile: 1024,
+        maxItemsPerProfile: CEILING,
       });
       // Kick a preference recompute now that this platform's archive landed (media may still be
       // processing — synthesis handles partial state and will be re-run as media completes).
@@ -144,10 +149,9 @@ export async function POST(request: Request) {
         }),
       );
 
-      // Freshness refresh job: just pull the recent window to catch NEW posts (upsert adds them), recompute,
-      // and COMPLETE — do NOT re-grow the ladder (the full 1024 depth already exists; re-growing every few
-      // days would be wasteful). Branch out before the staged-grow block so `refresh` never leaks into a
-      // grow re-enqueue.
+      // Freshness refresh job: just pull the recent window to catch NEW posts (upsert adds them, eviction
+      // drops the oldest beyond 512 → true rolling window), recompute, and COMPLETE — do NOT re-grow the
+      // ladder. Branch out before the staged-grow block so `refresh` never leaks into a grow re-enqueue.
       if (meta.refresh) {
         await completeSocialRefreshJob(job.id);
         results.push({ id: job.id, ok: true, platform: job.platform, indexed, refresh: true });

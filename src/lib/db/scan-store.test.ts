@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchConnectorRecord, indexSocialPreferenceEvidence, saveChatGptContextSnapshot, searchConnectorRecords } from "./scan-store";
+import { fetchConnectorRecord, indexSocialArchive, indexSocialPreferenceEvidence, saveChatGptContextSnapshot, searchConnectorRecords } from "./scan-store";
+import { ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
+import type { SocialProfileFull } from "@/lib/ria/types";
 
 const mocks = vi.hoisted(() => ({
   prisma: {
@@ -11,6 +13,8 @@ const mocks = vi.hoisted(() => ({
     },
     socialContentItem: {
       upsert: vi.fn(),
+      findMany: vi.fn(),
+      deleteMany: vi.fn(),
     },
     socialMediaAsset: {
       upsert: vi.fn(),
@@ -218,5 +222,70 @@ describe("social preference evidence indexing", () => {
     });
 
     expect(result).toBeNull();
+  });
+});
+
+describe("indexSocialArchive rolling window", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function igProfile(): SocialProfileFull {
+    return {
+      platform: "Instagram",
+      username: "ankit",
+      displayName: null,
+      bio: null,
+      avatarUrl: null,
+      externalUrl: null,
+      profileUrl: "https://www.instagram.com/ankit/",
+      source: "scraper",
+      recentPublicPosts: [
+        { url: "https://www.instagram.com/p/a/", kind: "post", caption: "a" },
+        { url: "https://www.instagram.com/p/b/", kind: "post", caption: "b" },
+      ],
+    } as unknown as SocialProfileFull;
+  }
+
+  it("evicts the oldest beyond the rolling window (latest-in/oldest-out)", async () => {
+    mocks.prisma.oneUser.findUnique.mockResolvedValueOnce({ id: "u" });
+    mocks.prisma.socialContentItem.upsert.mockResolvedValue({});
+    mocks.prisma.socialMediaAsset.upsert.mockResolvedValue({});
+    // Archive is full → findMany returns exactly the window of newest ids to KEEP.
+    const keep = Array.from({ length: ARCHIVE_MAX_ITEMS_PER_PROFILE }, (_, i) => ({ id: `keep-${i}` }));
+    mocks.prisma.socialContentItem.findMany.mockResolvedValueOnce(keep);
+    mocks.prisma.socialContentItem.deleteMany.mockResolvedValueOnce({ count: 7 });
+
+    await indexSocialArchive({ firebaseUid: "firebase-1", scanRunId: "scan-1", version: "v", profiles: [igProfile()] });
+
+    expect(mocks.prisma.socialContentItem.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "u", platform: "instagram" }, take: ARCHIVE_MAX_ITEMS_PER_PROFILE }),
+    );
+    expect(mocks.prisma.socialContentItem.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "u", platform: "instagram", id: { notIn: keep.map((k) => k.id) } },
+    });
+  });
+
+  it("does NOT evict when the archive is under the rolling window", async () => {
+    mocks.prisma.oneUser.findUnique.mockResolvedValueOnce({ id: "u" });
+    mocks.prisma.socialContentItem.upsert.mockResolvedValue({});
+    mocks.prisma.socialMediaAsset.upsert.mockResolvedValue({});
+    mocks.prisma.socialContentItem.findMany.mockResolvedValueOnce([{ id: "only-1" }]);
+
+    await indexSocialArchive({ firebaseUid: "firebase-1", scanRunId: null, version: "v", profiles: [igProfile()] });
+
+    expect(mocks.prisma.socialContentItem.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("never breaks a scan if eviction throws (best-effort)", async () => {
+    mocks.prisma.oneUser.findUnique.mockResolvedValueOnce({ id: "u" });
+    mocks.prisma.socialContentItem.upsert.mockResolvedValue({});
+    mocks.prisma.socialMediaAsset.upsert.mockResolvedValue({});
+    mocks.prisma.socialContentItem.findMany.mockRejectedValueOnce(new Error("db blip"));
+
+    const result = await indexSocialArchive({ firebaseUid: "firebase-1", scanRunId: null, version: "v", profiles: [igProfile()] });
+
+    // content still indexed; eviction failure is swallowed
+    expect(result?.contentItems).toBe(2);
   });
 });

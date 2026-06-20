@@ -31,17 +31,22 @@ const FETCH_TIMEOUT_MS = 150_000;
 
 // Manual salt for data-shape changes that the auto-derived PREFERENCE_SYNTHESIS_VERSION hash (below)
 // can't see in the prompt/schema/sections/model/questions — e.g. the collage builder shape or the
-// RenderablePreferenceProfile fields. Bump this string when you change those so existing users
-// auto-refresh. Pure copy changes need NO bump (the headline is computed at render time).
-const PREFERENCE_DATA_SHAPE_REV = "1";
+// RenderablePreferenceProfile fields, OR the numeric context budgets just below (they aren't in the
+// hash). Bump this string when you change those so existing users auto-refresh. Pure copy changes need
+// NO bump (the headline is computed at render time).
+// rev "2": widened per-section context budgets (40→150 snippets etc.) so deeper archives actually feed
+// the model — "data accha → preference strong".
+const PREFERENCE_DATA_SHAPE_REV = "2";
 
-// Context budgets — kept bounded but generous. Because we now route PER SECTION, each call sees a
-// focused slice, so we can afford a deeper per-section text budget and more aggregated signals than
-// the old single-shot prompt allowed.
-const MAX_TEXT_SNIPPETS = 40; // per section
+// Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
+// model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how
+// many of the archived posts actually reach each section's call. 150 text snippets/section means a 512
+// rolling archive is genuinely used, not throttled to a thin sample. (Validated against the recompute
+// worker's 300s budget: 6 parallel section calls + up to 2 re-passes on unknowns still fit.)
+const MAX_TEXT_SNIPPETS = 150; // per section
 const TEXT_SNIPPET_CHARS = 500;
-const TOP_AGG = 28;
-const REPRESENTATIVE_ASSETS = 24; // assetHashes surfaced per section for media citations
+const TOP_AGG = 40;
+const REPRESENTATIVE_ASSETS = 40; // assetHashes surfaced per section for media citations
 
 export type SynthAnswerStatus = "answered" | "inferred" | "needs_confirmation" | "unknown";
 export type SynthConfidence = "low" | "medium" | "high";
