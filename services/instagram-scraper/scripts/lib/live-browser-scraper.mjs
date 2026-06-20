@@ -83,6 +83,23 @@ async function runInstagramProfileBrowser(profileUrl, options = {}) {
 
 async function extractProfileWithMeta(page, { maxPosts, scrollMeta }) {
   let raw = await page.evaluate(extractInstagramProfileFromDom, { maxPosts });
+  // Posts harvested during the scroll capture virtualized tiles the final-DOM
+  // read misses. Union them (harvested = base, final-DOM overlays richer fields
+  // like metrics for the top tiles), keep scroll order, re-number positions.
+  const { harvestedPosts, ...scrollMetaForReport } = scrollMeta || {};
+  if (Array.isArray(harvestedPosts) && harvestedPosts.length) {
+    const byUrl = new Map();
+    for (const post of harvestedPosts) if (post?.url) byUrl.set(post.url, post);
+    for (const post of raw?.recentPublicPosts || []) {
+      if (!post?.url) continue;
+      const existing = byUrl.get(post.url);
+      const richer = Object.fromEntries(Object.entries(post).filter(([, value]) => value != null && value !== ""));
+      byUrl.set(post.url, existing ? { ...existing, ...richer } : post);
+    }
+    const merged = [...byUrl.values()].slice(0, maxPosts).map((post, index) => ({ ...post, position: index + 1 }));
+    raw = { ...raw, recentPublicPosts: merged };
+  }
+  scrollMeta = scrollMetaForReport;
   const detailLimit = Math.min(DEFAULT_DETAIL_HYDRATION_LIMIT, raw?.recentPublicPosts?.length || 0);
   let detailHydratedPosts = 0;
   if (detailLimit > 0 && raw?.access?.canScrapePosts === true) {
@@ -172,22 +189,83 @@ async function autoScrollV1(page, maxPosts) {
   return await page.evaluate(
     async (limit, maxScrollPasses, stableLimit) => {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const clean = (value, max = 500) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+      const postPathFromHref = (rawHref) => {
+        try {
+          const parts = new URL(rawHref, location.origin).pathname.split("/").filter(Boolean);
+          const i = parts.findIndex((part) => part === "p" || part === "reel");
+          if (i === -1 || !parts[i + 1]) return null;
+          return { kind: parts[i] === "reel" ? "reel" : "post", path: `/${parts.slice(i, i + 2).join("/")}/` };
+        } catch {
+          return null;
+        }
+      };
+      // Instagram virtualizes the post grid: off-screen tiles are removed from the
+      // DOM as you scroll. Reading the DOM once at the end only sees the last
+      // ~30 tiles. So accumulate every tile the first time it appears, before IG
+      // recycles it, and key stop conditions on accumulated-count growth (not
+      // document height, which plateaus under virtualization).
+      const harvested = new Map();
+      const harvestNow = () => {
+        const links = [
+          ...document.querySelectorAll(
+            'main a[href*="/p/"], main a[href*="/reel/"], article a[href*="/p/"], article a[href*="/reel/"]',
+          ),
+        ];
+        for (const link of links) {
+          const pp = postPathFromHref(link.getAttribute("href") || "");
+          if (!pp) continue;
+          const url = new URL(pp.path, location.origin).href.replace(/\/$/, "");
+          if (harvested.has(url)) continue;
+          const img = link.querySelector("img");
+          const aria = clean(link.getAttribute("aria-label") || link.getAttribute("title") || "", 300) || null;
+          const cdnUrls = [];
+          const pushUrl = (value) => {
+            const src = clean(value, 1200);
+            if (/^https?:\/\//i.test(src) && !cdnUrls.includes(src)) cdnUrls.push(src);
+          };
+          pushUrl(img?.src || "");
+          for (const candidate of (img?.getAttribute?.("srcset") || "").split(",")) {
+            pushUrl(candidate.trim().split(/\s+/)[0] || "");
+          }
+          for (const nested of link.querySelectorAll("video[src], source[src]")) {
+            pushUrl(nested.getAttribute("src") || "");
+          }
+          harvested.set(url, {
+            url,
+            kind: pp.kind,
+            caption: clean(img?.alt || aria || "", 500) || null,
+            thumbnailUrl: img?.src || null,
+            cdnUrls: cdnUrls.slice(0, 12),
+            alt: clean(img?.alt || "", 500) || null,
+            ariaLabel: aria,
+            isCarousel: Boolean(link.querySelector('svg[aria-label="Carousel"], [aria-label="Carousel"]')),
+            isVideo: pp.kind === "reel" || Boolean(link.querySelector('svg[aria-label="Video"], [aria-label="Video"]')),
+            timestamp: clean(link.querySelector("time")?.getAttribute("datetime") || "", 80) || null,
+            visibleText: clean(link.innerText || link.textContent || "", 300) || null,
+          });
+        }
+      };
+
       let previousHeight = 0;
+      let lastCount = 0;
       let stable = 0;
-      let postCount = 0;
       let stopReason = "max_scroll_passes";
       let pass = 0;
+      harvestNow();
       for (; pass < maxScrollPasses; pass += 1) {
         const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
         window.scrollTo(0, height);
         await wait(700 + Math.floor(Math.random() * 600)); // Phase-2: jittered pacing (~0.7-1.3s) — less bot-like, fewer 429s
+        harvestNow(); // capture tiles before IG virtualizes them out of the DOM
         const next = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
-        postCount = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')].filter((link) =>
-          /\/(?:p|reel)\/[^/]+/i.test(link.getAttribute("href") || ""),
-        ).length;
-        stable = next === previousHeight ? stable + 1 : 0;
+        const count = harvested.size;
+        // "stable" tracks the feed no longer producing new posts AND not growing;
+        // either signal of progress resets it.
+        stable = count > lastCount || next > previousHeight ? 0 : stable + 1;
         previousHeight = next;
-        if (postCount >= limit) {
+        lastCount = count;
+        if (count >= limit) {
           stopReason = "limit_reached";
           break;
         }
@@ -197,12 +275,15 @@ async function autoScrollV1(page, maxPosts) {
         }
       }
       window.scrollTo(0, 0);
+      harvestNow();
+      const harvestedPosts = [...harvested.values()].slice(0, limit).map((post, index) => ({ ...post, position: index + 1 }));
       return {
         scrollEngine: "v1",
         requestedMaxPosts: limit,
         scrollPasses: pass,
         stablePasses: stable,
-        returnedPostLinks: postCount,
+        returnedPostLinks: harvested.size,
+        harvestedPosts,
         stopReason,
         scrollStopReason: stopReason,
         maxScrollPasses,
