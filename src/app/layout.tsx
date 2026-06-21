@@ -47,9 +47,32 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Site-wide structured data: the publisher (Hushh) and the site (One), so
+  // search engines can attribute the One / network pages to the brand.
+  const orgJsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://hushh.ai/#org",
+        name: "Hushh",
+        url: "https://hushh.ai",
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://one.hushh.ai/#website",
+        name: "One by hushh",
+        url: "https://one.hushh.ai",
+        publisher: { "@id": "https://hushh.ai/#org" },
+      },
+    ],
+  };
   return (
     <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(orgJsonLd) }} />
+        {children}
+      </body>
     </html>
   );
 }
