@@ -42,6 +42,11 @@ export default function CustomersPage() {
           benchmarks the options, and runs it where it finishes best — on your Mac when it fits, or burst to a
           right-sized cloud supercomputer when it doesn&apos;t. Here&apos;s what that looks like.
         </p>
+        <p style={{ marginTop: -20, marginBottom: 36 }}>
+          <Link href="/network" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600 }}>
+            Part of the One network of agents →
+          </Link>
+        </p>
 
         <div className={styles.stats}>
           <div className={styles.stat}><div className={styles.statV}>${PORTFOLIO.savedMonthly.toLocaleString()}</div><div className={styles.statK}>saved / month ({PORTFOLIO.savedPct}%)</div></div>
