@@ -22,8 +22,14 @@ const fragmentMono = Fragment_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://one.hushh.ai"),
   title: "One by hussh",
   description: "Meet One, your personal intelligence agent.",
+  // Google Search Console HTML-tag verification for the one.hushh.ai property.
+  // Set GOOGLE_SITE_VERIFICATION (the token from Search Console) in the Cloud Run
+  // service env; renders <meta name="google-site-verification" ...> when present.
+  // Not needed if hushh.ai is verified as a *Domain* property (covers all subdomains).
+  verification: { google: process.env.GOOGLE_SITE_VERIFICATION },
   icons: {
     icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🤫%3C/text%3E%3C/svg%3E",
   },
