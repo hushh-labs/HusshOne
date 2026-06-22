@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { verifyInternalJobRequest } from "@/lib/auth/internal";
 import { getPrismaClient } from "@/lib/db/prisma";
 import { vertexConfig, adcAccessToken } from "@/lib/gcp/auth";
+import { deepResearchBaseUrl } from "@/lib/research/client";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -73,8 +74,9 @@ async function checkScraper(name: string, urlEnv: string, keyEnv: string, path: 
 }
 
 async function checkDeepResearch(signal: AbortSignal): Promise<{ status: Status; detail: string }> {
-  const base = (process.env.DEEP_RESEARCH_API_BASE_URL || "").trim().replace(/\/+$/, "");
-  if (!base) return { status: "down", detail: "DEEP_RESEARCH_API_BASE_URL unset" };
+  // Resolve the SAME way the real client does (env override → built-in default); env-unset is normal.
+  const base = deepResearchBaseUrl();
+  if (!base) return { status: "down", detail: "no Deep Research base URL" };
   const token = (process.env.DEEP_RESEARCH_API_TOKEN || "").trim();
   const res = await fetch(`${base}/health`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal });
   if (!res.ok) return { status: "down", detail: `/health HTTP ${res.status}` };
