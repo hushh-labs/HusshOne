@@ -12,7 +12,9 @@ import type {
 } from "./profile";
 
 const DEFAULT_SCRAPER_URL = "http://136.114.82.27:8080";
-const DEFAULT_TIMEOUT_MS = 180_000;
+// Connect must fail-fast → degraded handshake, not a 3-min spinner when the VM's Chrome session is hung.
+// A healthy LinkedIn profile scrape completes well under this. Env LINKEDIN_SCRAPER_TIMEOUT_MS overrides.
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class LinkedInScraperError extends Error {
   constructor(

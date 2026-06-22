@@ -937,7 +937,7 @@ function ConnectLinkedInInline({
   onChange?: () => void;
   onConnected: (profile: LinkedInProfileFull) => void;
 }) {
-  type Phase = "idle" | "fetching" | "retrying" | "connected" | "error";
+  type Phase = "idle" | "fetching" | "connected" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
   const [touched, setTouched] = useState(false);
@@ -977,17 +977,13 @@ function ConnectLinkedInInline({
       return { profile: payload.profile, degraded: payload.degraded };
     };
     try {
-      let result = await doFetch();
+      const result = await doFetch();
       // Degraded = the scraper VM was busy/down so we got a URL-only handshake (the URL is valid + saved).
-      // Retry a few times to upgrade to the real rich profile before giving up — never a hard error on a blip.
-      for (let i = 0; i < 3 && result.degraded; i += 1) {
-        setPhase("retrying");
-        await new Promise((r) => setTimeout(r, 6000));
-        result = await doFetch().catch(() => result);
-      }
+      // Do NOT spin-retry inline (a slow VM would freeze the button) — show a calm note and let the user
+      // tap Connect again or just Send One (LinkedIn is optional). No weak anchor reaches Phase-1.
       if (result.degraded || !hasUrlEnrichedLinkedInProfile(result.profile)) {
         track("linkedin_optional_connect_degraded");
-        setErr("LinkedIn is busy right now — your URL is saved, tap Connect again in a moment to finish reading it.");
+        setErr("LinkedIn is busy right now — your URL is saved. Tap Connect again in a moment, or just Send One (LinkedIn is optional).");
         setPhase("error");
         return;
       }
@@ -1002,7 +998,7 @@ function ConnectLinkedInInline({
     }
   };
 
-  const busy = phase === "fetching" || phase === "retrying";
+  const busy = phase === "fetching";
   if (hasUrlEnrichedLinkedInProfile(profile)) {
     return (
       <div className="field-group connector-form pc-required-link" style={{ gap: 8 }}>
