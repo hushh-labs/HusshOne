@@ -290,6 +290,28 @@ export async function getSocialConnections<TProfile = unknown>(firebaseUid: stri
   }
 }
 
+/** Feed-platform (IG/Threads/X) profiles the user has connected — read from the SocialConnection table,
+ *  the DURABLE "which socials are connected" source of truth. Connecting a social ANYWHERE (onboarding OR
+ *  the Settings deck, even long after sign-up) lands here, so the preference layer can key off it instead of
+ *  the frozen per-scan input snapshot — which is why a skip-at-signup-then-connect-later user gets no layer.
+ *  Returns valid SocialProfileFull[] (platform/username/profileUrl present); empty/defensive on any failure. */
+const FEED_CONNECTION_PLATFORMS = new Set(["instagram", "threads", "x"]);
+export async function getConnectedFeedProfiles(firebaseUid: string): Promise<SocialProfileFull[]> {
+  const all = await getSocialConnections<SocialProfileFull>(firebaseUid);
+  return all.filter((profile): profile is SocialProfileFull => {
+    if (!profile || typeof profile !== "object") return false;
+    const p = profile as { platform?: unknown; username?: unknown; profileUrl?: unknown };
+    return (
+      typeof p.platform === "string" &&
+      FEED_CONNECTION_PLATFORMS.has(p.platform.trim().toLowerCase()) &&
+      typeof p.username === "string" &&
+      p.username.trim().length > 0 &&
+      typeof p.profileUrl === "string" &&
+      p.profileUrl.trim().length > 0
+    );
+  });
+}
+
 export async function upsertSocialAccessRequest(input: UpsertSocialAccessRequestInput) {
   const prisma = getPrismaClient();
   if (!prisma) return null;
