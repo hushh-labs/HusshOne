@@ -54,16 +54,21 @@ steps:
       - --region=${_REGION}
       - --quiet
 
-  # 5) Smoke — one.hushh.ai hits the service directly (no CDN), so the new revision is live immediately.
-  - id: smoke
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  # 5) Health gate — full E2E probe (one.hushh.ai is direct/no-CDN, so the new revision is live now).
+  #    The harness checks the public shell + /api/internal/health (DB, Vertex, Deep Research API, scrapers)
+  #    and exits non-zero only when a CRITICAL dep is down — so a deploy fails on a real outage, but a
+  #    degraded scraper (e.g. Threads logged out) does NOT block the ship.
+  - id: health-gate
+    name: node:20
     entrypoint: bash
+    secretEnv: ["ONE_INTERNAL_JOB_TOKEN"]
     args:
       - -c
       - |
         set -euo pipefail
-        for path in / /docs; do
-          code=$(curl -s -m 30 -o /dev/null -w "%{http_code}" "https://one.hushh.ai${path}")
-          echo "GET https://one.hushh.ai${path} -> ${code}"
-          test "${code}" = "200"
-        done
+        BASE_URL=https://one.hushh.ai node scripts/health-e2e.mjs
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/ONE_INTERNAL_JOB_TOKEN/versions/latest
+      env: ONE_INTERNAL_JOB_TOKEN
