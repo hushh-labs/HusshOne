@@ -92,6 +92,34 @@ export function hasUrlEnrichedLinkedInProfile(profile: LinkedInProfileFull | nul
   );
 }
 
+/** A minimal URL-only "degraded" LinkedIn profile, built when the scraper VM is down/unreachable at
+ *  connect time. It deliberately FAILS hasUrlEnrichedLinkedInProfile (no about/experience/education/
+ *  skills) so the strict anchor gate stays closed until a background re-enrich upgrades it to the real
+ *  rich profile — i.e. a VM blip never hard-errors the connect, but a weak anchor never reaches Phase-1. */
+export function buildLinkedInHandshakeProfile(normalizedUrl: string): LinkedInProfileFull | null {
+  const handle = normalizedUrl.match(/\/in\/([^/]+)\/?$/i)?.[1];
+  if (!handle) return null;
+  const name = handle
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+  return {
+    sub: handle,
+    name: name || handle,
+    givenName: name.split(" ")[0] || handle,
+    familyName: name.split(" ").slice(1).join(" "),
+    email: null,
+    emailVerified: false,
+    locale: null,
+    pictureUrl: null,
+    profileUrl: normalizedUrl,
+    headline: null,
+    verifications: [],
+    grantedScopes: ["scraper:linkedin-profile-url"],
+    source: "scraper",
+  };
+}
+
 /** Compact career-spine summary for the preference synthesis `professionalContext` slot — this is how
  *  LinkedIn (a profile, not a post feed) enters the intelligence layer: it grounds the preference
  *  inferences (especially mental-models / professional questions) in the user's real career instead of

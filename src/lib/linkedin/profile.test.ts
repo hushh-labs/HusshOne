@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLinkedInProfile, buildProfessionalContext, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
+import { buildLinkedInHandshakeProfile, buildLinkedInProfile, buildProfessionalContext, hasUrlEnrichedLinkedInProfile, type LinkedInProfileFull } from "./profile";
 import type { ProbeResult, RawApiResult } from "./oauth";
 
 function probe(key: string, ok: boolean, data: unknown): ProbeResult {
@@ -154,5 +154,19 @@ describe("buildProfessionalContext", () => {
     expect(ctx).toContain("Fund Operations");
     expect(ctx).toContain("IIT Bombay");
     expect(ctx).toContain("Operator and investor.");
+  });
+});
+
+describe("buildLinkedInHandshakeProfile", () => {
+  it("builds a URL-only degraded profile that does NOT pass the enriched gate", () => {
+    const p = buildLinkedInHandshakeProfile("https://www.linkedin.com/in/anil-sachdev");
+    expect(p).not.toBeNull();
+    expect(p).toMatchObject({ source: "scraper", profileUrl: "https://www.linkedin.com/in/anil-sachdev", name: "Anil Sachdev" });
+    // crucially: a degraded handshake must fail hasUrlEnriched so the strict anchor gate stays closed
+    expect(hasUrlEnrichedLinkedInProfile(p)).toBe(false);
+  });
+
+  it("returns null for a non-/in/ URL", () => {
+    expect(buildLinkedInHandshakeProfile("https://www.linkedin.com/company/hushh")).toBeNull();
   });
 });

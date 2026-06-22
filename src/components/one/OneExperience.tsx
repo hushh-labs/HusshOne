@@ -937,7 +937,7 @@ function ConnectLinkedInInline({
   onChange?: () => void;
   onConnected: (profile: LinkedInProfileFull) => void;
 }) {
-  type Phase = "idle" | "fetching" | "connected" | "error";
+  type Phase = "idle" | "fetching" | "retrying" | "connected" | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [url, setUrl] = useState("");
   const [touched, setTouched] = useState(false);
@@ -961,7 +961,7 @@ function ConnectLinkedInInline({
     }
     setPhase("fetching");
     track("linkedin_optional_connect_started");
-    try {
+    const doFetch = async (): Promise<{ profile?: LinkedInProfileFull; degraded?: boolean }> => {
       const authorization = await getFirebaseBearer(authUser as User);
       const res = await fetch("/api/linkedin/enrich-url", {
         method: "POST",
@@ -969,14 +969,31 @@ function ConnectLinkedInInline({
         body: JSON.stringify({ url: normalized }),
       });
       const payload = (await res.json().catch(() => ({}))) as {
-        ok?: boolean; profile?: LinkedInProfileFull; error?: string;
+        ok?: boolean; profile?: LinkedInProfileFull; degraded?: boolean; error?: string;
       };
       if (!res.ok || !payload.ok || !payload.profile) {
         throw new Error(payload.error || "We could not read this profile. Check that the URL is public/visible and try again.");
       }
+      return { profile: payload.profile, degraded: payload.degraded };
+    };
+    try {
+      let result = await doFetch();
+      // Degraded = the scraper VM was busy/down so we got a URL-only handshake (the URL is valid + saved).
+      // Retry a few times to upgrade to the real rich profile before giving up — never a hard error on a blip.
+      for (let i = 0; i < 3 && result.degraded; i += 1) {
+        setPhase("retrying");
+        await new Promise((r) => setTimeout(r, 6000));
+        result = await doFetch().catch(() => result);
+      }
+      if (result.degraded || !hasUrlEnrichedLinkedInProfile(result.profile)) {
+        track("linkedin_optional_connect_degraded");
+        setErr("LinkedIn is busy right now — your URL is saved, tap Connect again in a moment to finish reading it.");
+        setPhase("error");
+        return;
+      }
       setUrl("");
       setPhase("connected");
-      onConnected(payload.profile);
+      onConnected(result.profile);
     } catch (e) {
       const message = e instanceof Error ? e.message : "We could not read this profile. Check that the URL is public/visible and try again.";
       track("linkedin_optional_connect_failed", { reason: message.slice(0, 120) });
@@ -985,7 +1002,7 @@ function ConnectLinkedInInline({
     }
   };
 
-  const busy = phase === "fetching";
+  const busy = phase === "fetching" || phase === "retrying";
   if (hasUrlEnrichedLinkedInProfile(profile)) {
     return (
       <div className="field-group connector-form pc-required-link" style={{ gap: 8 }}>
