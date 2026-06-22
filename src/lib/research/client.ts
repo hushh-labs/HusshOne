@@ -20,6 +20,12 @@ function baseUrl() {
   return (process.env.DEEP_RESEARCH_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
+/** The resolved Deep Research API base URL (env override → built-in default). Exported so the health
+ *  check probes the SAME URL the client actually uses (env-unset is normal — there's a default). */
+export function deepResearchBaseUrl() {
+  return baseUrl();
+}
+
 function apiToken() {
   return process.env.DEEP_RESEARCH_API_TOKEN?.trim();
 }
