@@ -4,6 +4,7 @@ import { POST } from "./route";
 
 const mocks = vi.hoisted(() => ({
   persistXProfile: vi.fn(async () => undefined),
+  maybeEnqueueConnectDeepScrape: vi.fn(async () => ({ enqueued: false, reason: "no_consent" as const })),
 }));
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -17,6 +18,10 @@ vi.mock("@/lib/auth/verify", () => ({
 
 vi.mock("@/lib/x/connection", () => ({
   persistXProfile: mocks.persistXProfile,
+}));
+
+vi.mock("@/lib/social-intelligence/connect-pipeline", () => ({
+  maybeEnqueueConnectDeepScrape: mocks.maybeEnqueueConnectDeepScrape,
 }));
 
 function makeRequest(body: Record<string, unknown>) {
@@ -76,5 +81,25 @@ describe("POST /api/x/enrich-url (handshake)", () => {
     });
     expect(mocks.persistXProfile).toHaveBeenCalledTimes(1);
     expect(global.fetch).not.toHaveBeenCalled();
+    expect(mocks.maybeEnqueueConnectDeepScrape).toHaveBeenCalledWith({
+      firebaseUid: "firebase-1",
+      platform: "x",
+      username: "sundarpichai",
+      profileUrl: "https://x.com/sundarpichai",
+    });
+  });
+
+  it("does not kick the deep pipeline on auth/validation failure", async () => {
+    vi.mocked(verifyOneRequest).mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { statusCode: 401 }));
+    await POST(makeRequest({ url: "https://x.com/sundarpichai" }));
+    const res = await POST(makeRequest({ url: "https://x.com/sundarpichai/status/123" })); // invalid → 422
+    expect(res.status).toBe(422);
+    expect(mocks.maybeEnqueueConnectDeepScrape).not.toHaveBeenCalled();
+  });
+
+  it("still returns 200 if the deep-pipeline enqueue rejects (fire-and-forget)", async () => {
+    mocks.maybeEnqueueConnectDeepScrape.mockRejectedValueOnce(new Error("db down"));
+    const res = await POST(makeRequest({ url: "https://x.com/sundarpichai" }));
+    expect(res.status).toBe(200);
   });
 });

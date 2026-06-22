@@ -3,6 +3,7 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import { normalizeInstagramUrl } from "@/lib/auth/identity";
 import { persistInstagramProfile } from "@/lib/instagram/connection";
 import { buildInstagramHandshakeProfile } from "@/lib/instagram/profile";
+import { maybeEnqueueConnectDeepScrape } from "@/lib/social-intelligence/connect-pipeline";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,14 @@ export async function POST(request: Request) {
       });
     }
     await persistInstagramProfile(verified, profile);
+    // Connect-later: if the user already consented, auto-kick the deep pipeline for this platform so its
+    // intelligence builds without a re-scan. Fire-and-forget — never blocks/breaks the handshake response.
+    void maybeEnqueueConnectDeepScrape({
+      firebaseUid: verified.uid,
+      platform: "instagram",
+      username: profile.username,
+      profileUrl: normalizedUrl,
+    }).catch(() => undefined);
     return NextResponse.json({ ok: true, profile, normalizedUrl });
   } catch (error) {
     return errorResponse(error);
