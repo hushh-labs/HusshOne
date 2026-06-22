@@ -3,6 +3,7 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import { normalizeXUrl } from "@/lib/auth/identity";
 import { persistXProfile } from "@/lib/x/connection";
 import { buildXHandshakeProfile } from "@/lib/x/profile";
+import { maybeEnqueueConnectDeepScrape } from "@/lib/social-intelligence/connect-pipeline";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,14 @@ export async function POST(request: Request) {
       throw Object.assign(new Error("Paste a valid X profile URL (e.g. https://x.com/username)."), { statusCode: 422 });
     }
     await persistXProfile(verified, profile);
+    // Connect-later: auto-kick the deep pipeline (consent-gated) so this platform's intelligence builds
+    // without a re-scan. Fire-and-forget — never blocks/breaks the handshake response.
+    void maybeEnqueueConnectDeepScrape({
+      firebaseUid: verified.uid,
+      platform: "x",
+      username: profile.username,
+      profileUrl: normalizedUrl,
+    }).catch(() => undefined);
     return NextResponse.json({ ok: true, profile, normalizedUrl });
   } catch (error) {
     return errorResponse(error);

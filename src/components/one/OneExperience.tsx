@@ -2548,6 +2548,17 @@ function Settings({
   onBack,
   onLogout,
   onDelete,
+  authUser,
+  profile,
+  requiresLinkedIn,
+  instagramProfiles,
+  threadsProfiles,
+  xProfiles,
+  onLinkedInConnected,
+  onLinkedInChange,
+  onInstagramConnected,
+  onThreadsConnected,
+  onXConnected,
 }: {
   name: string;
   email: string;
@@ -2555,7 +2566,19 @@ function Settings({
   onBack: () => void;
   onLogout: () => void;
   onDelete: () => void;
+  authUser: ClientUser | null;
+  profile: LinkedInProfileFull | null;
+  requiresLinkedIn: boolean;
+  instagramProfiles: InstagramProfileFull[];
+  threadsProfiles: ThreadsProfileFull[];
+  xProfiles: XProfileFull[];
+  onLinkedInConnected: (full: LinkedInProfileFull) => void;
+  onLinkedInChange: () => void;
+  onInstagramConnected: (profile: InstagramProfileFull) => void;
+  onThreadsConnected: (profile: ThreadsProfileFull) => void;
+  onXConnected: (profile: XProfileFull) => void;
 }) {
+  const hasLinkedIn = Boolean(profile);
   return (
     <div className="screen settings screen-enter">
       <div className="content">
@@ -2583,6 +2606,62 @@ function Settings({
             {Icons.shield(14)} One is private by default. Your report stays tied to your account, and you can remove
             everything at any time.
           </p>
+        </div>
+
+        <div className="set-box connector-intake-card">
+          <div className="pc-section-label">Connected accounts</div>
+          <p className="sub set-note">
+            {Icons.shield(14)} Add or update your socials anytime. One starts reading a newly connected account in
+            the background — your insights update on their own, no need to scan again.
+          </p>
+          <div className="connector-deck" aria-label="Connected accounts">
+            <ConnectorDisclosure
+              platform="linkedin"
+              title="LinkedIn"
+              subtitle={
+                hasLinkedIn
+                  ? "Career context connected"
+                  : requiresLinkedIn
+                    ? "Required for guest sessions"
+                    : "Recommended — One reads your real career, not just your name"
+              }
+              state={hasLinkedIn ? "connected" : requiresLinkedIn ? "required" : "recommended"}
+              required={requiresLinkedIn}
+            >
+              <ConnectLinkedInInline
+                authUser={authUser}
+                profile={profile}
+                required={requiresLinkedIn}
+                inputId="linkedin-settings-url"
+                onChange={onLinkedInChange}
+                onConnected={onLinkedInConnected}
+              />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="instagram"
+              title="Instagram"
+              subtitle={instagramProfiles[0] ? `@${instagramProfiles[0].username} added` : "Photos, captions, lifestyle signals"}
+              state={instagramProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectInstagramInline authUser={authUser} profiles={instagramProfiles} onConnected={onInstagramConnected} />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="threads"
+              title="Threads"
+              subtitle={threadsProfiles[0] ? `@${threadsProfiles[0].username} added` : "Public posts and conversation context"}
+              state={threadsProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectThreadsInline authUser={authUser} profiles={threadsProfiles} onConnected={onThreadsConnected} />
+            </ConnectorDisclosure>
+            <ConnectorDisclosure
+              platform="x"
+              title="X"
+              subtitle={xProfiles[0] ? `@${xProfiles[0].username} added` : "Posts, replies, links, and public signals"}
+              state={xProfiles[0] ? "connected" : "optional"}
+            >
+              <ConnectXInline authUser={authUser} profiles={xProfiles} onConnected={onXConnected} />
+            </ConnectorDisclosure>
+          </div>
         </div>
 
         <div className="set-actions">
@@ -3235,6 +3314,34 @@ export default function OneExperience() {
     track("x_connected");
   };
 
+  // Connect-later: when a returning user adds/updates a connector from the Settings "Connected accounts"
+  // section, bump this nonce to re-arm the dashboard preference poll so the new platform's depth + refreshed
+  // pivots surface without a full re-scan. Scoped to Settings (precollect connects don't touch it).
+  const [prefRepollNonce, setPrefRepollNonce] = useState(0);
+  const lastRepollHandledRef = useRef(0);
+  const requestPreferenceRepoll = () => setPrefRepollNonce((n) => n + 1);
+
+  const onInstagramConnectedFromSettings = (profile: InstagramProfileFull) => {
+    onInstagramConnected(profile);
+    requestPreferenceRepoll();
+  };
+  const onThreadsConnectedFromSettings = (profile: ThreadsProfileFull) => {
+    onThreadsConnected(profile);
+    requestPreferenceRepoll();
+  };
+  const onXConnectedFromSettings = (profile: XProfileFull) => {
+    onXConnected(profile);
+    requestPreferenceRepoll();
+  };
+  // Like onLinkedInConnected but stays on Settings (no setStage("precollect")).
+  const onLinkedInConnectedFromSettings = (full: LinkedInProfileFull) => {
+    setLiProfile(full);
+    scopedSet(authUser, LS_LI_FULL, JSON.stringify(full));
+    scopedSet(authUser, LS_LI_CONNECTED, "1");
+    track("linkedin_connected");
+    requestPreferenceRepoll();
+  };
+
   const onSocialPreferenceConsentChanged = (value: boolean) => {
     setSocialPreferenceConsent(value);
     track("social_preference_consent_changed", {
@@ -3589,7 +3696,13 @@ export default function OneExperience() {
     const id = dashboard?.scanRunId || scanRunIdRef.current;
     if (!id) return;
     const currentStatus = dashboard?.preferenceStatus ?? preferenceStatusRef.current;
-    if (currentStatus === "completed" || currentStatus === "failed" || currentStatus === "skipped") return;
+    // Connect-later re-poll: a Settings connect bumps prefRepollNonce. When it advances we re-poll even if
+    // the layer was already terminal, and we only finalize once a NEWER profile (different generatedAt)
+    // lands — so we don't stop on the stale "completed" before the new platform's recompute finishes.
+    const repoll = prefRepollNonce > lastRepollHandledRef.current;
+    if ((currentStatus === "completed" || currentStatus === "failed" || currentStatus === "skipped") && !repoll) return;
+    const baselineGeneratedAt = repoll ? dashboard?.preferenceProfile?.generatedAt ?? null : null;
+    lastRepollHandledRef.current = prefRepollNonce;
 
     let stopped = false;
     const startedAt = performance.now();
@@ -3597,7 +3710,7 @@ export default function OneExperience() {
     const run = async () => {
       await Promise.resolve();
       if (stopped) return;
-      if (preferenceStatusRef.current === "idle") setPreferenceLayer("running");
+      if (repoll || preferenceStatusRef.current === "idle") setPreferenceLayer("running");
       setDashboard((prev) => (prev && !prev.preferenceStatus ? { ...prev, preferenceStatus: "running", preferenceStartedAt: Date.now() } : prev));
       track("preference_started", { scanRunId: id });
       let lastProfile: OneDashboardResult["preferenceProfile"] | undefined;
@@ -3626,7 +3739,10 @@ export default function OneExperience() {
               setPreferenceLayer(serverStatus, nextProfile);
               setDashboard((prev) => (prev ? { ...prev, preferenceStatus: serverStatus, preferenceProfile: nextProfile } : prev));
             }
-            if (payload?.preferenceStatus === "completed") {
+            // On a re-poll, ignore the stale "completed" until a NEWER profile (different generatedAt) lands,
+            // so we keep polling while the newly-connected platform's recompute is still running.
+            const freshEnough = !baselineGeneratedAt || (nextProfile?.generatedAt != null && nextProfile.generatedAt !== baselineGeneratedAt);
+            if (payload?.preferenceStatus === "completed" && freshEnough) {
               track("preference_completed", {
                 scanRunId: id,
                 signals: nextProfile?.topSignals.length ?? 0,
@@ -3666,7 +3782,7 @@ export default function OneExperience() {
       stopped = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, dashboard?.scanRunId, authUser]);
+  }, [stage, dashboard?.scanRunId, authUser, prefRepollNonce]);
 
   // Map a (restored or freshly signed-in) user → identity → the right screen,
   // honoring a mid-scan recovery, an email deep-link, or a last-scan dashboard.
@@ -4595,6 +4711,17 @@ export default function OneExperience() {
         onBack={leaveSettings}
         onLogout={reset}
         onDelete={() => setDeleteOpen(true)}
+        authUser={authUser}
+        profile={liProfile}
+        requiresLinkedIn={requiresLinkedIn}
+        instagramProfiles={igProfiles}
+        threadsProfiles={threadsProfiles}
+        xProfiles={xProfiles}
+        onLinkedInConnected={onLinkedInConnectedFromSettings}
+        onLinkedInChange={onLinkedInChange}
+        onInstagramConnected={onInstagramConnectedFromSettings}
+        onThreadsConnected={onThreadsConnectedFromSettings}
+        onXConnected={onXConnectedFromSettings}
       />
     );
   else if (stage === "manual")

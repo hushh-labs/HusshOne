@@ -3,6 +3,7 @@ import { POST } from "./route";
 
 const mocks = vi.hoisted(() => ({
   persistConnectedProfile: vi.fn(async () => undefined),
+  maybeEnqueueConnectRecompute: vi.fn(async () => ({ enqueued: false, reason: "no_consent" as const })),
 }));
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -16,6 +17,10 @@ vi.mock("@/lib/auth/verify", () => ({
 
 vi.mock("@/lib/linkedin/connection", () => ({
   persistConnectedProfile: mocks.persistConnectedProfile,
+}));
+
+vi.mock("@/lib/social-intelligence/connect-pipeline", () => ({
+  maybeEnqueueConnectRecompute: mocks.maybeEnqueueConnectRecompute,
 }));
 
 function makeRequest(body: Record<string, unknown>) {
@@ -73,6 +78,8 @@ describe("POST /api/linkedin/enrich-url", () => {
     expect(json.normalizedUrl).toBe("https://www.linkedin.com/in/anilsachdev");
     expect(json.profile).toMatchObject({ name: "Anil Sachdev", source: "scraper", email: "user@example.com" });
     expect(mocks.persistConnectedProfile).toHaveBeenCalledTimes(1);
+    // connect-later: LinkedIn re-grounds the preference layer via a recompute (consent-gated in the helper)
+    expect(mocks.maybeEnqueueConnectRecompute).toHaveBeenCalledWith("firebase-1");
     expect(global.fetch).toHaveBeenCalledWith(
       "http://scraper.local/scrape",
       expect.objectContaining({

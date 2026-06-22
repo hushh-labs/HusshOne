@@ -3,6 +3,7 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import { persistConnectedProfile } from "@/lib/linkedin/connection";
 import { hasUrlEnrichedLinkedInProfile } from "@/lib/linkedin/profile";
 import { LinkedInScraperError, scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
+import { maybeEnqueueConnectRecompute } from "@/lib/social-intelligence/connect-pipeline";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,9 @@ export async function POST(request: Request) {
       );
     }
     await persistConnectedProfile(verified, profile);
+    // Connect-later: LinkedIn is a profile (not a post feed), so a refreshed career anchor should re-ground
+    // the preference layer via a recompute (consent-gated, idempotent). Fire-and-forget — never blocks Add.
+    void maybeEnqueueConnectRecompute(verified.uid).catch(() => undefined);
     return NextResponse.json({ ok: true, profile, normalizedUrl });
   } catch (error) {
     return errorResponse(error);

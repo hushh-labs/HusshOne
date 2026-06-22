@@ -3,6 +3,7 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import { normalizeThreadsUrl } from "@/lib/auth/identity";
 import { persistThreadsProfile } from "@/lib/threads/connection";
 import { buildThreadsHandshakeProfile } from "@/lib/threads/profile";
+import { maybeEnqueueConnectDeepScrape } from "@/lib/social-intelligence/connect-pipeline";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,14 @@ export async function POST(request: Request) {
       });
     }
     await persistThreadsProfile(verified, profile);
+    // Connect-later: auto-kick the deep pipeline (consent-gated) so this platform's intelligence builds
+    // without a re-scan. Fire-and-forget — never blocks/breaks the handshake response.
+    void maybeEnqueueConnectDeepScrape({
+      firebaseUid: verified.uid,
+      platform: "threads",
+      username: profile.username,
+      profileUrl: normalizedUrl,
+    }).catch(() => undefined);
     return NextResponse.json({ ok: true, profile, normalizedUrl });
   } catch (error) {
     return errorResponse(error);

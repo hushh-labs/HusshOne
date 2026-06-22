@@ -4,6 +4,7 @@ import { POST } from "./route";
 
 const mocks = vi.hoisted(() => ({
   persistInstagramProfile: vi.fn(async () => undefined),
+  maybeEnqueueConnectDeepScrape: vi.fn(async () => ({ enqueued: false, reason: "no_consent" as const })),
 }));
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -17,6 +18,10 @@ vi.mock("@/lib/auth/verify", () => ({
 
 vi.mock("@/lib/instagram/connection", () => ({
   persistInstagramProfile: mocks.persistInstagramProfile,
+}));
+
+vi.mock("@/lib/social-intelligence/connect-pipeline", () => ({
+  maybeEnqueueConnectDeepScrape: mocks.maybeEnqueueConnectDeepScrape,
 }));
 
 function makeRequest(body: Record<string, unknown>) {
@@ -74,5 +79,29 @@ describe("POST /api/instagram/enrich-url (handshake)", () => {
     });
     expect(mocks.persistInstagramProfile).toHaveBeenCalledTimes(1);
     expect(global.fetch).not.toHaveBeenCalled();
+    // connect-later: the deep pipeline is kicked (consent-gated inside the helper) with the right args
+    expect(mocks.maybeEnqueueConnectDeepScrape).toHaveBeenCalledTimes(1);
+    expect(mocks.maybeEnqueueConnectDeepScrape).toHaveBeenCalledWith({
+      firebaseUid: "firebase-1",
+      platform: "instagram",
+      username: "ankit_ya_i_am",
+      profileUrl: "https://www.instagram.com/ankit_ya_i_am/",
+    });
+  });
+
+  it("does not kick the deep pipeline on auth/validation failure", async () => {
+    vi.mocked(verifyOneRequest).mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { statusCode: 401 }));
+    await POST(makeRequest({ url: "https://www.instagram.com/ankit/" }));
+    expect(mocks.maybeEnqueueConnectDeepScrape).not.toHaveBeenCalled();
+
+    const res = await POST(makeRequest({ url: "https://www.instagram.com/p/abc123/" })); // invalid → 422
+    expect(res.status).toBe(422);
+    expect(mocks.maybeEnqueueConnectDeepScrape).not.toHaveBeenCalled();
+  });
+
+  it("still returns 200 if the deep-pipeline enqueue rejects (fire-and-forget)", async () => {
+    mocks.maybeEnqueueConnectDeepScrape.mockRejectedValueOnce(new Error("db down"));
+    const res = await POST(makeRequest({ url: "https://www.instagram.com/ankit/" }));
+    expect(res.status).toBe(200);
   });
 });
