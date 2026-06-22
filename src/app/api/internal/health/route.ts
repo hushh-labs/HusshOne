@@ -114,5 +114,10 @@ async function handle(request: Request) {
   };
   // Overall verdict: ok only when every CRITICAL dependency is up. Degraded scrapers don't fail it.
   const ok = checks.every((c) => !c.critical || c.status === "up");
+  // Structured log on EVERY probe so the continuous watchdog (Cloud Scheduler → this route) leaves a trail
+  // in Cloud Logging — a hung scraper / DB / Vertex shows up immediately (log-based metric + alert), so an
+  // outage is caught in minutes instead of when a user complains.
+  const notUp = checks.filter((c) => c.status !== "up").map((c) => `${c.name}:${c.status}`);
+  console.log(JSON.stringify({ event: "one.health.check", ok, summary, notUp }));
   return NextResponse.json({ ok, checkedAt: new Date().toISOString(), summary, checks }, { status: ok ? 200 : 503 });
 }
