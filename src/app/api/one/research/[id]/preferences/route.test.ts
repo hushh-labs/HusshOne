@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => ({
   indexSocialPreferenceEvidence: vi.fn(async () => ({ contentItems: 1, mediaAssets: 1 })),
   logUserPreferenceRun: vi.fn(async () => undefined),
   saveUserPreferenceProfile: vi.fn(async () => undefined),
-  enqueueSocialRefreshJobs: vi.fn(async () => 1),
+  enqueueSocialRefreshJobs: vi.fn(
+    async (_input: { firebaseUid: string; jobs: Array<{ platform: string; publicId: string; metadata?: Record<string, unknown>; priority?: number }> }) => 1,
+  ),
   updateDeepTier: vi.fn(async (_uid: string, _id: string, fields: Record<string, unknown>) => ({
     scanRunId: "scan-1",
     report: "# Dossier",
@@ -143,8 +145,8 @@ describe("GET /api/one/research/[id]/preferences", () => {
         jobs: [expect.objectContaining({ platform: "instagram", publicId: "ankit", metadata: expect.objectContaining({ maxPosts: 240 }) })],
       }),
     );
-    const fillJob = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0] as { jobs: Array<{ metadata?: Record<string, unknown> }> };
-    expect(fillJob.jobs[0]?.metadata).not.toHaveProperty("refresh");
+    const fillJob = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0];
+    expect(fillJob?.jobs[0]?.metadata).not.toHaveProperty("refresh");
   });
 
   it("connect-later: a frozen 'skipped' result is bypassed once a feed account is connected", async () => {
