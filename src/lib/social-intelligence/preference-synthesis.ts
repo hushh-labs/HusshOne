@@ -38,7 +38,9 @@ const FETCH_TIMEOUT_MS = 150_000;
 // the model — "data accha → preference strong".
 // rev "3": LinkedIn career spine now feeds synthesis as professionalContext (grounds professional/
 // mental-model inferences) — force a recompute so existing users pick it up.
-const PREFERENCE_DATA_SHAPE_REV = "3";
+// rev "4": engagement+self-declared weighted snippet selection, word-boundary keyword routing,
+// evidence-grounded confidence cap, wider aggregation caps (learnings from the 40-agent Sundar run).
+const PREFERENCE_DATA_SHAPE_REV = "4";
 
 // Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
 // model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how
@@ -47,8 +49,8 @@ const PREFERENCE_DATA_SHAPE_REV = "3";
 // worker's 300s budget: 6 parallel section calls + up to 2 re-passes on unknowns still fit.)
 const MAX_TEXT_SNIPPETS = 150; // per section
 const TEXT_SNIPPET_CHARS = 500;
-const TOP_AGG = 40;
-const REPRESENTATIVE_ASSETS = 40; // assetHashes surfaced per section for media citations
+const TOP_AGG = 80; // frequency-ranked values per media signal — the discriminating brand/place is often in the tail
+const REPRESENTATIVE_ASSETS = 60; // assetHashes surfaced per section for media citations
 
 export type SynthAnswerStatus = "answered" | "inferred" | "needs_confirmation" | "unknown";
 export type SynthConfidence = "low" | "medium" | "high";
@@ -185,8 +187,8 @@ export interface SectionContext {
   platforms: string[];
   contentItemCount: number;
   mediaAnalyzedCount: number;
-  /** Section-relevant text snippets (keyword-biased, then back-filled to budget). */
-  textSnippets: Array<{ id: string; platform: string; type: string; text: string }>;
+  /** Section-relevant text snippets (relevance-scored to budget); selfDeclared flags first-person posts. */
+  textSnippets: Array<{ id: string; platform: string; type: string; text: string; selfDeclared: boolean }>;
   /** This section's media signals with frequency counts. Empty for text-only (sensitive) sections. */
   mediaSignals: SectionMediaSignal[];
   /** Representative assetHashes so answers can cite mediaEvidenceIds. Empty for text-only sections. */
@@ -234,8 +236,35 @@ function readSignalFromAnalysis(
   return scalar ? [scalar] : [];
 }
 
-/** Build a TARGETED evidence slice for one section: keyword-biased text snippets (back-filled to
- *  budget) + that section's media signals with frequency counts + representative assetHashes. */
+/** First-person framing — a post stating "I/my/we…" is a stronger preference signal than ambient text. */
+const SELF_DECLARED_RE = /\b(i|i'm|i am|my|me|mine|we|we're|we are|our)\b/i;
+
+/** Parse a metric string like "1,234" / "1.2K" / "3M" into a number (best-effort, 0 on failure). */
+function parseMetricNum(raw: unknown): number {
+  if (typeof raw !== "string") return 0;
+  const m = raw.trim().replace(/,/g, "").match(/^([\d.]+)\s*([KMB])?/i);
+  if (!m) return 0;
+  let n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  const suf = (m[2] || "").toUpperCase();
+  if (suf === "K") n *= 1e3;
+  else if (suf === "M") n *= 1e6;
+  else if (suf === "B") n *= 1e9;
+  return n;
+}
+
+/** Normalized engagement weight (~0-1, log-scaled) from a content item's metrics, so a viral/high-signal
+ *  post outranks low-engagement filler without swamping keyword relevance. */
+export function engagementScore(metrics: unknown): number {
+  if (!metrics || typeof metrics !== "object") return 0;
+  let max = 0;
+  for (const v of Object.values(metrics as Record<string, unknown>)) max = Math.max(max, parseMetricNum(v));
+  if (max <= 0) return 0;
+  return Math.min(1, Math.log10(max + 1) / 6); // ~1e6 → 1.0
+}
+
+/** Build a TARGETED evidence slice for one section: relevance-scored text snippets (keyword + engagement
+ *  + self-declaration + recency) + that section's media signals with frequency counts + asset hashes. */
 export function buildSectionContext(
   sectionId: PreferenceQuestionSectionId,
   contentItems: ArchiveContentRecord[],
@@ -244,22 +273,33 @@ export function buildSectionContext(
   const spec = SECTION_EVIDENCE[sectionId];
   const platforms = [...new Set(contentItems.map((c) => c.platform))].sort();
 
-  // ── Text snippets: prefer items whose text matches this section's keywords, then back-fill with
-  // other items up to the budget so a section is never starved when keyword hits are sparse.
+  // ── Text snippets: SCORE every item by section-keyword relevance (word-boundary, so "date" no longer
+  // matches "update"/"candidate"), engagement (already-captured metrics), self-declaration, and recency,
+  // then take the top budget. This surfaces the highest-signal posts (a viral post, a first-person
+  // declaration) rather than just the newest — the lever that made the deep run answer well.
   const withText = contentItems.filter((c) => c.text && (c.text as string).trim());
-  const keywords = spec.textKeywords;
-  const matches: ArchiveContentRecord[] = [];
-  const rest: ArchiveContentRecord[] = [];
-  for (const item of withText) {
-    const lower = (item.text as string).toLowerCase();
-    (keywords.some((kw) => lower.includes(kw)) ? matches : rest).push(item);
-  }
-  const ordered = [...matches, ...rest].slice(0, MAX_TEXT_SNIPPETS);
+  const keywordRes = spec.textKeywords.map(
+    (kw) => new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"),
+  );
+  const scoreItem = (c: ArchiveContentRecord, idx: number): number => {
+    const text = c.text as string;
+    const kwHits = keywordRes.reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
+    const declared = SELF_DECLARED_RE.test(text) ? 1 : 0;
+    const eng = engagementScore(c.metrics);
+    const recency = withText.length > 1 ? 1 - idx / withText.length : 1; // input is newest-first
+    return kwHits * 3 + declared * 2 + eng * 1.5 + recency * 0.5;
+  };
+  const ordered = withText
+    .map((c, idx) => ({ c, s: scoreItem(c, idx) }))
+    .sort((a, b) => b.s - a.s)
+    .slice(0, MAX_TEXT_SNIPPETS)
+    .map((x) => x.c);
   const textSnippets = ordered.map((c) => ({
     id: c.itemId,
     platform: c.platform,
     type: c.itemType,
     text: normText(c.text).slice(0, TEXT_SNIPPET_CHARS),
+    selfDeclared: SELF_DECLARED_RE.test(c.text as string),
   }));
 
   // ── Media signals + representative asset hashes (skipped entirely for sensitive/text-only sections).
@@ -476,12 +516,19 @@ const VALID_SOURCE = new Set<SynthSource>(["self_declared", "observed", "inferre
  *  the model's answer text (don't null it on low confidence) and ENFORCING the sensitive guardrail. */
 function mapOneAnswer(a: Record<string, unknown>, q: PreferenceQuestionDefinition): SynthesizedAnswer {
   let status: SynthAnswerStatus = VALID_STATUS.has(a.status as SynthAnswerStatus) ? (a.status as SynthAnswerStatus) : "unknown";
-  const confidence: SynthConfidence = a.confidence === "high" || a.confidence === "medium" ? a.confidence : "low";
+  let confidence: SynthConfidence = a.confidence === "high" || a.confidence === "medium" ? a.confidence : "low";
   const source: SynthSource = VALID_SOURCE.has(a.source as SynthSource) ? (a.source as SynthSource) : "not_available";
   let answer = typeof a.answer === "string" && a.answer.trim() ? a.answer.trim() : null;
   const evidenceIds = strArray(a.evidenceIds).slice(0, 16);
   const mediaEvidenceIds = strArray(a.mediaEvidenceIds).slice(0, 16);
   const why = typeof a.why === "string" && a.why.trim() ? a.why.trim() : null;
+
+  // Evidence-grounded confidence: trust the model's self-reported confidence only as far as the citations
+  // back it. 0 distinct citations → low; exactly 1 → cap at medium; ≥2 → allow high. Stops a hallucinated
+  // "high"/"medium" inference (the kind the 40-agent verify pass caught) from shipping over-confident.
+  const evCount = new Set([...evidenceIds, ...mediaEvidenceIds]).size;
+  if (evCount === 0) confidence = "low";
+  else if (evCount === 1 && confidence === "high") confidence = "medium";
 
   // Parse rule: status "unknown" ONLY when there is no answer text. Otherwise keep the model's read
   // even at low confidence (the whole point of the reframe — don't discard weak-but-real signal).

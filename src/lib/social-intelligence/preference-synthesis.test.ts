@@ -4,6 +4,7 @@ import {
   buildSectionSynthesisRequest,
   buildSynthesisRequest,
   countAnalyzedMedia,
+  engagementScore,
   parseSectionAnswers,
   parseSynthesisResponse,
   synthesizePreferences,
@@ -222,12 +223,12 @@ describe("parseSynthesisResponse (full-set back-compat)", () => {
   it("maps answers and fills every missing question with an honest unknown", () => {
     const q = PREFERENCE_QUESTIONS[0];
     const answers = parseSynthesisResponse(
-      wrap([{ questionId: q.id, status: "answered", answer: "Quiet luxury", confidence: "high", source: "observed", evidenceIds: ["a"] }]),
+      wrap([{ questionId: q.id, status: "answered", answer: "Quiet luxury", confidence: "high", source: "observed", evidenceIds: ["a", "b"] }]),
       PREFERENCE_QUESTIONS,
     );
     expect(answers).toHaveLength(PREFERENCE_QUESTIONS.length);
     const first = answers.find((a) => a.questionId === q.id)!;
-    expect(first).toMatchObject({ status: "answered", answer: "Quiet luxury", confidence: "high", evidenceIds: ["a"] });
+    expect(first).toMatchObject({ status: "answered", answer: "Quiet luxury", confidence: "high", evidenceIds: ["a", "b"] });
     const others = answers.filter((a) => a.questionId !== q.id);
     expect(others.every((a) => a.status === "unknown" && a.answer === null)).toBe(true);
   });
@@ -458,5 +459,44 @@ describe("buildPreferenceSummary", () => {
   });
   it("falls back to 'your socials' when platforms are empty", () => {
     expect(buildPreferenceSummary({ answeredTotal: 0, total: 30, platforms: [] })).toContain("your socials");
+  });
+});
+
+describe("engagement-grounded selection + confidence (rev 4)", () => {
+  it("engagementScore: 0 for none, log-scaled and capped at 1", () => {
+    expect(engagementScore(null)).toBe(0);
+    expect(engagementScore({})).toBe(0);
+    const low = engagementScore({ likeCount: "10" });
+    const high = engagementScore({ likeCount: "1.2M" });
+    expect(low).toBeGreaterThan(0);
+    expect(high).toBeGreaterThan(low);
+    expect(high).toBeLessThanOrEqual(1);
+    expect(engagementScore({ viewCount: "5,000" })).toBeGreaterThan(0);
+  });
+
+  it("tags self-declared snippets and ranks the high-engagement keyword post first", () => {
+    const ctx = buildSectionContext(
+      "style_brands_color",
+      [
+        content({ itemId: "plain", platform: "x", itemType: "tweet", text: "the weather is fine today" }),
+        content({ itemId: "viral", platform: "x", itemType: "tweet", text: "my go-to luxury brand is timeless", metrics: { likeCount: "250K" } }),
+      ],
+      [],
+    );
+    expect(ctx.textSnippets[0].id).toBe("viral"); // keyword + engagement + self-declared outrank plain
+    expect(ctx.textSnippets.find((s) => s.id === "viral")!.selfDeclared).toBe(true);
+    expect(ctx.textSnippets.find((s) => s.id === "plain")!.selfDeclared).toBe(false);
+  });
+
+  it("caps confidence by distinct evidence count (no ungrounded high/medium)", () => {
+    const q = PREFERENCE_QUESTIONS[0];
+    const mk = (evidenceIds: string[]) =>
+      parseSectionAnswers(
+        wrap([{ questionId: q.id, status: "inferred", answer: "X", confidence: "high", source: "observed", evidenceIds }]),
+        [q],
+      )[0];
+    expect(mk([]).confidence).toBe("low"); // 0 citations → low
+    expect(mk(["a"]).confidence).toBe("medium"); // 1 citation → cap at medium
+    expect(mk(["a", "b"]).confidence).toBe("high"); // >=2 → allow high
   });
 });
