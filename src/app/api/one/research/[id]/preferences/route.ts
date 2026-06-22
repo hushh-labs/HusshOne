@@ -4,6 +4,7 @@ import { verifyOneRequest } from "@/lib/auth/verify";
 import {
   enqueueSocialRefreshJobs,
   getArchiveFreshness,
+  getConnectedFeedProfiles,
   getResearchJob,
   getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
@@ -127,9 +128,30 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       typeof scan.normalizedResult === "object" &&
       !Array.isArray(scan.normalizedResult);
     const result = hasCompletedResult ? (scan.normalizedResult as OneDashboardResult & Record<string, unknown>) : null;
+    const stored = (scan.input ?? {}) as Partial<OneSubjectInput>;
+
+    // Connected accounts are the DURABLE source of truth for "which socials are connected" + the opt-in:
+    // a feed account connected anywhere (incl. the Settings deck, long after sign-up) lands in
+    // SocialConnection. So preference building is enabled when EITHER the scan input consented OR the user
+    // has any connected feed account; the social set we build from is the scan snapshot if present, else the
+    // live connections. This is what lets a skip-at-sign-up-then-connect-later user get the layer with no
+    // re-scan and no schema migration. `usingConnectionsFallback` = we're relying purely on live connections
+    // (the scan input had none), which also triggers the initial archive fill below.
+    const connectedProfiles = await getConnectedFeedProfiles(verified.uid).catch(() => []);
+    const effectiveConsent = stored.socialPreferenceConsent === true || connectedProfiles.length > 0;
+    const effectiveSocialProfiles: SocialProfileFull[] = stored.socialProfiles?.length
+      ? (stored.socialProfiles as SocialProfileFull[])
+      : connectedProfiles;
+    const usingConnectionsFallback = !stored.socialProfiles?.length && connectedProfiles.length > 0;
+    const effectivelyEnabled = effectiveConsent && effectiveSocialProfiles.length > 0;
+
     if (
       result &&
-      (result.preferenceStatus === "failed" || result.preferenceStatus === "skipped" || isCurrentPreferenceProfile(result.preferenceProfile))
+      (result.preferenceStatus === "failed" ||
+        isCurrentPreferenceProfile(result.preferenceProfile) ||
+        // Honor a FROZEN "skipped" only while the user is genuinely not enabled. Once they connect a feed
+        // account, fall through so the layer builds and the build path overwrites the stale "skipped".
+        (result.preferenceStatus === "skipped" && !effectivelyEnabled))
     ) {
       return NextResponse.json({ ok: true, preferenceStatus: result.preferenceStatus, result });
     }
@@ -138,7 +160,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // pass. TRUST the worker's terminal status — it already encodes the floor (reveal at >=20 OR once
     // media is fully analyzed), so a sparse account's settled partial is served as "completed" and
     // never hangs the client on "building". While the worker still has it "partial", report "running".
-    const stored = (scan.input ?? {}) as Partial<OneSubjectInput>;
 
     const v3 = await getUserPreferenceProfile<Record<string, unknown>>(verified.uid).catch(() => null);
     if (v3 && v3.profile) {
@@ -155,7 +176,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
           firebaseUid: verified.uid,
           jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: id ?? "latest", metadata: { scanRunId: id }, priority: 1 }],
         }).catch(() => 0);
-      } else if (stored.socialPreferenceConsent === true && stored.socialProfiles?.length) {
+      } else if (effectivelyEnabled) {
         // Lazy FRESHNESS refresh: a returning user whose archive hasn't been re-scraped in
         // ARCHIVE_STALE_DAYS gets a lightweight deep-scrape refresh (recent window) per connected platform
         // to pull any new posts. Best-effort; the current profile is still served immediately and the
@@ -164,7 +185,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         if (freshness != null && Date.now() - freshness > ARCHIVE_STALE_MS) {
           const pendingWork = await hasPendingPreferenceWork(verified.uid).catch(() => false);
           if (!pendingWork) {
-            const refreshJobs = stored.socialProfiles
+            const refreshJobs = effectiveSocialProfiles
               .filter((p) => p && p.profileUrl && p.username && DEEP_REFRESH_PLATFORMS.has(p.platform.trim().toLowerCase()))
               .map((p) => ({
                 platform: p.platform.trim().toLowerCase(),
@@ -182,7 +203,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus: v3Status, preferenceProfile: v3.profile, result: merged ?? result });
     }
 
-    if (stored.socialPreferenceConsent !== true || !stored.socialProfiles?.length) {
+    if (!effectiveConsent || !effectiveSocialProfiles.length) {
       const durationMs = Date.now() - startedAt;
       await logUserPreferenceRun({
         firebaseUid: verified.uid,
@@ -191,8 +212,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         event: "skipped",
         platforms: [],
         counts: {
-          reason: stored.socialPreferenceConsent !== true ? "missing_consent" : "no_social_profiles",
-          socialProfileCount: stored.socialProfiles?.length ?? 0,
+          reason: !effectiveConsent ? "missing_consent" : "no_social_profiles",
+          socialProfileCount: effectiveSocialProfiles.length,
         },
         durationMs,
       }).catch(() => null);
@@ -201,7 +222,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         event: "one.preference.skipped",
         severity: "INFO",
         scanRunId: id,
-        reason: stored.socialPreferenceConsent !== true ? "missing_consent" : "no_social_profiles",
+        reason: !effectiveConsent ? "missing_consent" : "no_social_profiles",
         durationMs,
       });
       if (!result) {
@@ -211,6 +232,32 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus, preferenceProfile: null, result: merged ?? result });
     }
 
+    // Self-heal initial archive fill: when we're enabled purely via live connections (the scan input had no
+    // socials — a skip-at-sign-up user who connected later) and the archive was never scraped, kick the deep
+    // climb per connected platform so the v3 worker has posts to synthesize. Without this, such a user would
+    // only ever get the thin v2 fast pass. Best-effort; the (userId,platform,publicId) dedup + !pendingWork
+    // guard prevent poll-thrash. Mirrors maybeEnqueueConnectDeepScrape for users who connected before this fix.
+    if (usingConnectionsFallback) {
+      const freshness = await getArchiveFreshness(verified.uid).catch(() => null);
+      if (freshness == null) {
+        const pendingWork = await hasPendingPreferenceWork(verified.uid).catch(() => false);
+        if (!pendingWork) {
+          const fillJobs = effectiveSocialProfiles
+            .filter((p) => p && p.profileUrl && p.username && DEEP_REFRESH_PLATFORMS.has(p.platform.trim().toLowerCase()))
+            .map((p) => ({
+              platform: p.platform.trim().toLowerCase(),
+              publicId: p.username,
+              // No `refresh` flag → the social-archive worker runs the staged deep climb (initial full fill).
+              metadata: { url: p.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id },
+            }));
+          if (fillJobs.length) {
+            void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs: fillJobs }).catch(() => 0);
+            logInfo({ event: "one.preference.connect_backfill_enqueued", severity: "INFO", scanRunId: id, platforms: fillJobs.map((j) => j.platform) });
+          }
+        }
+      }
+    }
+
     // Keep the layer "running" while deep-archive/media jobs are still in flight so the client poll
     // upgrades the fast pass to the v3 synthesis once the worker finishes. Also stay "running" until
     // the profile clears the 20/30 surface gate, so a thin fast pass never reports "completed".
@@ -218,7 +265,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const settledStatusFor = (profile: { questionCoverage?: unknown }): "running" | "completed" =>
       pendingWork || answeredCoverage(profile.questionCoverage) < SHOW_THRESHOLD ? "running" : "completed";
 
-    const inputHash = profileInputHash({ linkedinProfile: stored.linkedinProfile, socialProfiles: stored.socialProfiles });
+    const inputHash = profileInputHash({ linkedinProfile: stored.linkedinProfile, socialProfiles: effectiveSocialProfiles });
     const existing = await getUserPreferenceProfileByInputHash<UserPreferenceProfile>(verified.uid, inputHash).catch(() => null);
     if (existing?.status === "completed" && isCurrentPreferenceProfile(existing)) {
       const settledStatus = settledStatusFor(existing);
@@ -268,13 +315,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       event: "one.preference.started",
       severity: "INFO",
       scanRunId: id,
-      socialProfileCount: stored.socialProfiles.length,
-      platforms: stored.socialProfiles.map((profile) => profile.platform),
+      socialProfileCount: effectiveSocialProfiles.length,
+      platforms: effectiveSocialProfiles.map((profile) => profile.platform),
+      viaConnections: usingConnectionsFallback,
     });
 
     const profile = buildUserPreferenceProfile({
       linkedinProfile: stored.linkedinProfile as LinkedInProfileFull | undefined,
-      socialProfiles: stored.socialProfiles as SocialProfileFull[] | undefined,
+      socialProfiles: effectiveSocialProfiles,
     });
     const settledStatus = settledStatusFor(profile);
     const indexed = await indexSocialPreferenceEvidence({

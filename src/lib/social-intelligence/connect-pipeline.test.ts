@@ -8,6 +8,7 @@ type EnqueueArg = {
 const mocks = vi.hoisted(() => ({
   getLatestScanForUser: vi.fn(),
   getResearchJob: vi.fn(),
+  getConnectedFeedProfiles: vi.fn(async () => [] as unknown[]),
   hasPendingPreferenceWork: vi.fn(async () => false),
   enqueueSocialRefreshJobs: vi.fn(async (_input: EnqueueArg) => 1),
 }));
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/db/scan-store", () => ({
   getLatestScanForUser: mocks.getLatestScanForUser,
   getResearchJob: mocks.getResearchJob,
+  getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
   hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
   PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
@@ -29,6 +31,7 @@ import {
 function resetMocks() {
   vi.clearAllMocks();
   // clearAllMocks wipes call history but NOT implementations — re-establish the defaults each test.
+  mocks.getConnectedFeedProfiles.mockResolvedValue([]);
   mocks.hasPendingPreferenceWork.mockResolvedValue(false);
   mocks.enqueueSocialRefreshJobs.mockResolvedValue(1);
 }
@@ -59,6 +62,15 @@ describe("getPreferenceConsentContext", () => {
     mocks.getResearchJob.mockResolvedValue({ input: {} });
     expect(await getPreferenceConsentContext("u1")).toEqual({ consent: false, scanRunId: "scan-9" });
   });
+
+  it("grants consent when the scan never consented but a feed account is connected (connect-later)", async () => {
+    mocks.getLatestScanForUser.mockResolvedValue({ id: "scan-9" });
+    mocks.getResearchJob.mockResolvedValue({ input: { socialPreferenceConsent: false } });
+    mocks.getConnectedFeedProfiles.mockResolvedValue([
+      { platform: "Instagram", username: "ankit", profileUrl: "https://www.instagram.com/ankit/" },
+    ]);
+    expect(await getPreferenceConsentContext("u1")).toEqual({ consent: true, scanRunId: "scan-9" });
+  });
 });
 
 describe("maybeEnqueueConnectDeepScrape", () => {
@@ -86,12 +98,26 @@ describe("maybeEnqueueConnectDeepScrape", () => {
     expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
   });
 
-  it("skips when preference work is already in flight (anti-thrash)", async () => {
+  it("still enqueues when other preference work is in flight (distinct platform dedup key, no pending_work gate)", async () => {
+    // Regression for the multi-platform-connect bug: connecting Threads while an IG deep-scrape is queued
+    // must NOT be dropped — each platform is its own (userId,platform,publicId) dedup key.
     withConsent(true);
     mocks.hasPendingPreferenceWork.mockResolvedValue(true);
     const res = await maybeEnqueueConnectDeepScrape({ firebaseUid: "u1", platform: "threads", username: "a", profileUrl: "https://www.threads.com/@a" });
-    expect(res).toEqual({ enqueued: false, reason: "pending_work" });
-    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+    expect(res).toEqual({ enqueued: true, reason: "enqueued" });
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it("enqueues via a connected feed account even when the scan input never consented (connect-later opt-in)", async () => {
+    // skip-at-sign-up: scan consent is false, but the user has a connected IG account → connecting is consent.
+    mocks.getLatestScanForUser.mockResolvedValue({ id: "scan-1" });
+    mocks.getResearchJob.mockResolvedValue({ input: { socialPreferenceConsent: false } });
+    mocks.getConnectedFeedProfiles.mockResolvedValue([
+      { platform: "Instagram", username: "ankit", profileUrl: "https://www.instagram.com/ankit/" },
+    ]);
+    const res = await maybeEnqueueConnectDeepScrape({ firebaseUid: "u1", platform: "x", username: "ankit", profileUrl: "https://x.com/ankit" });
+    expect(res).toEqual({ enqueued: true, reason: "enqueued" });
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledTimes(1);
   });
 
   it("ignores non-deep platforms", async () => {

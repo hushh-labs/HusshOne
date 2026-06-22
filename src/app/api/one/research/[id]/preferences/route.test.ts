@@ -4,6 +4,7 @@ import { PREFERENCE_SYNTHESIS_VERSION } from "@/lib/social-intelligence/preferen
 
 const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
+  getConnectedFeedProfiles: vi.fn(async (): Promise<unknown[]> => []),
   getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
   getArchiveFreshness: vi.fn(async (): Promise<number | null> => null),
@@ -30,6 +31,7 @@ vi.mock("@/lib/auth/verify", () => ({
 
 vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
+  getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
   getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
   getArchiveFreshness: mocks.getArchiveFreshness,
@@ -102,6 +104,82 @@ describe("GET /api/one/research/[id]/preferences", () => {
       preferenceStatus: "skipped",
       preferenceStartedAt: undefined,
     });
+  });
+
+  it("connect-later: scan input had no socials/consent, but a connected feed account builds the layer + backfills the archive", async () => {
+    // The reported bug: user skipped socials at sign-up (scan input empty), connected Instagram later via
+    // Settings → it lands in SocialConnection. The route must treat that as consent + the social set, build
+    // the layer (running, not skipped), and kick the initial deep-scrape so the v3 worker has posts.
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "completed",
+      normalizedResult: result,
+      input: { socialPreferenceConsent: false, socialProfiles: [] }, // frozen sign-up snapshot: skipped
+    });
+    mocks.getConnectedFeedProfiles.mockResolvedValueOnce([
+      {
+        platform: "Instagram",
+        username: "ankit",
+        displayName: "Ankit",
+        bio: "Coffee and Goa",
+        avatarUrl: null,
+        externalUrl: null,
+        profileUrl: "https://www.instagram.com/ankit/",
+        source: "scraper",
+        recentPublicPosts: [{ url: "https://www.instagram.com/p/abc/", caption: "Goa sea view coffee", thumbnailUrl: "https://cdn.example.com/goa.jpg" }],
+      },
+    ]);
+    mocks.getArchiveFreshness.mockResolvedValueOnce(null); // never scraped → archive empty → backfill
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { ok?: boolean; preferenceStatus?: string };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).toBe("running"); // NOT "skipped" anymore
+    expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
+    // initial-fill deep-scrape (no `refresh` flag → staged deep climb) was enqueued for the connected platform
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "firebase-1",
+        jobs: [expect.objectContaining({ platform: "instagram", publicId: "ankit", metadata: expect.objectContaining({ maxPosts: 240 }) })],
+      }),
+    );
+    const fillJob = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0] as { jobs: Array<{ metadata?: Record<string, unknown> }> };
+    expect(fillJob.jobs[0]?.metadata).not.toHaveProperty("refresh");
+  });
+
+  it("connect-later: a frozen 'skipped' result is bypassed once a feed account is connected", async () => {
+    // normalizedResult carries a stale preferenceStatus:'skipped' from before the connect; the route must
+    // NOT short-circuit on it now that the user is effectively enabled — it falls through and rebuilds.
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "completed",
+      normalizedResult: { ...result, preferenceStatus: "skipped" },
+      input: { socialPreferenceConsent: false, socialProfiles: [] },
+    });
+    mocks.getConnectedFeedProfiles.mockResolvedValueOnce([
+      { platform: "Instagram", username: "ankit", profileUrl: "https://www.instagram.com/ankit/", source: "scraper", recentPublicPosts: [] },
+    ]);
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).not.toBe("skipped");
+    expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
+  });
+
+  it("still skips when there is neither scan consent NOR any connected account", async () => {
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "completed",
+      normalizedResult: result,
+      input: { socialPreferenceConsent: false, socialProfiles: [] },
+    });
+    // getConnectedFeedProfiles default → [] (no connections)
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).toBe("skipped");
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
   });
 
   it("builds preference profile while Phase 1 is still running", async () => {

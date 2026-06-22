@@ -3453,6 +3453,16 @@ export default function OneExperience() {
   };
   const leaveSettings = () => setStage(prevStageRef.current ?? "precollect");
 
+  // Header wordmark → home. For a signed-in user with a dashboard, "home" is their dashboard; otherwise the
+  // landing. Never reset()/sign-out. Stays put if already on the right view.
+  const goHome = () => {
+    if (authUser && dashboard) {
+      if (stage !== "dashboard") setStage("dashboard");
+    } else if (stage !== "landing") {
+      setStage("landing");
+    }
+  };
+
   const revealResult = async (final: ScanFinal) => {
     const minDwell = 4500;
     const elapsed = performance.now() - collectStart.current;
@@ -4681,11 +4691,11 @@ export default function OneExperience() {
     return (
       <main className="stage landing-mode">
         <div className="brandbar">
-          <div className="wordmark">
+          <button type="button" className="wordmark" onClick={goHome} aria-label="Go to home">
             <span className="logo">{Icons.husshMark()}</span>
             <span className="mark">One</span>
             <span className="byline">by hussh</span>
-          </div>
+          </button>
         </div>
         <div className="hydrate-splash" aria-busy="true" aria-label="Restoring your session" />
       </main>
@@ -4697,11 +4707,11 @@ export default function OneExperience() {
     return (
       <main className="stage landing-mode">
         <div className="brandbar">
-          <div className="wordmark">
+          <button type="button" className="wordmark" onClick={goHome} aria-label="Go to home">
             <span className="logo">{Icons.husshMark()}</span>
             <span className="mark">One</span>
             <span className="byline">by hussh</span>
-          </div>
+          </button>
         </div>
         {notice ? (
           <div className="toast" role="status">
@@ -4866,11 +4876,11 @@ export default function OneExperience() {
       ) : null}
 
       <div className="brandbar">
-        <div className="wordmark">
+        <button type="button" className="wordmark" onClick={goHome} aria-label="Go to home">
           <span className="logo">{Icons.husshMark()}</span>
           <span className="mark">One</span>
           <span className="byline">by hussh</span>
-        </div>
+        </button>
         {authUser && stage !== "collect" ? (
           <ProfileMenu
             name={identity.name}
