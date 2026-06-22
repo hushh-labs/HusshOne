@@ -1,0 +1,69 @@
+# GCP-native CD: on push to main, Cloud Build gates → builds the image → deploys to Cloud Run
+# (service `one` / project hushone-app / region us-central1 — the service one.hushh.ai maps to) →
+# prod smoke. Runs as 53407187172-compute@developer (already has run.admin + iam.serviceAccountUser
+# + artifactregistry.writer). This is independent of GitHub Actions billing.
+#
+# DO NOT point this at one-hushh-ai / hushh-tech-prod — that deploy "succeeds" but the public site
+# never changes.
+
+substitutions:
+  _SERVICE: one
+  _REGION: us-central1
+  _IMAGE: us-central1-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/one
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1800s
+
+steps:
+  # 1) Gate — install, type-check, and run the full unit suite. Fails the deploy fast on a red build
+  #    BEFORE the slower image build, so a broken main never reaches prod.
+  - id: gate
+    name: node:20
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        npm ci
+        npx tsc --noEmit
+        npx vitest run
+
+  # 2) Build the production image from the repo Dockerfile (this also runs `next build`).
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}:${SHORT_SHA}", "-t", "${_IMAGE}:latest", "."]
+
+  # 3) Push so the Cloud Run deploy can reference the freshly-built image.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_IMAGE}"]
+
+  # 4) Deploy to the correct service. --image only updates the image; env, secrets, scaling, and the
+  #    ≥900s request timeout already on the service are preserved.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_IMAGE}:${SHORT_SHA}
+      - --region=${_REGION}
+      - --quiet
+
+  # 5) Smoke — one.hushh.ai hits the service directly (no CDN), so the new revision is live immediately.
+  - id: smoke
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        for path in / /docs; do
+          code=$(curl -s -m 30 -o /dev/null -w "%{http_code}" "https://one.hushh.ai${path}")
+          echo "GET https://one.hushh.ai${path} -> ${code}"
+          test "${code}" = "200"
+        done
