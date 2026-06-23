@@ -4,8 +4,8 @@ import type { ThreadsPost, ThreadsProfileFull } from "@/lib/threads/profile";
 import type { XProfileFull, XTimelineItem } from "@/lib/x/profile";
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 
-export const PROFILE_VERSION = "2026-06-18.social-preference-questions-v2" as const;
-export const QUESTION_REGISTRY_VERSION = "2026-06-18.preference-30q-v1" as const;
+export const PROFILE_VERSION = "2026-06-24.social-preference-questions-v5" as const;
+export const QUESTION_REGISTRY_VERSION = "2026-06-24.preference-30q-v5" as const;
 
 export type PreferenceConfidence = "low" | "medium" | "high";
 export type PreferenceSource = "observed" | "inferred" | "observed_plus_inferred" | "self_declared";
@@ -24,13 +24,15 @@ export type PreferenceDomain =
   | "relationship_preferences"
   | "unknowns";
 
+// v5: six clean, preference-based sections (Partner & Romance removed — it only ever returned
+// needs-confirmation). Each section is fed by the deep per-image pixel read + post text.
 export type PreferenceQuestionSectionId =
-  | "style_brands_color"
-  | "travel_wanderlust"
-  | "food_culinary"
-  | "partner_romance"
-  | "deep_likes_dislikes"
-  | "mental_models";
+  | "brand_look"
+  | "food_drink"
+  | "travel_places"
+  | "social_vibe"
+  | "lifestyle_daily"
+  | "mindset_values";
 
 export interface PreferenceQuestionDefinition {
   id: string;
@@ -208,218 +210,219 @@ const SIGNAL_EVIDENCE_CAP = 12;
 const COLLAGE_CAP = 16;
 
 export const PREFERENCE_QUESTIONS: PreferenceQuestionDefinition[] = [
+  // ── 1. Brand & Look ─────────────────────────────────────────────────────────────────────────
   {
-    id: "style_brands_three",
-    sectionId: "style_brands_color",
-    sectionTitle: "Style, Brands & Color",
+    id: "look_top_brands",
+    sectionId: "brand_look",
+    sectionTitle: "Brand & Look",
     category: "brands_devices",
-    prompt: "If you had to wear only three clothing brands for the rest of your life, which ones would you choose and why?",
+    prompt: "Which clothing or accessory brands show up most across your photos?",
   },
   {
-    id: "style_power_color",
-    sectionId: "style_brands_color",
-    sectionTitle: "Style, Brands & Color",
+    id: "look_color_palette",
+    sectionId: "brand_look",
+    sectionTitle: "Brand & Look",
     category: "colors_style",
-    prompt: "What is your Power Color?",
+    prompt: "What is your go-to outfit colour palette?",
   },
   {
-    id: "style_logo_visibility",
-    sectionId: "style_brands_color",
-    sectionTitle: "Style, Brands & Color",
+    id: "look_eyewear",
+    sectionId: "brand_look",
+    sectionTitle: "Brand & Look",
     category: "colors_style",
-    prompt: "When you splurge, do you prefer visible logos or quiet luxury?",
+    prompt: "Do you wear glasses, and in what style or colour?",
   },
   {
-    id: "style_disliked_pattern",
-    sectionId: "style_brands_color",
-    sectionTitle: "Style, Brands & Color",
-    category: "colors_style",
-    prompt: "Is there a color or design pattern you cannot stand?",
-  },
-  {
-    id: "style_made_for_me_brand",
-    sectionId: "style_brands_color",
-    sectionTitle: "Style, Brands & Color",
+    id: "look_footwear",
+    sectionId: "brand_look",
+    sectionTitle: "Brand & Look",
     category: "brands_devices",
-    prompt: "Name one brand whose aesthetic feels made for you.",
+    prompt: "What kind of shoes do you wear most?",
   },
   {
-    id: "travel_perfect_escape",
-    sectionId: "travel_wanderlust",
-    sectionTitle: "Travel & Wanderlust",
-    category: "travel_stay",
-    prompt: "What does your perfect escape look like?",
+    id: "look_logo_vs_quiet",
+    sectionId: "brand_look",
+    sectionTitle: "Brand & Look",
+    category: "colors_style",
+    prompt: "Loud logos or quiet luxury — how do you wear brands?",
+  },
+  // ── 2. Food & Drink ─────────────────────────────────────────────────────────────────────────
+  {
+    id: "food_go_to_cuisine",
+    sectionId: "food_drink",
+    sectionTitle: "Food & Drink",
+    category: "food_drinks",
+    prompt: "What is your go-to cuisine or comfort meal?",
   },
   {
-    id: "travel_unlimited_destination",
-    sectionId: "travel_wanderlust",
-    sectionTitle: "Travel & Wanderlust",
-    category: "travel_stay",
-    prompt: "With unlimited flight and hotel budget, where are you flying tomorrow and what do you do first?",
+    id: "food_cafe_vs_fine",
+    sectionId: "food_drink",
+    sectionTitle: "Food & Drink",
+    category: "food_drinks",
+    prompt: "Cosy cafe and street food, or fine dining?",
   },
   {
-    id: "travel_dealbreaker",
-    sectionId: "travel_wanderlust",
-    sectionTitle: "Travel & Wanderlust",
-    category: "travel_stay",
-    prompt: "What is your biggest travel dealbreaker?",
+    id: "food_signature_drink",
+    sectionId: "food_drink",
+    sectionTitle: "Food & Drink",
+    category: "food_drinks",
+    prompt: "What is your signature drink — coffee, chai, cocktails, or wine?",
   },
   {
-    id: "travel_itinerary_style",
-    sectionId: "travel_wanderlust",
-    sectionTitle: "Travel & Wanderlust",
+    id: "food_cook_vs_eatout",
+    sectionId: "food_drink",
+    sectionTitle: "Food & Drink",
+    category: "food_drinks",
+    prompt: "Do you cook at home more, or eat out?",
+  },
+  {
+    id: "food_venue_aesthetic",
+    sectionId: "food_drink",
+    sectionTitle: "Food & Drink",
+    category: "food_drinks",
+    prompt: "What food-spot aesthetic do you gravitate to?",
+  },
+  // ── 3. Travel & Places ──────────────────────────────────────────────────────────────────────
+  {
+    id: "travel_kind_of_place",
+    sectionId: "travel_places",
+    sectionTitle: "Travel & Places",
     category: "travel_stay",
-    prompt: "Are you a strict itinerary traveler or a figure-it-out traveler?",
+    prompt: "Beaches, mountains, or cities — what kind of place do you go to most?",
+  },
+  {
+    id: "travel_top_destinations",
+    sectionId: "travel_places",
+    sectionTitle: "Travel & Places",
+    category: "travel_stay",
+    prompt: "Which destinations or landmarks show up most in your photos?",
   },
   {
     id: "travel_luxury_vs_local",
-    sectionId: "travel_wanderlust",
-    sectionTitle: "Travel & Wanderlust",
+    sectionId: "travel_places",
+    sectionTitle: "Travel & Places",
     category: "travel_stay",
     prompt: "When you travel, what matters more: luxury or authentic local experience?",
   },
   {
-    id: "food_death_row_meal",
-    sectionId: "food_culinary",
-    sectionTitle: "Food & Culinary",
-    category: "food_drinks",
-    prompt: "What is your ultimate full-menu comfort meal?",
+    id: "travel_home_base",
+    sectionId: "travel_places",
+    sectionTitle: "Travel & Places",
+    category: "travel_stay",
+    prompt: "Which city or region do your photos place you in most?",
   },
   {
-    id: "food_late_night",
-    sectionId: "food_culinary",
-    sectionTitle: "Food & Culinary",
-    category: "food_drinks",
-    prompt: "At 2 AM, do you order something specific or cook something yourself?",
+    id: "travel_indoor_vs_outdoor",
+    sectionId: "travel_places",
+    sectionTitle: "Travel & Places",
+    category: "travel_stay",
+    prompt: "Are you more an indoors person or out in the open?",
   },
+  // ── 4. Social & Vibe ────────────────────────────────────────────────────────────────────────
   {
-    id: "food_ambience_vs_taste",
-    sectionId: "food_culinary",
-    sectionTitle: "Food & Culinary",
-    category: "food_drinks",
-    prompt: "When dining out, does ambience matter more or taste?",
-  },
-  {
-    id: "food_overrated_dish",
-    sectionId: "food_culinary",
-    sectionTitle: "Food & Culinary",
-    category: "food_drinks",
-    prompt: "What famous dish do you think is overrated?",
-  },
-  {
-    id: "food_first_date",
-    sectionId: "food_culinary",
-    sectionTitle: "Food & Culinary",
-    category: "food_drinks",
-    prompt: "For a first date, would you pick fine dining or a cozy cafe plus street food?",
-  },
-  {
-    id: "romance_non_negotiables",
-    sectionId: "partner_romance",
-    sectionTitle: "Partner & Romance",
-    category: "relationship_preferences",
-    prompt: "What are your top three non-negotiable qualities in a partner?",
-    sensitive: true,
-  },
-  {
-    id: "romance_attractive_trait",
-    sectionId: "partner_romance",
-    sectionTitle: "Partner & Romance",
-    category: "relationship_preferences",
-    prompt: "What subtle habit or personality trait do you find instantly attractive?",
-    sensitive: true,
-  },
-  {
-    id: "romance_red_flag",
-    sectionId: "partner_romance",
-    sectionTitle: "Partner & Romance",
-    category: "relationship_preferences",
-    prompt: "What is your biggest red flag?",
-    sensitive: true,
-  },
-  {
-    id: "romance_love_language",
-    sectionId: "partner_romance",
-    sectionTitle: "Partner & Romance",
-    category: "relationship_preferences",
-    prompt: "How do you naturally express love?",
-    sensitive: true,
-  },
-  {
-    id: "romance_weekend",
-    sectionId: "partner_romance",
-    sectionTitle: "Partner & Romance",
-    category: "relationship_preferences",
-    prompt: "What is your perfect romantic weekend?",
-    sensitive: true,
-  },
-  {
-    id: "daily_pet_peeve",
-    sectionId: "deep_likes_dislikes",
-    sectionTitle: "Deep Likes & Dislikes",
-    category: "communication_style",
-    prompt: "What is your biggest daily-life pet peeve?",
-  },
-  {
-    id: "daily_recharge_style",
-    sectionId: "deep_likes_dislikes",
-    sectionTitle: "Deep Likes & Dislikes",
+    id: "social_solo_vs_group",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
     category: "social_behavior",
-    prompt: "How do you recharge in free time: alone or surrounded by friends?",
+    prompt: "Do you post mostly solo shots or with other people?",
   },
   {
-    id: "daily_morning_first",
-    sectionId: "deep_likes_dislikes",
-    sectionTitle: "Deep Likes & Dislikes",
+    id: "social_event_frequency",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
+    category: "social_behavior",
+    prompt: "How often are you at parties or events?",
+  },
+  {
+    id: "social_expression",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
+    category: "social_behavior",
+    prompt: "What is your usual on-camera expression — big smile, relaxed, or composed?",
+  },
+  {
+    id: "social_setting_size",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
+    category: "social_behavior",
+    prompt: "Intimate hangouts or large gatherings?",
+  },
+  {
+    id: "social_introvert_extrovert",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
+    category: "social_behavior",
+    prompt: "Do you come across as more outgoing or more reserved? (a soft read)",
+  },
+  // ── 5. Lifestyle & Daily ────────────────────────────────────────────────────────────────────
+  {
+    id: "daily_time_of_day",
+    sectionId: "lifestyle_daily",
+    sectionTitle: "Lifestyle & Daily",
     category: "digital_wellbeing",
-    prompt: "What is the first thing you do when you wake up?",
+    prompt: "Are you more a morning person or a night owl, by when you post?",
   },
   {
-    id: "daily_social_gathering",
-    sectionId: "deep_likes_dislikes",
-    sectionTitle: "Deep Likes & Dislikes",
+    id: "daily_surroundings",
+    sectionId: "lifestyle_daily",
+    sectionTitle: "Lifestyle & Daily",
     category: "social_behavior",
-    prompt: "At a large gathering, are you center-stage or observing with one good friend?",
+    prompt: "Where do you spend most of your time — home, office, outdoors, or venues?",
   },
   {
-    id: "daily_cringe_trend",
-    sectionId: "deep_likes_dislikes",
-    sectionTitle: "Deep Likes & Dislikes",
-    category: "communication_style",
-    prompt: "What current trend makes you cringe?",
-  },
-  {
-    id: "mental_big_purchase",
-    sectionId: "mental_models",
-    sectionTitle: "Mental Models & Decision Making",
+    id: "daily_objects",
+    sectionId: "lifestyle_daily",
+    sectionTitle: "Lifestyle & Daily",
     category: "brands_devices",
-    prompt: "For a big purchase, do you read reviews deeply or buy what catches your eye?",
+    prompt: "What objects keep showing up around you — devices, books, gear?",
   },
   {
-    id: "mental_satisfaction",
-    sectionId: "mental_models",
-    sectionTitle: "Mental Models & Decision Making",
+    id: "daily_table_scenes",
+    sectionId: "lifestyle_daily",
+    sectionTitle: "Lifestyle & Daily",
+    category: "food_drinks",
+    prompt: "What's usually on your table or desk?",
+  },
+  {
+    id: "daily_overall_aesthetic",
+    sectionId: "lifestyle_daily",
+    sectionTitle: "Lifestyle & Daily",
+    category: "colors_style",
+    prompt: "How would you describe your overall lifestyle aesthetic?",
+  },
+  // ── 6. Mindset & Values ─────────────────────────────────────────────────────────────────────
+  {
+    id: "mind_what_drives",
+    sectionId: "mindset_values",
+    sectionTitle: "Mindset & Values",
     category: "work_interests",
-    prompt: "What gives you most satisfaction right now: money, respect, freedom, or creative expression?",
+    prompt: "What drives you most right now: money, respect, freedom, or creative expression?",
   },
   {
-    id: "mental_music",
-    sectionId: "mental_models",
-    sectionTitle: "Mental Models & Decision Making",
+    id: "mind_decision_style",
+    sectionId: "mindset_values",
+    sectionTitle: "Mindset & Values",
+    category: "brands_devices",
+    prompt: "For a big decision, do you research deeply or go with your gut?",
+  },
+  {
+    id: "mind_music_entertainment",
+    sectionId: "mindset_values",
+    sectionTitle: "Mindset & Values",
     category: "social_behavior",
-    prompt: "What is your go-to music genre or song for this life phase?",
+    prompt: "What music or entertainment defines this life phase?",
   },
   {
-    id: "mental_friend_group_role",
-    sectionId: "mental_models",
-    sectionTitle: "Mental Models & Decision Making",
+    id: "mind_friend_role",
+    sectionId: "mindset_values",
+    sectionTitle: "Mindset & Values",
     category: "social_behavior",
     prompt: "Who are you in your friend group?",
   },
   {
-    id: "mental_misconception",
-    sectionId: "mental_models",
-    sectionTitle: "Mental Models & Decision Making",
+    id: "mind_misconception",
+    sectionId: "mindset_values",
+    sectionTitle: "Mindset & Values",
     category: "communication_style",
     prompt: "What is the biggest misconception people have about you?",
   },
@@ -906,16 +909,15 @@ function simpleQuestionAnswer(question: PreferenceQuestionDefinition, evidence: 
   const colorTerms = rankedTerms(evidence, COLOR_TERMS, { excludeLinkedIn: true });
   const foodTerms = rankedTerms(evidence, FOOD_TERMS, { excludeLinkedIn: true });
   const travelTerms = rankedTerms(evidence, TRAVEL_TERMS, { excludeLinkedIn: true });
-  const allTextEvidence = evidence.filter((item) => item.text);
 
   switch (question.id) {
-    case "style_brands_three": {
+    case "look_top_brands": {
       if (!brandTerms.length) return unknownAnswer(question);
       const top = brandTerms.slice(0, 3);
       return makeAnswer({
         question,
         status: "inferred",
-        answer: `Likely brand/device affinities: ${top.map((term) => term.label).join(", ")}. This is observed from social mentions, not a direct wardrobe declaration.`,
+        answer: `Brands showing up most in visible content: ${top.map((term) => term.label).join(", ")}.`,
         normalizedValue: top.map((term) => term.value),
         matches: top.flatMap((term) => term.matches),
         sourceMode: "aggregate",
@@ -923,20 +925,20 @@ function simpleQuestionAnswer(question: PreferenceQuestionDefinition, evidence: 
         needsUserConfirmation: true,
       });
     }
-    case "style_power_color": {
+    case "look_color_palette": {
       if (!colorTerms.length) return unknownAnswer(question);
       const top = colorTerms.slice(0, 3);
       return makeAnswer({
         question,
         status: "inferred",
-        answer: `Visible color/style cues lean toward ${top.map((term) => term.label).join(", ")}.`,
+        answer: `Visible colour/style cues lean toward ${top.map((term) => term.label).join(", ")}.`,
         normalizedValue: top.map((term) => term.value),
         matches: top.flatMap((term) => term.matches),
         sourceMode: "aggregate",
         selfDeclared: top.some((term) => term.selfDeclared),
       });
     }
-    case "style_logo_visibility": {
+    case "look_logo_vs_quiet": {
       const quiet = matchEvidence(evidence, [/\bquiet\s*luxury\b/i, /\bminimal\b/i, /\bclean\b/i, /\bsubtle\b/i, /\bno\s*logo\b/i], { excludeLinkedIn: true });
       const loud = matchEvidence(evidence, [/\bbig\s*logo\b/i, /\bshow\s*off\b/i, /\blogo\b/i, /\bbranded\b/i], { excludeLinkedIn: true });
       const matches = quiet.length >= loud.length ? quiet : loud;
@@ -951,53 +953,34 @@ function simpleQuestionAnswer(question: PreferenceQuestionDefinition, evidence: 
         needsUserConfirmation: true,
       });
     }
-    case "style_disliked_pattern": {
-      const matches = matchEvidence(evidence, [/\b(hate|can't stand|cannot stand|dislike|avoid)\b.{0,50}\b(color|pattern|design|print|logo)\b/i], { requireSelfDeclared: true });
+    case "food_go_to_cuisine": {
+      if (!foodTerms.length) return unknownAnswer(question);
+      const top = foodTerms.slice(0, 3);
+      return makeAnswer({ question, status: "inferred", answer: `Recurring food/drink cues: ${top.map((term) => term.label).join(", ")}.`, normalizedValue: top.map((term) => term.value), matches: top.flatMap((term) => term.matches), sourceMode: "aggregate", needsUserConfirmation: true });
+    }
+    case "food_cafe_vs_fine": {
+      const cafe = matchEvidence(evidence, [/\bcafe\b/i, /\bstreet\s*food\b/i, /\bcoffee\b/i, /\bcasual\b/i], { excludeLinkedIn: true });
+      const fine = matchEvidence(evidence, [/\bfine[-\s]?dining\b/i, /\bmichelin\b/i, /\bchef'?s?\s*table\b/i, /\btasting menu\b/i], { excludeLinkedIn: true });
+      const matches = cafe.length >= fine.length ? cafe : fine;
       if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit dislike found in visible content."), matches, sourceMode: "self_declared", selfDeclared: true });
+      return makeAnswer({ question, status: "inferred", answer: cafe.length >= fine.length ? "Leans toward cosy cafes and street food." : "Leans toward fine dining.", normalizedValue: cafe.length >= fine.length ? "cafe_street" : "fine_dining", matches, sourceMode: "aggregate", needsUserConfirmation: true });
     }
-    case "style_made_for_me_brand": {
-      const explicit = matchEvidence(evidence, [/\b(made for me|my brand|favorite brand|favourite brand|love)\b.{0,40}\b(apple|google|nike|adidas|zara|uniqlo|levi'?s|puma)\b/i], { requireSelfDeclared: true });
-      if (explicit.length) return makeAnswer({ question, status: "answered", answer: textSnippet(explicit, "Explicit brand affinity found."), matches: explicit, sourceMode: "self_declared", selfDeclared: true });
-      if (!brandTerms.length) return unknownAnswer(question);
-      return makeAnswer({
-        question,
-        status: "needs_confirmation",
-        answer: `${brandTerms[0].label} is the strongest visible brand signal, but it needs confirmation before calling it made-for-me.`,
-        normalizedValue: brandTerms[0].value,
-        matches: brandTerms[0].matches,
-        sourceMode: "inferred",
-        needsUserConfirmation: true,
-      });
+    case "food_signature_drink": {
+      const drink = foodTerms.find((term) => term.value === "coffee" || term.value === "chai" || term.value === "drinks");
+      if (!drink) return unknownAnswer(question);
+      return makeAnswer({ question, status: "inferred", answer: `Signature drink signal: ${drink.label}.`, normalizedValue: drink.value, matches: drink.matches, sourceMode: "aggregate", needsUserConfirmation: true });
     }
-    case "travel_perfect_escape": {
+    case "travel_kind_of_place": {
       if (!travelTerms.length) return unknownAnswer(question);
       const top = travelTerms[0];
       const map: Record<string, string> = {
-        beach: "a beach or sea-view escape",
-        mountains: "a mountain/hillside reset",
-        city: "wandering a city on foot",
-        luxury: "a comfort-led resort stay",
-        local: "an authentic local trip",
+        beach: "beaches / sea-view places",
+        mountains: "mountains and hills",
+        city: "cities, explored on foot",
+        luxury: "comfort-led resort stays",
+        local: "authentic local spots",
       };
-      return makeAnswer({ question, status: "inferred", answer: `Best current read: ${map[top.value] || top.label}.`, normalizedValue: top.value, matches: top.matches, sourceMode: "aggregate", selfDeclared: top.selfDeclared });
-    }
-    case "travel_unlimited_destination": {
-      const matches = matchEvidence(evidence, [/\b(fly|travel|go|visit|trip|vacation)\b.{0,80}\b(goa|paris|tokyo|london|bali|dubai|new york|himalaya|maldives|beach|mountain)\b/i], { excludeLinkedIn: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "needs_confirmation", answer: textSnippet(matches, "A destination-style travel cue appears, but the exact unlimited-budget answer needs confirmation."), matches, sourceMode: "observed", needsUserConfirmation: true });
-    }
-    case "travel_dealbreaker": {
-      const matches = matchEvidence(evidence, [/\b(hate|avoid|dealbreaker|pet peeve|can't stand)\b.{0,60}\b(crowd|dirty|washroom|delay|traffic|strict schedule|queue|transit)\b/i], { requireSelfDeclared: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit travel dealbreaker found."), matches, sourceMode: "self_declared", selfDeclared: true });
-    }
-    case "travel_itinerary_style": {
-      const planned = matchEvidence(evidence, [/\bitinerary\b/i, /\bplanned\b/i, /\bschedule\b/i, /\bplanner\b/i], { excludeLinkedIn: true });
-      const spontaneous = matchEvidence(evidence, [/\bspontaneous\b/i, /\bfigure it out\b/i, /\bwander\b/i, /\bno plan\b/i], { excludeLinkedIn: true });
-      const matches = planned.length >= spontaneous.length ? planned : spontaneous;
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: planned.length >= spontaneous.length ? "Leans more planned/itinerary-aware." : "Leans spontaneous and exploratory.", normalizedValue: planned.length >= spontaneous.length ? "planned" : "spontaneous", matches, sourceMode: "inferred", needsUserConfirmation: matches.length < 2 });
+      return makeAnswer({ question, status: "inferred", answer: `Goes most to: ${map[top.value] || top.label}.`, normalizedValue: top.value, matches: top.matches, sourceMode: "aggregate", selfDeclared: top.selfDeclared });
     }
     case "travel_luxury_vs_local": {
       const luxury = travelTerms.find((term) => term.value === "luxury");
@@ -1006,127 +989,61 @@ function simpleQuestionAnswer(question: PreferenceQuestionDefinition, evidence: 
       if (!winner) return unknownAnswer(question);
       return makeAnswer({ question, status: "inferred", answer: winner.value === "local" ? "Leans toward authentic/local experience." : "Leans toward comfort/luxury travel.", normalizedValue: winner.value, matches: winner.matches, sourceMode: "aggregate", selfDeclared: winner.selfDeclared });
     }
-    case "food_death_row_meal": {
-      const explicit = matchEvidence(evidence, [/\b(death row meal|last meal|favorite meal|favourite meal|comfort meal)\b/i], { requireSelfDeclared: true });
-      if (explicit.length) return makeAnswer({ question, status: "answered", answer: textSnippet(explicit, "Explicit meal preference found."), matches: explicit, sourceMode: "self_declared", selfDeclared: true });
-      if (!foodTerms.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "needs_confirmation", answer: `Food signals include ${foodTerms.slice(0, 3).map((term) => term.label).join(", ")}, but not a full death-row menu.`, normalizedValue: foodTerms.slice(0, 3).map((term) => term.value), matches: foodTerms.flatMap((term) => term.matches), sourceMode: "aggregate", needsUserConfirmation: true });
-    }
-    case "food_late_night": {
-      const matches = matchEvidence(evidence, [/\b(2\s?am|3\s?am|late[-\s]?night|midnight)\b.{0,80}\b(food|order|cook|kitchen|pizza|coffee|chai)\b/i], { excludeLinkedIn: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: textSnippet(matches, "Late-night food cue found."), matches, sourceMode: "observed", needsUserConfirmation: true });
-    }
-    case "food_ambience_vs_taste": {
-      const ambience = matchEvidence(evidence, [/\baesthetic\b/i, /\bambien[ct]e\b/i, /\bcafe\b/i, /\bfine[-\s]?dining\b/i], { excludeLinkedIn: true });
-      const taste = matchEvidence(evidence, [/\bstreet\s*food\b/i, /\btaste\b/i, /\bflavour\b/i, /\bvendor\b/i], { excludeLinkedIn: true });
-      const matches = ambience.length >= taste.length ? ambience : taste;
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: ambience.length >= taste.length ? "Ambience/aesthetic places show up more clearly." : "Taste/local food cues show up more clearly.", normalizedValue: ambience.length >= taste.length ? "ambience" : "taste", matches, sourceMode: "aggregate", needsUserConfirmation: true });
-    }
-    case "food_overrated_dish": {
-      const matches = matchEvidence(evidence, [/\b(overrated|not worth it|don't like|hate)\b.{0,60}\b(food|dish|pizza|burger|sushi|biryani|pasta|coffee)\b/i], { requireSelfDeclared: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit overrated-dish opinion found."), matches, sourceMode: "self_declared", selfDeclared: true });
-    }
-    case "food_first_date": {
-      const explicit = matchEvidence(evidence, [/\b(date|first date)\b.{0,80}\b(cafe|street food|fine[-\s]?dining|dinner|long drive)\b/i], { requireSelfDeclared: true });
-      if (explicit.length) return makeAnswer({ question, status: "answered", answer: textSnippet(explicit, "Explicit date preference found."), matches: explicit, sourceMode: "self_declared", selfDeclared: true });
-      if (!foodTerms.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "needs_confirmation", answer: `Visible food/venue cues suggest ${foodTerms[0].label}, but first-date preference needs confirmation.`, normalizedValue: foodTerms[0].value, matches: foodTerms[0].matches, sourceMode: "inferred", needsUserConfirmation: true });
-    }
-    case "daily_pet_peeve": {
-      const matches = matchEvidence(evidence, [/\b(pet peeve|annoying|irritates?|hate|can't stand)\b/i], { requireSelfDeclared: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit pet peeve found."), matches, sourceMode: "self_declared", selfDeclared: true });
-    }
-    case "daily_recharge_style": {
-      const solo = matchEvidence(evidence, [/\balone\b/i, /\bsolo\b/i, /\bquiet\b/i, /\brecharge\b/i, /\breset\b/i], { excludeLinkedIn: true });
-      const social = matchEvidence(evidence, [/\bfriends?\b/i, /\bparty\b/i, /\bsocial\b/i, /\bmeetup\b/i, /\bhigh energy\b/i], { excludeLinkedIn: true });
+    case "social_solo_vs_group": {
+      const solo = matchEvidence(evidence, [/\balone\b/i, /\bsolo\b/i, /\bmyself\b/i], { excludeLinkedIn: true });
+      const social = matchEvidence(evidence, [/\bfriends?\b/i, /\bparty\b/i, /\bsquad\b/i, /\bteam\b/i, /\beveryone\b/i], { excludeLinkedIn: true });
       const matches = solo.length >= social.length ? solo : social;
       if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: solo.length >= social.length ? "Visible cues lean toward quiet/solo reset." : "Visible cues lean toward social/high-energy recharge.", normalizedValue: solo.length >= social.length ? "solo" : "social", matches, sourceMode: "aggregate", needsUserConfirmation: true });
+      return makeAnswer({ question, status: "inferred", answer: solo.length >= social.length ? "Visible cues lean toward solo posts." : "Visible cues lean toward group/social posts.", normalizedValue: solo.length >= social.length ? "solo" : "group", matches, sourceMode: "aggregate", needsUserConfirmation: true });
     }
-    case "daily_morning_first": {
-      const matches = matchEvidence(evidence, [/\bmorning\b.{0,80}\b(phone|coffee|chai|water|snooze|run|gym|meditat)\b/i], { requireSelfDeclared: true });
+    case "social_setting_size": {
+      const intimate = matchEvidence(evidence, [/\bone good friend\b/i, /\bcorner\b/i, /\bquiet\b/i, /\bsmall\s*group\b/i], { excludeLinkedIn: true });
+      const large = matchEvidence(evidence, [/\bparty\b/i, /\bcrowd\b/i, /\bfestival\b/i, /\bbig night\b/i], { excludeLinkedIn: true });
+      const matches = intimate.length >= large.length ? intimate : large;
       if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit morning routine found."), matches, sourceMode: "self_declared", selfDeclared: true });
+      return makeAnswer({ question, status: "inferred", answer: intimate.length >= large.length ? "Leans toward intimate hangouts." : "Leans toward large gatherings.", normalizedValue: intimate.length >= large.length ? "intimate" : "large", matches, sourceMode: "inferred", needsUserConfirmation: true });
     }
-    case "daily_social_gathering": {
-      const observe = matchEvidence(evidence, [/\bobserv(?:e|ing|er)\b/i, /\bcorner\b/i, /\bone good friend\b/i, /\bsilent\b/i], { excludeLinkedIn: true });
-      const center = matchEvidence(evidence, [/\bdance floor\b/i, /\bcenter of attention\b/i, /\bhost\b/i, /\bparty\b/i], { excludeLinkedIn: true });
-      const matches = observe.length >= center.length ? observe : center;
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: observe.length >= center.length ? "Leans observer/one-close-friend in big gatherings." : "Leans more visible/high-energy in gatherings.", normalizedValue: observe.length >= center.length ? "observer" : "center_stage", matches, sourceMode: "inferred", needsUserConfirmation: true });
-    }
-    case "daily_cringe_trend": {
-      const matches = matchEvidence(evidence, [/\b(cringe|trend|overrated|npc|ick)\b/i], { requireSelfDeclared: true });
-      if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit trend dislike found."), matches, sourceMode: "self_declared", selfDeclared: true });
-    }
-    case "mental_big_purchase": {
-      const research = matchEvidence(evidence, [/\breviews?\b/i, /\bresearch\b/i, /\bcompare\b/i, /\bspecs?\b/i], { excludeLinkedIn: true });
-      const impulse = matchEvidence(evidence, [/\bimpulse\b/i, /\bjust bought\b/i, /\binstantly bought\b/i], { excludeLinkedIn: true });
-      const matches = research.length >= impulse.length ? research : impulse;
-      if (!matches.length && !brandTerms.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "inferred", answer: research.length >= impulse.length ? "Leans research/review-driven for big purchases." : "Some impulse-purchase language appears.", normalizedValue: research.length >= impulse.length ? "research_driven" : "impulse_led", matches: matches.length ? matches : brandTerms.flatMap((term) => term.matches), sourceMode: "inferred", needsUserConfirmation: true });
-    }
-    case "mental_satisfaction": {
+    case "mind_what_drives": {
       const matches = matchEvidence(evidence, [/\b(freedom|creative expression|respect|money|impact|build|ship|founder|product)\b/i]);
       if (!matches.length) return unknownAnswer(question);
       const text = matches.map(evidenceText).join(" ");
       const normalized = /\bcreative|design\b/i.test(text) ? "creative_expression" : /\bfreedom\b/i.test(text) ? "freedom" : /\brespect\b/i.test(text) ? "respect" : /\bmoney\b/i.test(text) ? "money" : "building_impact";
       return makeAnswer({ question, status: "inferred", answer: `Visible work/life language points most toward ${normalized.replace(/_/g, " ")}.`, normalizedValue: normalized, matches, sourceMode: "aggregate", needsUserConfirmation: true });
     }
-    case "mental_music": {
-      const matches = matchEvidence(evidence, [/\bmusic\b/i, /\bsong\b/i, /\bplaylist\b/i, /\bhip[-\s]?hop\b/i, /\bbollywood\b/i, /\blofi\b/i, /\brock\b/i, /\bpop\b/i], { excludeLinkedIn: true });
+    case "mind_decision_style": {
+      const research = matchEvidence(evidence, [/\breviews?\b/i, /\bresearch\b/i, /\bcompare\b/i, /\bspecs?\b/i], { excludeLinkedIn: true });
+      const gut = matchEvidence(evidence, [/\bimpulse\b/i, /\bgut\b/i, /\binstantly\b/i, /\bjust bought\b/i], { excludeLinkedIn: true });
+      const matches = research.length >= gut.length ? research : gut;
       if (!matches.length) return unknownAnswer(question);
-      return makeAnswer({ question, status: "needs_confirmation", answer: textSnippet(matches, "Music signal found, but current life-phase song needs confirmation."), matches, sourceMode: "observed", needsUserConfirmation: true });
+      return makeAnswer({ question, status: "inferred", answer: research.length >= gut.length ? "Leans research/review-driven." : "Leans gut/instinct-driven.", normalizedValue: research.length >= gut.length ? "research_driven" : "gut_led", matches, sourceMode: "inferred", needsUserConfirmation: true });
     }
-    case "mental_friend_group_role": {
+    case "mind_music_entertainment": {
+      const matches = matchEvidence(evidence, [/\bmusic\b/i, /\bsong\b/i, /\bplaylist\b/i, /\bhip[-\s]?hop\b/i, /\bbollywood\b/i, /\blofi\b/i, /\brock\b/i, /\bpop\b/i, /\bconcert\b/i, /\bnetflix\b/i], { excludeLinkedIn: true });
+      if (!matches.length) return unknownAnswer(question);
+      return makeAnswer({ question, status: "needs_confirmation", answer: textSnippet(matches, "Music/entertainment signal found; confirm the current favourite."), matches, sourceMode: "observed", needsUserConfirmation: true });
+    }
+    case "mind_friend_role": {
       const matches = matchEvidence(evidence, [/\b(planner|comedian|therapist|silent observer|organizer|listener)\b/i], { requireSelfDeclared: true });
       if (!matches.length) return unknownAnswer(question);
       return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit friend-group role found."), matches, sourceMode: "self_declared", selfDeclared: true });
     }
-    case "mental_misconception": {
+    case "mind_misconception": {
       const matches = matchEvidence(evidence, [/\b(misconception|people think|actually wrong|they think)\b/i], { requireSelfDeclared: true });
       if (!matches.length) return unknownAnswer(question);
       return makeAnswer({ question, status: "answered", answer: textSnippet(matches, "Explicit misconception statement found."), matches, sourceMode: "self_declared", selfDeclared: true });
     }
     default:
-      if (question.sensitive) {
-        const explicit = matchEvidence(allTextEvidence, [new RegExp(question.id.split("_").slice(1).join("|"), "i")], { requireSelfDeclared: true });
-        return explicit.length
-          ? makeAnswer({ question, status: "answered", answer: textSnippet(explicit, "Explicit sensitive preference found."), matches: explicit, sourceMode: "self_declared", selfDeclared: true })
-          : unknownAnswer(question, "unsafe_to_infer");
-      }
+      // No cheap text heuristic for this one (e.g. eyewear / footwear / place / expression / objects /
+      // time-of-day) — those come from the deep media pixel read in Vertex synthesis. Leave it unknown
+      // here; the recompute worker fills it in. Every question gets a best-effort answer there.
       return unknownAnswer(question);
   }
 }
 
-function sensitiveQuestionAnswer(question: PreferenceQuestionDefinition, evidence: PreferenceEvidence[]): PreferenceQuestionAnswer {
-  const patternsById: Record<string, RegExp[]> = {
-    romance_non_negotiables: [/\b(non[-\s]?negotiable|ideal partner|partner should|green flag)\b/i],
-    romance_attractive_trait: [/\b(attractive|my type|turns me on|cute habit|trait)\b/i],
-    romance_red_flag: [/\b(red flag|dealbreaker|toxic|instant distance)\b/i],
-    romance_love_language: [/\b(love language|quality time|physical touch|acts of service|gift(?:s|ing)|words of affirmation)\b/i],
-    romance_weekend: [/\b(romantic weekend|date weekend|long drive|netflix|fancy dinner)\b/i],
-  };
-  const matches = matchEvidence(evidence, patternsById[question.id] ?? [], { requireSelfDeclared: true, excludeLinkedIn: true });
-  if (!matches.length) return unknownAnswer(question, "unsafe_to_infer");
-  return makeAnswer({
-    question,
-    status: "answered",
-    answer: textSnippet(matches, "Explicit relationship preference found."),
-    matches,
-    sourceMode: "self_declared",
-    selfDeclared: true,
-    needsUserConfirmation: true,
-  });
-}
-
+// v5: no sensitive questions remain (Partner & Romance section removed), so the fast text pass is a plain
+// per-question heuristic placeholder; Vertex synthesis in the recompute worker produces the real answers.
 function buildQuestionAnswers(evidence: PreferenceEvidence[]): PreferenceQuestionAnswer[] {
-  return PREFERENCE_QUESTIONS.map((question) => (question.sensitive ? sensitiveQuestionAnswer(question, evidence) : simpleQuestionAnswer(question, evidence)));
+  return PREFERENCE_QUESTIONS.map((question) => simpleQuestionAnswer(question, evidence));
 }
 
 function emptySectionCounts(): PreferenceQuestionCoverage["bySection"] {

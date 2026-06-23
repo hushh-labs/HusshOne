@@ -8,7 +8,8 @@
    deep job in flight" selector + that route's !pendingWork gate keep the two from double-firing. */
 import { NextResponse } from "next/server";
 import { verifyInternalJobRequest } from "@/lib/auth/internal";
-import { enqueueSocialRefreshJobs, selectStaleArchiveRefreshTargets } from "@/lib/db/scan-store";
+import { enqueueSocialRefreshJobs, requeueOutdatedMediaAssets, selectStaleArchiveRefreshTargets } from "@/lib/db/scan-store";
+import { MEDIA_ANALYSIS_VERSION } from "@/lib/social-intelligence/media-analyze";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -40,6 +41,9 @@ export async function POST(request: Request) {
     }));
     if (jobs.length) {
       await enqueueSocialRefreshJobs({ firebaseUid: target.firebaseUid, jobs });
+      // v5: drain the back-catalogue — re-pend this user's recently-rescraped, outdated-version media so the
+      // deep pixel read reaches older accounts over successive sweeps. Best-effort; fresh-URL-windowed.
+      await requeueOutdatedMediaAssets({ firebaseUid: target.firebaseUid, currentVersion: MEDIA_ANALYSIS_VERSION, limit: 128 }).catch(() => 0);
       swept += 1;
     }
   }

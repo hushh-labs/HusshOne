@@ -11,6 +11,7 @@ import {
   synthesizePreferences,
   toRenderablePreferenceProfile,
   buildPreferenceCollage,
+  aggregateLifestyleFacts,
   SECTION_EVIDENCE,
   PREFERENCE_SYNTH_SCHEMA,
   PREFERENCE_SYNTHESIS_VERSION,
@@ -54,7 +55,7 @@ const SECTION_OF = (sectionId: PreferenceQuestionSectionId) => PREFERENCE_QUESTI
 describe("buildSectionContext", () => {
   it("routes style media signals (brands/logos/colors/clothing) with frequency counts + asset hashes", () => {
     const ctx = buildSectionContext(
-      "style_brands_color",
+      "brand_look",
       [
         content({ itemId: "a", text: "Loving the new Pixel and this quiet luxury fit check" }),
         content({ itemId: "b", platform: "x", itemType: "tweet", text: "random unrelated thought" }),
@@ -65,7 +66,7 @@ describe("buildSectionContext", () => {
         media({ status: "pending" }, "h3"), // ignored
       ],
     );
-    expect(ctx.sectionId).toBe("style_brands_color");
+    expect(ctx.sectionId).toBe("brand_look");
     expect(ctx.platforms).toEqual(["instagram", "x"]);
     expect(ctx.mediaAnalyzedCount).toBe(2);
     const brands = ctx.mediaSignals.find((s) => s.label === "brands")!;
@@ -81,7 +82,7 @@ describe("buildSectionContext", () => {
 
   it("reads NEW optional semantic fields (cuisineCategory/venueType) for food without crashing when absent", () => {
     const ctx = buildSectionContext(
-      "food_culinary",
+      "food_drink",
       [content({ itemId: "f1", text: "best ramen in the city" })],
       [
         media({ status: "completed", semantic: { foodDrink: ["ramen"], cuisineCategory: "Japanese", venueType: "restaurant" } }, "m1"),
@@ -93,18 +94,45 @@ describe("buildSectionContext", () => {
     expect(ctx.mediaSignals.find((s) => s.label === "foodDrink")).toBeTruthy();
   });
 
-  it("partner_romance is TEXT ONLY: never surfaces media signals or asset hashes", () => {
+  it("v5: flattens NESTED pixel fields (clothing/eyewear/footwear) into brand_look signals", () => {
     const ctx = buildSectionContext(
-      "partner_romance",
-      [content({ itemId: "p1", text: "spent the weekend with my partner" })],
-      [media({ status: "completed", semantic: { scene: "restaurant", socialSetting: "couple" } }, "mz")],
+      "brand_look",
+      [content({ itemId: "a", text: "fit check" })],
+      [
+        media(
+          {
+            status: "completed",
+            semantic: {
+              clothing: [{ type: "blazer", color: "navy", brand: "Zara" }, { type: "tee", color: "white" }],
+              eyewear: { present: true, color: "black", style: "wayfarer" },
+              footwear: { type: "sneakers", model: "Air Jordan 1" },
+            },
+          },
+          "h1",
+        ),
+        media({ status: "completed", semantic: { eyewear: { present: false } } }, "h2"), // absent → no glasses signal
+      ],
     );
-    expect(ctx.mediaSignals).toEqual([]);
-    expect(ctx.mediaAssetHashes).toEqual([]);
-    // but it still counts analyzed media for context + keeps the relevant text snippet
-    expect(ctx.mediaAnalyzedCount).toBe(1);
-    expect(ctx.textSnippets[0].id).toBe("p1");
-    expect(SECTION_EVIDENCE.partner_romance.textOnly).toBe(true);
+    const clothing = ctx.mediaSignals.find((s) => s.label === "clothing")!;
+    expect(clothing.values.map((v) => v.value)).toEqual(expect.arrayContaining(["navy blazer (Zara)", "white tee"]));
+    const eyewear = ctx.mediaSignals.find((s) => s.label === "eyewear")!;
+    expect(eyewear.values[0].value).toBe("glasses: black wayfarer");
+    const footwear = ctx.mediaSignals.find((s) => s.label === "footwear")!;
+    expect(footwear.values[0].value).toBe("sneakers (Air Jordan 1)");
+  });
+
+  it("v5: social_vibe flattens face count into a solo/group signal", () => {
+    const ctx = buildSectionContext(
+      "social_vibe",
+      [content({ itemId: "s1", text: "with the squad" })],
+      [
+        media({ status: "completed", vision: { faces: { count: 4 } }, semantic: { socialSetting: "large_gathering", eventType: "party" } }, "g1"),
+        media({ status: "completed", vision: { faces: { count: 1 } }, semantic: { socialSetting: "solo" } }, "g2"),
+      ],
+    );
+    const people = ctx.mediaSignals.find((s) => s.label === "people")!;
+    expect(people.values.map((v) => v.value)).toEqual(expect.arrayContaining(["4 people", "solo (1 person)"]));
+    expect(ctx.mediaSignals.find((s) => s.label === "eventType")?.values[0].value).toBe("party");
   });
 });
 
@@ -118,8 +146,8 @@ describe("countAnalyzedMedia", () => {
 
 describe("buildSectionSynthesisRequest", () => {
   it("forces JSON output with the answer-required schema and embeds the section's questions + evidence", () => {
-    const ctx = buildSectionContext("style_brands_color", [content({})], []);
-    const sectionQs = SECTION_OF("style_brands_color");
+    const ctx = buildSectionContext("brand_look", [content({})], []);
+    const sectionQs = SECTION_OF("brand_look");
     const { model, body } = buildSectionSynthesisRequest("gemini-2.5-pro", ctx, sectionQs, "COO at Foo");
     expect(model).toBe("gemini-2.5-pro");
     expect(body.generationConfig.responseMimeType).toBe("application/json");
@@ -127,7 +155,7 @@ describe("buildSectionSynthesisRequest", () => {
     // schema now REQUIRES answer
     expect(PREFERENCE_SYNTH_SCHEMA.properties.answers.items.required).toContain("answer");
     const text = body.contents[0].parts[0].text;
-    expect(text).toContain("SECTION: style_brands_color");
+    expect(text).toContain("SECTION: brand_look");
     expect(text).toContain(sectionQs[0].id);
     expect(text).toContain("COO at Foo");
     // reframed instruction: calibrated inference, not "prefer unknown"
@@ -137,12 +165,12 @@ describe("buildSectionSynthesisRequest", () => {
 
   it("MULTIMODAL: attaches the section's real images as fileData parts + lists them as [img:hash], with per-agent temperature", () => {
     const ctx = buildSectionContext(
-      "style_brands_color",
+      "brand_look",
       [content({ itemId: "a", text: "quiet luxury fit check" })],
       [media({ status: "completed", cacheUri: "gs://b/h1.jpg", cacheMime: "image/jpeg", vision: { logos: ["Google"] }, semantic: { brands: ["Google"], colorAesthetic: ["blue"] } }, "h1")],
     );
     expect(ctx.mediaImages).toEqual([{ assetHash: "h1", fileUri: "gs://b/h1.jpg", mimeType: "image/jpeg" }]);
-    const { body } = buildSectionSynthesisRequest("gemini-2.5-pro", ctx, SECTION_OF("style_brands_color"), undefined, { agentIndex: 1 });
+    const { body } = buildSectionSynthesisRequest("gemini-2.5-pro", ctx, SECTION_OF("brand_look"), undefined, { agentIndex: 1 });
     const parts = body.contents[0].parts as Array<Record<string, unknown>>;
     expect((parts[0] as { text?: string }).text).toContain("[img:h1]");
     expect(parts.some((p) => (p.fileData as { fileUri?: string } | undefined)?.fileUri === "gs://b/h1.jpg")).toBe(true);
@@ -152,7 +180,7 @@ describe("buildSectionSynthesisRequest", () => {
 
 describe("buildSynthesisRequest (back-compat combined builder)", () => {
   it("still builds a JSON request over all questions", () => {
-    const ctx = buildSectionContext("style_brands_color", [content({})], []);
+    const ctx = buildSectionContext("brand_look", [content({})], []);
     const { body } = buildSynthesisRequest("gemini-2.5-pro", ctx, PREFERENCE_QUESTIONS.slice(0, 2), "COO at Foo");
     expect(body.generationConfig.responseMimeType).toBe("application/json");
     const text = body.contents[0].parts[0].text;
@@ -165,7 +193,7 @@ describe("buildSynthesisRequest (back-compat combined builder)", () => {
 
 describe("parseSectionAnswers", () => {
   it("keeps the model's answer even at low confidence (does NOT null it)", () => {
-    const styleQs = SECTION_OF("style_brands_color");
+    const styleQs = SECTION_OF("brand_look");
     const q = styleQs[0];
     const answers = parseSectionAnswers(
       wrap([{ questionId: q.id, status: "inferred", answer: "Leans minimal monochrome", confidence: "low", source: "aggregate", evidenceIds: ["a"], mediaEvidenceIds: ["h1"] }]),
@@ -179,7 +207,7 @@ describe("parseSectionAnswers", () => {
   });
 
   it("promotes a stray status:unknown WITH an answer to inferred (don't discard real signal)", () => {
-    const styleQs = SECTION_OF("style_brands_color");
+    const styleQs = SECTION_OF("brand_look");
     const q = styleQs[0];
     const answers = parseSectionAnswers(
       wrap([{ questionId: q.id, status: "unknown", answer: "Probably blue", confidence: "low", source: "inferred" }]),
@@ -191,7 +219,7 @@ describe("parseSectionAnswers", () => {
   });
 
   it("sets status unknown (answer null) only when there is genuinely no answer", () => {
-    const styleQs = SECTION_OF("style_brands_color");
+    const styleQs = SECTION_OF("brand_look");
     const q = styleQs[0];
     const answers = parseSectionAnswers(
       wrap([{ questionId: q.id, status: "inferred", answer: "", confidence: "low" }]),
@@ -203,33 +231,39 @@ describe("parseSectionAnswers", () => {
   });
 
   it("fills questions the model omitted with honest unknowns", () => {
-    const styleQs = SECTION_OF("style_brands_color");
+    const styleQs = SECTION_OF("brand_look");
     const answers = parseSectionAnswers(wrap([]), styleQs);
     expect(answers).toHaveLength(styleQs.length);
     expect(answers.every((a) => a.status === "unknown" && a.answer === null)).toBe(true);
   });
 
+  // v5 removed the Partner & Romance section, but the sensitive guardrail in mapOneAnswer is kept as
+  // defensive code (so re-adding a sensitive question stays safe). Exercise it with a synthetic question.
+  const sensitiveQ: PreferenceQuestionDefinition = {
+    id: "synthetic_sensitive",
+    sectionId: "social_vibe",
+    sectionTitle: "Social & Vibe",
+    category: "social_behavior",
+    prompt: "A sensitive probe",
+    sensitive: true,
+  };
+
   it("ENFORCES the sensitive guardrail: a sensitive answer can't be asserted without self-declaration", () => {
-    const sensitiveQs = SECTION_OF("partner_romance");
-    const sensitive = sensitiveQs.find((x) => x.sensitive) as PreferenceQuestionDefinition;
-    expect(sensitive).toBeTruthy();
     const answers = parseSectionAnswers(
-      wrap([{ questionId: sensitive.id, status: "inferred", answer: "Prefers grand gestures", confidence: "high", source: "observed" }]),
-      sensitiveQs,
+      wrap([{ questionId: sensitiveQ.id, status: "inferred", answer: "Prefers grand gestures", confidence: "high", source: "observed" }]),
+      [sensitiveQ],
     );
-    const a = answers.find((x) => x.questionId === sensitive.id)!;
+    const a = answers[0];
     expect(a.status).toBe("needs_confirmation");
     expect(a.needsUserConfirmation).toBe(true);
   });
 
   it("allows a sensitive answer only when the user self-declared it", () => {
-    const sensitiveQs = SECTION_OF("partner_romance");
-    const sensitive = sensitiveQs.find((x) => x.sensitive) as PreferenceQuestionDefinition;
     const answers = parseSectionAnswers(
-      wrap([{ questionId: sensitive.id, status: "answered", answer: "Loves cooking together", confidence: "medium", source: "self_declared", evidenceIds: ["p1"] }]),
-      sensitiveQs,
+      wrap([{ questionId: sensitiveQ.id, status: "answered", answer: "Loves cooking together", confidence: "medium", source: "self_declared", evidenceIds: ["p1"] }]),
+      [sensitiveQ],
     );
-    const a = answers.find((x) => x.questionId === sensitive.id)!;
+    const a = answers[0];
     expect(a.status).toBe("answered");
     expect(a.source).toBe("self_declared");
   });
@@ -315,18 +349,18 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     expect(new Set(calledSections).size).toBe(6);
     expect(calledSections).toHaveLength(12);
     // non-sensitive answers were kept (calibrated inference)
-    const style = r.answers.find((a) => a.sectionId === "style_brands_color")!;
+    const style = r.answers.find((a) => a.sectionId === "brand_look")!;
     expect(style.status).toBe("inferred");
     expect(style.answer).toContain("read for");
-    // sensitive section downgraded
-    const romance = r.answers.find((a) => a.sectionId === "partner_romance")!;
-    expect(["needs_confirmation", "unknown"]).toContain(romance.status);
+    // every section answered (v5: no sensitive section to downgrade)
+    const lifestyle = r.answers.find((a) => a.sectionId === "lifestyle_daily")!;
+    expect(lifestyle.status).toBe("inferred");
     expect(r.model).toBe("gemini-2.5-pro");
     expect(r.version).toBe(PREFERENCE_SYNTHESIS_VERSION);
   });
 
   it("questions-subset path: only the involved sections are called, only those answers returned", async () => {
-    const subset = SECTION_OF("food_culinary"); // 5 questions, one section
+    const subset = SECTION_OF("food_drink"); // 5 questions, one section
     const calledSections = stubVertex((sectionId) =>
       SECTION_OF(sectionId as PreferenceQuestionSectionId).map((q) => ({
         questionId: q.id,
@@ -345,8 +379,8 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
 
     const r = result as PreferenceSynthesisResult;
     expect(r.answers).toHaveLength(subset.length); // only the subset
-    expect(r.answers.every((a) => a.sectionId === "food_culinary")).toBe(true);
-    expect([...new Set(calledSections)]).toEqual(["food_culinary"]); // only one section, read by 2 agents
+    expect(r.answers.every((a) => a.sectionId === "food_drink")).toBe(true);
+    expect([...new Set(calledSections)]).toEqual(["food_drink"]); // only one section, read by 2 agents
     expect(calledSections).toHaveLength(2);
   });
 
@@ -376,11 +410,11 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
         }
         const text: string = init?.body ? JSON.parse(init.body as string)?.contents?.[0]?.parts?.[0]?.text ?? "" : "";
         const sectionId = text.match(/SECTION: (\w+)/)?.[1] ?? "";
-        if (sectionId === "food_culinary") {
+        if (sectionId === "food_drink") {
           return {
             ok: true,
             json: async () =>
-              wrap(SECTION_OF("food_culinary").map((q) => ({ questionId: q.id, status: "inferred", answer: `ok ${q.id}`, confidence: "low", source: "aggregate" }))),
+              wrap(SECTION_OF("food_drink").map((q) => ({ questionId: q.id, status: "inferred", answer: `ok ${q.id}`, confidence: "low", source: "aggregate" }))),
           } as Response;
         }
         return { ok: false, json: async () => ({}) } as Response; // all other sections fail
@@ -391,8 +425,8 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     const r = result as PreferenceSynthesisResult;
     expect(r).not.toBeNull();
     expect(r.answers).toHaveLength(PREFERENCE_QUESTIONS.length);
-    expect(r.answers.filter((a) => a.sectionId === "food_culinary").every((a) => a.status === "inferred")).toBe(true);
-    expect(r.answers.filter((a) => a.sectionId === "travel_wanderlust").every((a) => a.status === "unknown")).toBe(true);
+    expect(r.answers.filter((a) => a.sectionId === "food_drink").every((a) => a.status === "inferred")).toBe(true);
+    expect(r.answers.filter((a) => a.sectionId === "travel_places").every((a) => a.status === "unknown")).toBe(true);
   });
 });
 
@@ -462,6 +496,70 @@ describe("buildPreferenceCollage", () => {
   });
 });
 
+describe("SECTION_EVIDENCE (v5 routing)", () => {
+  it("keys all six v5 sections (Romance removed)", () => {
+    expect(new Set(Object.keys(SECTION_EVIDENCE))).toEqual(
+      new Set(["brand_look", "food_drink", "travel_places", "social_vibe", "lifestyle_daily", "mindset_values"]),
+    );
+    expect("partner_romance" in SECTION_EVIDENCE).toBe(false);
+  });
+});
+
+describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
+  it("aggregates brands/colours/eyewear/footwear/foods/places/solo-vs-social/events across completed media", () => {
+    const facts = aggregateLifestyleFacts([
+      media(
+        {
+          status: "completed",
+          vision: { logos: ["Nike"], faces: { count: 3 } },
+          semantic: {
+            brands: ["Apple"],
+            clothing: [{ type: "jacket", color: "black", brand: "Apple" }],
+            colorAesthetic: ["black"],
+            eyewear: { present: true, style: "round" },
+            footwear: { type: "sneakers", model: "Air Jordan" },
+            foodDrink: ["coffee"],
+            cuisineCategory: "Italian",
+            placeGuess: "Mumbai",
+            timeOfDay: "morning",
+            surroundings: "rooftop cafe",
+            isGroup: true,
+            eventType: "party",
+          },
+        },
+        "h1",
+      ),
+      media(
+        {
+          status: "completed",
+          semantic: { colorAesthetic: ["black"], eyewear: { present: false }, foodDrink: ["coffee"], socialSetting: "solo", timeOfDay: "morning", eventType: "casual" },
+        },
+        "h2",
+      ),
+      media({ status: "pending", semantic: { brands: ["Ignored"] } }, "h3"), // not completed → ignored
+    ]);
+
+    expect(facts.sampleSize).toBe(2);
+    expect(facts.topBrands.map((b) => b.value.toLowerCase())).toEqual(expect.arrayContaining(["apple", "nike"]));
+    expect(facts.topColours[0].value.toLowerCase()).toBe("black");
+    expect(facts.topColours[0].count).toBe(3); // h1 colorAesthetic + h1 clothing colour + h2 colorAesthetic
+    expect(facts.eyewear).toMatchObject({ present: 1, absent: 1 });
+    expect(facts.footwear[0].value).toBe("sneakers (Air Jordan)");
+    expect(facts.foods.map((f) => f.value.toLowerCase())).toEqual(expect.arrayContaining(["coffee"]));
+    expect(facts.places.map((p) => p.value)).toContain("Mumbai");
+    expect(facts.soloVsSocial).toEqual({ solo: 1, group: 1 });
+    expect(facts.timeOfDay[0]).toMatchObject({ value: "morning", count: 2 });
+    expect(facts.events).toMatchObject({ events: 1, casual: 1 });
+  });
+
+  it("is empty-safe on no/!completed media", () => {
+    const facts = aggregateLifestyleFacts([]);
+    expect(facts.sampleSize).toBe(0);
+    expect(facts.topBrands).toEqual([]);
+    expect(facts.soloVsSocial).toEqual({ solo: 0, group: 0 });
+  });
+});
+
 describe("PREFERENCE_SYNTHESIS_VERSION (auto-derived)", () => {
   it("is a stable v3.1-<12 hex> hash so it bumps automatically on synthesis changes", () => {
     expect(PREFERENCE_SYNTHESIS_VERSION).toMatch(/^v3\.1-[0-9a-f]{12}$/);
@@ -493,7 +591,7 @@ describe("engagement-grounded selection + confidence (rev 4)", () => {
 
   it("tags self-declared snippets and ranks the high-engagement keyword post first", () => {
     const ctx = buildSectionContext(
-      "style_brands_color",
+      "brand_look",
       [
         content({ itemId: "plain", platform: "x", itemType: "tweet", text: "the weather is fine today" }),
         content({ itemId: "viral", platform: "x", itemType: "tweet", text: "my go-to luxury brand is timeless", metrics: { likeCount: "250K" } }),

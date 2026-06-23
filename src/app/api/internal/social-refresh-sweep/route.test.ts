@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   verifyInternalJobRequest: vi.fn(),
   selectStaleArchiveRefreshTargets: vi.fn(async (): Promise<unknown[]> => []),
   enqueueSocialRefreshJobs: vi.fn(async () => 1),
+  requeueOutdatedMediaAssets: vi.fn(async () => 0),
 }));
 
 vi.mock("@/lib/auth/internal", () => ({
@@ -13,6 +14,7 @@ vi.mock("@/lib/auth/internal", () => ({
 vi.mock("@/lib/db/scan-store", () => ({
   selectStaleArchiveRefreshTargets: mocks.selectStaleArchiveRefreshTargets,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
+  requeueOutdatedMediaAssets: mocks.requeueOutdatedMediaAssets,
 }));
 
 import { POST } from "./route";

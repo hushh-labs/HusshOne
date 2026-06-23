@@ -337,14 +337,14 @@ describe("GET /api/one/research/[id]/preferences", () => {
         firebaseUid: "firebase-1",
         scanRunId: "scan-1",
         status: "completed",
-        version: "2026-06-18.social-preference-questions-v2",
+        version: "2026-06-24.social-preference-questions-v5",
       }),
     );
     expect(mocks.indexSocialPreferenceEvidence).toHaveBeenCalledWith(
       expect.objectContaining({
         firebaseUid: "firebase-1",
         scanRunId: "scan-1",
-        version: "2026-06-18.social-preference-questions-v2",
+        version: "2026-06-24.social-preference-questions-v5",
         evidence: expect.any(Array),
       }),
     );
@@ -353,10 +353,10 @@ describe("GET /api/one/research/[id]/preferences", () => {
       "scan-1",
       expect.objectContaining({
         preferenceStatus: "running",
-        preferenceVersion: "2026-06-18.social-preference-questions-v2",
+        preferenceVersion: "2026-06-24.social-preference-questions-v5",
         preferenceInputHash: expect.any(String),
         preferenceProfile: expect.objectContaining({
-          questionAnswers: expect.arrayContaining([expect.objectContaining({ questionId: "travel_perfect_escape" })]),
+          questionAnswers: expect.arrayContaining([expect.objectContaining({ questionId: "travel_kind_of_place" })]),
           topSignals: expect.arrayContaining([expect.objectContaining({ label: "seaside / beach-view places" })]),
         }),
       }),
@@ -379,10 +379,10 @@ describe("GET /api/one/research/[id]/preferences", () => {
 
   it("reuses an existing v2 same-input preference profile", async () => {
     const existing = {
-      version: "2026-06-18.social-preference-questions-v2",
+      version: "2026-06-24.social-preference-questions-v5",
       status: "completed",
       generatedAt: "2026-06-17T09:00:00.000Z",
-      questionRegistryVersion: "2026-06-18.preference-30q-v1",
+      questionRegistryVersion: "2026-06-24.preference-30q-v5",
       questionAnswers: [],
       questionCoverage: { total: 30, answered: 0, inferred: 0, needsConfirmation: 0, unknown: 30, blockedByAccess: 0, bySection: {} },
       sectionSummaries: [],
@@ -451,10 +451,10 @@ describe("GET /api/one/research/[id]/preferences", () => {
 
   it("reports completed once a reused profile clears the 20/30 surface gate", async () => {
     const existing = {
-      version: "2026-06-18.social-preference-questions-v2",
+      version: "2026-06-24.social-preference-questions-v5",
       status: "completed",
       generatedAt: "2026-06-17T09:00:00.000Z",
-      questionRegistryVersion: "2026-06-18.preference-30q-v1",
+      questionRegistryVersion: "2026-06-24.preference-30q-v5",
       questionAnswers: [],
       // answeredTotal = answered + inferred = 18 + 4 = 22 ≥ SHOW_THRESHOLD(20) → surfaced as completed.
       questionCoverage: { total: 30, answered: 18, inferred: 4, needsConfirmation: 3, unknown: 5, blockedByAccess: 0, bySection: {} },
@@ -577,7 +577,7 @@ describe("GET /api/one/research/[id]/preferences", () => {
     expect(res.status).toBe(200);
     // Freshly rebuilt v2 fast pass is below the surface gate → "running".
     expect(json.preferenceStatus).toBe("running");
-    expect(json.preferenceProfile?.version).toBe("2026-06-18.social-preference-questions-v2");
+    expect(json.preferenceProfile?.version).toBe("2026-06-24.social-preference-questions-v5");
     expect(json.preferenceProfile?.summary).not.toBe("Old v1 preference profile");
     expect(mocks.saveUserPreferenceProfile).toHaveBeenCalled();
   });

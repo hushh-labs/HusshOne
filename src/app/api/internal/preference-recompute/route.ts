@@ -25,7 +25,7 @@ import {
   updateDeepTier,
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
-import { buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
+import { aggregateLifestyleFacts, buildPreferenceCollage, synthesizePreferences, toRenderablePreferenceProfile } from "@/lib/social-intelligence/preference-synthesis";
 import { ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
 import { buildProfessionalContext } from "@/lib/linkedin/profile";
 import { PREFERENCE_QUESTIONS } from "@/lib/social-intelligence/preference-profile";
@@ -221,6 +221,8 @@ export async function POST(request: Request) {
         generatedAt: new Date().toISOString(),
         preferenceStatus,
         collage: buildPreferenceCollage(contentItems, 24),
+        // v5: factual lifestyle cards aggregated from the deep per-image reads (brands/colours/places/…).
+        lifestyle: aggregateLifestyleFacts(mediaAnalyses),
       });
 
       // Recompute the canonical counts from the rendered coverage so the log + persisted status agree.
