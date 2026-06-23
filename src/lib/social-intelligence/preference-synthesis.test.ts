@@ -326,7 +326,7 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     return calledSections;
   }
 
-  it("runs 2 agents PER SECTION (12 calls) and merges into 30 answers", async () => {
+  it("runs 4 agents PER SECTION (24 calls) and merges into 30 answers", async () => {
     const calledSections = stubVertex((sectionId) =>
       SECTION_OF(sectionId as PreferenceQuestionSectionId).map((q) => ({
         questionId: q.id,
@@ -345,9 +345,9 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     expect(result).not.toBeNull();
     const r = result as PreferenceSynthesisResult;
     expect(r.answers).toHaveLength(PREFERENCE_QUESTIONS.length); // 30
-    // all 6 sections were covered, each read by 2 independent agents (12 calls) then merged
+    // all 6 sections were covered, each read by 4 independent agents (24 calls) then merged
     expect(new Set(calledSections).size).toBe(6);
-    expect(calledSections).toHaveLength(12);
+    expect(calledSections).toHaveLength(24);
     // non-sensitive answers were kept (calibrated inference)
     const style = r.answers.find((a) => a.sectionId === "brand_look")!;
     expect(style.status).toBe("inferred");
@@ -380,8 +380,8 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     const r = result as PreferenceSynthesisResult;
     expect(r.answers).toHaveLength(subset.length); // only the subset
     expect(r.answers.every((a) => a.sectionId === "food_drink")).toBe(true);
-    expect([...new Set(calledSections)]).toEqual(["food_drink"]); // only one section, read by 2 agents
-    expect(calledSections).toHaveLength(2);
+    expect([...new Set(calledSections)]).toEqual(["food_drink"]); // only one section, read by 4 agents
+    expect(calledSections).toHaveLength(4);
   });
 
   it("returns null only when EVERY section call fails (Vertex unavailable) so caller keeps fast pass", async () => {
@@ -550,6 +550,29 @@ describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
     expect(facts.soloVsSocial).toEqual({ solo: 1, group: 1 });
     expect(facts.timeOfDay[0]).toMatchObject({ value: "morning", count: 2 });
     expect(facts.events).toMatchObject({ events: 1, casual: 1 });
+  });
+
+  it("v5.1: de-noises cards — drops generic visual noise, wordy descriptions, table items, and reverse-image place labels", () => {
+    const facts = aggregateLifestyleFacts([
+      media(
+        {
+          status: "completed",
+          vision: { landmarks: [], bestGuessLabels: ["Businessperson", "Presentation"] }, // reverse-image noise → must NOT become places
+          semantic: {
+            brands: ["Apple", "Logo", "Product"], // "Logo"/"Product" are generic → dropped
+            foodDrink: ["coffee"],
+            tableItems: ["Water Bottle", "Small Plant"], // not food → must NOT appear in foods
+            placeGuess: "Tokyo",
+            surroundings: "Digital Graphic With Map Elements", // 5 words → dropped by word-count cap
+          },
+        },
+        "h1",
+      ),
+    ]);
+    expect(facts.topBrands.map((b) => b.value)).toEqual(["Apple"]); // generic "Logo"/"Product" filtered
+    expect(facts.foods.map((f) => f.value.toLowerCase())).toEqual(["coffee"]); // no "water bottle"/"small plant"
+    expect(facts.places.map((p) => p.value)).toEqual(["Tokyo"]); // no "Businessperson"/"Presentation"
+    expect(facts.surroundings).toEqual([]); // wordy description dropped
   });
 
   it("is empty-safe on no/!completed media", () => {
