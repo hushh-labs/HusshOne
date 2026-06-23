@@ -7,6 +7,7 @@ import {
   getConnectedFeedProfiles,
   getLinkedInConnection,
   getResearchJob,
+  getSocialContentItems,
   getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
   hasPendingPreferenceWork,
@@ -152,6 +153,31 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const usingConnectionsFallback = !stored.socialProfiles?.length && (connectedProfiles.length > 0 || hasLinkedInFeed);
     const effectivelyEnabled = effectiveConsent && hasAnyFeedSource;
 
+    // LinkedIn posts backfill (ZERO-TOUCH): if a LinkedIn account is connected but its activity feed was
+    // never scraped (no `linkedin` archive rows yet), kick the posts deep-scrape — INDEPENDENT of overall
+    // archive freshness or whether a v3 profile already exists. This covers users who connected LinkedIn
+    // BEFORE posts-scraping shipped (e.g. they also have an IG archive, so the freshness self-heal below
+    // never fires) so their LinkedIn posts flow in with no re-connect. Fire-and-forget; the !pendingWork +
+    // (userId,platform,publicId) dedup guards prevent poll-thrash. Runs before the short-circuits on purpose.
+    if (linkedinProfileUrl) {
+      try {
+        const [li, pending] = await Promise.all([
+          getSocialContentItems(verified.uid, { platform: "linkedin", limit: 1 }).catch(() => []),
+          hasPendingPreferenceWork(verified.uid).catch(() => false),
+        ]);
+        if (li.length === 0 && !pending) {
+          const handle = linkedinProfileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin";
+          await enqueueSocialRefreshJobs({
+            firebaseUid: verified.uid,
+            jobs: [{ platform: "linkedin", publicId: handle, metadata: { url: linkedinProfileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id } }],
+          }).catch(() => 0);
+          logInfo({ event: "one.preference.linkedin_backfill_enqueued", severity: "INFO", scanRunId: id });
+        }
+      } catch {
+        /* best-effort backfill — never break the poll */
+      }
+    }
+
     if (
       result &&
       (result.preferenceStatus === "failed" ||
@@ -257,12 +283,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
               // No `refresh` flag → the social-archive worker runs the staged deep climb (initial full fill).
               metadata: { url: p.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id },
             }));
-          // LinkedIn posts initial fill — a connected LinkedIn account (even with no IG/X/Threads) gets its
-          // activity feed scraped so a LinkedIn-only professional's posts reach synthesis.
-          if (linkedinProfileUrl) {
-            const handle = linkedinProfileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin";
-            fillJobs.push({ platform: "linkedin", publicId: handle, metadata: { url: linkedinProfileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id } });
-          }
+          // (LinkedIn posts are handled by the dedicated zero-touch backfill block above — independent of
+          // overall archive freshness — so they're intentionally not added here.)
           if (fillJobs.length) {
             void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs: fillJobs }).catch(() => 0);
             logInfo({ event: "one.preference.connect_backfill_enqueued", severity: "INFO", scanRunId: id, platforms: fillJobs.map((j) => j.platform) });

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
   getConnectedFeedProfiles: vi.fn(async (): Promise<unknown[]> => []),
   getLinkedInConnection: vi.fn(async (): Promise<unknown> => null),
+  getSocialContentItems: vi.fn(async (): Promise<unknown[]> => []),
   getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
   getArchiveFreshness: vi.fn(async (): Promise<number | null> => null),
@@ -36,6 +37,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
   getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
   getLinkedInConnection: mocks.getLinkedInConnection,
+  getSocialContentItems: mocks.getSocialContentItems,
   getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
   getArchiveFreshness: mocks.getArchiveFreshness,
@@ -184,6 +186,47 @@ describe("GET /api/one/research/[id]/preferences", () => {
     expect(res.status).toBe(200);
     expect(json.preferenceStatus).toBe("skipped");
     expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+
+  it("LinkedIn-only: a connected LinkedIn account builds the layer (not skipped) + backfills its posts", async () => {
+    // The professional who pushes on LinkedIn, not Instagram. Scan input empty, no IG/X/Threads, but a
+    // LinkedIn connection exists with no LinkedIn archive yet → must build (running) + kick the posts scrape.
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "completed",
+      normalizedResult: { ...result, preferenceStatus: "skipped" },
+      input: { socialPreferenceConsent: false, socialProfiles: [] },
+    });
+    mocks.getConnectedFeedProfiles.mockResolvedValueOnce([]); // no IG/X/Threads
+    mocks.getLinkedInConnection.mockResolvedValueOnce({ profileUrl: "https://www.linkedin.com/in/ankit-kumar-singh/" });
+    mocks.getSocialContentItems.mockResolvedValueOnce([]); // no linkedin archive yet → backfill
+
+    const res = await GET(request(), context());
+    const json = (await res.json()) as { preferenceStatus?: string };
+
+    expect(res.status).toBe(200);
+    expect(json.preferenceStatus).not.toBe("skipped"); // LinkedIn connection is a feed source now
+    expect(mocks.enqueueSocialRefreshJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        firebaseUid: "firebase-1",
+        jobs: [expect.objectContaining({ platform: "linkedin", publicId: "ankit-kumar-singh", metadata: expect.objectContaining({ url: "https://www.linkedin.com/in/ankit-kumar-singh/" }) })],
+      }),
+    );
+  });
+
+  it("LinkedIn backfill is skipped once a LinkedIn archive already exists (no re-scrape thrash)", async () => {
+    mocks.getResearchJob.mockResolvedValueOnce({
+      status: "completed",
+      normalizedResult: result,
+      input: { socialPreferenceConsent: true, socialProfiles: [{ platform: "Instagram", username: "u", profileUrl: "https://www.instagram.com/u/" }] },
+    });
+    mocks.getLinkedInConnection.mockResolvedValueOnce({ profileUrl: "https://www.linkedin.com/in/u/" });
+    mocks.getSocialContentItems.mockResolvedValueOnce([{ platform: "linkedin", itemId: "x" }]); // already archived
+
+    const res = await GET(request(), context());
+    await res.json();
+    // no linkedin job enqueued (archive present → backfill skipped)
+    const linkedinJobs = mocks.enqueueSocialRefreshJobs.mock.calls.flatMap((c) => c[0].jobs).filter((j) => j.platform === "linkedin");
+    expect(linkedinJobs).toHaveLength(0);
   });
 
   it("builds preference profile while Phase 1 is still running", async () => {
