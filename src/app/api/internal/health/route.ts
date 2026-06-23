@@ -73,6 +73,27 @@ async function checkScraper(name: string, urlEnv: string, keyEnv: string, path: 
   return { status: "up", detail: `${path} ok` };
 }
 
+/** Verify the LinkedIn POSTS capability (the activity-feed scraper) is DEPLOYED + reachable — WITHOUT
+ *  running a real scrape (a recent-activity scroll is ~60-170s and would hammer the single-Chrome VM on
+ *  every 10-min probe). No-scrape trick: POST /scrape-posts with an empty body — a wired route returns 400
+ *  ("provide url") fast; 404 = the endpoint isn't deployed; 401 = key mismatch; timeout/000 = VM down.
+ *  Non-critical: a down posts endpoint only degrades LinkedIn-feed depth, the app still works. */
+async function checkLinkedInPosts(signal: AbortSignal): Promise<{ status: Status; detail: string }> {
+  const base = (process.env.LINKEDIN_SCRAPER_URL || "").trim().replace(/\/+$/, "");
+  const key = (process.env.LINKEDIN_SCRAPER_API_KEY || "").trim();
+  if (!base) return { status: "down", detail: "LINKEDIN_SCRAPER_URL unset" };
+  const res = await fetch(`${base}/scrape-posts`, {
+    method: "POST",
+    headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), "Content-Type": "application/json" },
+    body: "{}",
+    signal,
+  });
+  if (res.status === 400) return { status: "up", detail: "/scrape-posts wired (400 on empty body)" };
+  if (res.status === 404) return { status: "down", detail: "/scrape-posts not deployed (404)" };
+  if (res.status === 401) return { status: "degraded", detail: "/scrape-posts auth rejected (key mismatch)" };
+  return { status: "degraded", detail: `/scrape-posts HTTP ${res.status}` };
+}
+
 async function checkDeepResearch(signal: AbortSignal): Promise<{ status: Status; detail: string }> {
   // Resolve the SAME way the real client does (env override → built-in default); env-unset is normal.
   const base = deepResearchBaseUrl();
@@ -105,6 +126,7 @@ async function handle(request: Request) {
     timed("scraper_x", false, (s) => checkScraper("x", "TWITTER_SCRAPER_URL", "TWITTER_SCRAPER_API_KEY", "/session/status", s)),
     timed("scraper_threads", false, (s) => checkScraper("threads", "THREADS_SCRAPER_URL", "THREADS_SCRAPER_API_KEY", "/session/status", s)),
     timed("scraper_linkedin", false, (s) => checkScraper("linkedin", "LINKEDIN_SCRAPER_URL", "LINKEDIN_SCRAPER_API_KEY", "/health", s)),
+    timed("scraper_linkedin_posts", false, (s) => checkLinkedInPosts(s)),
   ]);
 
   const summary = {
