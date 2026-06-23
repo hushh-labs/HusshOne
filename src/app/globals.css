@@ -492,6 +492,9 @@ button { font-family: inherit; cursor: pointer; }
   border-top: 1px solid var(--hair);
 }
 .connector-intake-card { background: rgba(255,255,255,0.94); }
+.set-refresh { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.set-refresh .cta { width: 100%; justify-content: center; }
+.set-refresh .cta:disabled { opacity: 0.6; cursor: default; }
 
 /* ── Collection sequence overlay ────────────────────────── */
 /* The orb owns the upper zone (see CanvasField collect layout); the scan
