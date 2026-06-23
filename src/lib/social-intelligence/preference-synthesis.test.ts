@@ -5,6 +5,7 @@ import {
   buildSynthesisRequest,
   countAnalyzedMedia,
   engagementScore,
+  mergeAnswerPair,
   parseSectionAnswers,
   parseSynthesisResponse,
   synthesizePreferences,
@@ -15,6 +16,7 @@ import {
   PREFERENCE_SYNTHESIS_VERSION,
   type MediaAnalysisRecord,
   type PreferenceSynthesisResult,
+  type SynthesizedAnswer,
 } from "./preference-synthesis";
 import {
   PREFERENCE_QUESTIONS,
@@ -131,6 +133,20 @@ describe("buildSectionSynthesisRequest", () => {
     // reframed instruction: calibrated inference, not "prefer unknown"
     expect(text).toContain("calibrated confidence");
     expect(text).not.toContain("Prefer \"unknown\" over guessing");
+  });
+
+  it("MULTIMODAL: attaches the section's real images as fileData parts + lists them as [img:hash], with per-agent temperature", () => {
+    const ctx = buildSectionContext(
+      "style_brands_color",
+      [content({ itemId: "a", text: "quiet luxury fit check" })],
+      [media({ status: "completed", cacheUri: "gs://b/h1.jpg", cacheMime: "image/jpeg", vision: { logos: ["Google"] }, semantic: { brands: ["Google"], colorAesthetic: ["blue"] } }, "h1")],
+    );
+    expect(ctx.mediaImages).toEqual([{ assetHash: "h1", fileUri: "gs://b/h1.jpg", mimeType: "image/jpeg" }]);
+    const { body } = buildSectionSynthesisRequest("gemini-2.5-pro", ctx, SECTION_OF("style_brands_color"), undefined, { agentIndex: 1 });
+    const parts = body.contents[0].parts as Array<Record<string, unknown>>;
+    expect((parts[0] as { text?: string }).text).toContain("[img:h1]");
+    expect(parts.some((p) => (p.fileData as { fileUri?: string } | undefined)?.fileUri === "gs://b/h1.jpg")).toBe(true);
+    expect(body.generationConfig.temperature).toBeCloseTo(0.6); // agentIndex 1 → 0.35 + 1*0.25
   });
 });
 
@@ -276,7 +292,7 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     return calledSections;
   }
 
-  it("runs one call PER SECTION (6) and merges into 30 answers", async () => {
+  it("runs 2 agents PER SECTION (12 calls) and merges into 30 answers", async () => {
     const calledSections = stubVertex((sectionId) =>
       SECTION_OF(sectionId as PreferenceQuestionSectionId).map((q) => ({
         questionId: q.id,
@@ -295,9 +311,9 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     expect(result).not.toBeNull();
     const r = result as PreferenceSynthesisResult;
     expect(r.answers).toHaveLength(PREFERENCE_QUESTIONS.length); // 30
-    // all 6 sections were each called exactly once
+    // all 6 sections were covered, each read by 2 independent agents (12 calls) then merged
     expect(new Set(calledSections).size).toBe(6);
-    expect(calledSections).toHaveLength(6);
+    expect(calledSections).toHaveLength(12);
     // non-sensitive answers were kept (calibrated inference)
     const style = r.answers.find((a) => a.sectionId === "style_brands_color")!;
     expect(style.status).toBe("inferred");
@@ -330,7 +346,8 @@ describe("synthesizePreferences (per-section, mocked Vertex)", () => {
     const r = result as PreferenceSynthesisResult;
     expect(r.answers).toHaveLength(subset.length); // only the subset
     expect(r.answers.every((a) => a.sectionId === "food_culinary")).toBe(true);
-    expect(calledSections).toEqual(["food_culinary"]); // only one section called
+    expect([...new Set(calledSections)]).toEqual(["food_culinary"]); // only one section, read by 2 agents
+    expect(calledSections).toHaveLength(2);
   });
 
   it("returns null only when EVERY section call fails (Vertex unavailable) so caller keeps fast pass", async () => {
@@ -488,15 +505,39 @@ describe("engagement-grounded selection + confidence (rev 4)", () => {
     expect(ctx.textSnippets.find((s) => s.id === "plain")!.selfDeclared).toBe(false);
   });
 
-  it("caps confidence by distinct evidence count (no ungrounded high/medium)", () => {
+  it("per-agent floor: 0 citations → low; otherwise the model's confidence is kept (the HIGH cap is applied at merge)", () => {
     const q = PREFERENCE_QUESTIONS[0];
     const mk = (evidenceIds: string[]) =>
       parseSectionAnswers(
         wrap([{ questionId: q.id, status: "inferred", answer: "X", confidence: "high", source: "observed", evidenceIds }]),
         [q],
       )[0];
-    expect(mk([]).confidence).toBe("low"); // 0 citations → low
-    expect(mk(["a"]).confidence).toBe("medium"); // 1 citation → cap at medium
-    expect(mk(["a", "b"]).confidence).toBe("high"); // >=2 → allow high
+    expect(mk([]).confidence).toBe("low"); // 0 citations → low (ungrounded)
+    expect(mk(["a"]).confidence).toBe("high"); // per-agent no longer caps at 1 — merge enforces the ≥2-for-high rule
+    expect(mk(["a", "b"]).confidence).toBe("high");
+  });
+});
+
+describe("mergeAnswerPair (2-agent consensus)", () => {
+  const q = PREFERENCE_QUESTIONS[0];
+  const ans = (over: Partial<SynthesizedAnswer>): SynthesizedAnswer => ({
+    questionId: q.id, sectionId: q.sectionId, prompt: q.prompt, status: "inferred", answer: "A",
+    confidence: "low", source: "inferred", evidenceIds: [], mediaEvidenceIds: [], why: null, needsUserConfirmation: false, ...over,
+  });
+
+  it("HIGH needs ≥2 distinct citations across the two reads (one each → high)", () => {
+    const m = mergeAnswerPair(ans({ confidence: "high", mediaEvidenceIds: ["h1"] }), ans({ confidence: "high", mediaEvidenceIds: ["h2"] }));
+    expect(m.confidence).toBe("high");
+    expect(new Set(m.mediaEvidenceIds)).toEqual(new Set(["h1", "h2"]));
+  });
+
+  it("both agents committed + ≥1 citation but model said low → lifted to medium (consensus)", () => {
+    const m = mergeAnswerPair(ans({ confidence: "low", mediaEvidenceIds: ["h1"] }), ans({ confidence: "low" }));
+    expect(m.confidence).toBe("medium");
+  });
+
+  it("ungrounded lone guess stays low; a single read's high is capped to medium (only 1 citation)", () => {
+    expect(mergeAnswerPair(ans({ confidence: "low" }), ans({ status: "unknown", answer: null, confidence: "low" })).confidence).toBe("low");
+    expect(mergeAnswerPair(ans({ confidence: "high", evidenceIds: ["a"] }), ans({ status: "unknown", answer: null, confidence: "low" })).confidence).toBe("medium");
   });
 });
