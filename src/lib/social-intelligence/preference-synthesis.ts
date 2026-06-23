@@ -40,7 +40,9 @@ const FETCH_TIMEOUT_MS = 150_000;
 // mental-model inferences) — force a recompute so existing users pick it up.
 // rev "4": engagement+self-declared weighted snippet selection, word-boundary keyword routing,
 // evidence-grounded confidence cap, wider aggregation caps (learnings from the 40-agent Sundar run).
-const PREFERENCE_DATA_SHAPE_REV = "4";
+// rev "5": LinkedIn posts (activity feed) now flow into the archive as a feed platform → synthesis sees
+// LinkedIn content as evidence for professionals who push there, not just IG/X/Threads.
+const PREFERENCE_DATA_SHAPE_REV = "5";
 
 // Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
 // model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how

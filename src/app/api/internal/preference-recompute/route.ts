@@ -38,9 +38,9 @@ const JOBS_PER_RUN = 1;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 // The archive keeps a 512 rolling window PER (user, platform). Read enough to cover every kept row
-// across the deep platforms (instagram/threads/x) so a single global newest-first read never starves a
-// less-recently-active platform out of synthesis. Bounded by getSocialContentItems' 4096 hard cap.
-const DEEP_PLATFORM_COUNT = 3;
+// across the deep platforms (instagram/threads/x/linkedin) so a single global newest-first read never
+// starves a less-recently-active platform out of synthesis. Bounded by getSocialContentItems' 4096 hard cap.
+const DEEP_PLATFORM_COUNT = 4;
 const ARCHIVE_READ_LIMIT = ARCHIVE_MAX_ITEMS_PER_PROFILE * DEEP_PLATFORM_COUNT;
 
 // Coverage gate + re-pass tuning. SHOW_THRESHOLD is the minimum answered/inferred count before the

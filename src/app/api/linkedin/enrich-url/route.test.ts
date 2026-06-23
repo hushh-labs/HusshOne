@@ -4,6 +4,7 @@ import { POST } from "./route";
 const mocks = vi.hoisted(() => ({
   persistConnectedProfile: vi.fn(async () => undefined),
   maybeEnqueueConnectRecompute: vi.fn(async () => ({ enqueued: false, reason: "no_consent" as const })),
+  maybeEnqueueConnectDeepScrape: vi.fn(async () => ({ enqueued: true, reason: "enqueued" as const })),
 }));
 
 vi.mock("@/lib/auth/verify", () => ({
@@ -21,6 +22,7 @@ vi.mock("@/lib/linkedin/connection", () => ({
 
 vi.mock("@/lib/social-intelligence/connect-pipeline", () => ({
   maybeEnqueueConnectRecompute: mocks.maybeEnqueueConnectRecompute,
+  maybeEnqueueConnectDeepScrape: mocks.maybeEnqueueConnectDeepScrape,
 }));
 
 function makeRequest(body: Record<string, unknown>) {
@@ -67,6 +69,7 @@ describe("POST /api/linkedin/enrich-url", () => {
     vi.stubEnv("LINKEDIN_SCRAPER_API_KEY", "test-key");
     mocks.persistConnectedProfile.mockClear();
     mocks.maybeEnqueueConnectRecompute.mockClear();
+    mocks.maybeEnqueueConnectDeepScrape.mockClear();
     global.fetch = vi.fn(async () => Response.json(scraperResponse())) as never;
   });
 
@@ -81,6 +84,10 @@ describe("POST /api/linkedin/enrich-url", () => {
     expect(mocks.persistConnectedProfile).toHaveBeenCalledTimes(1);
     // connect-later: LinkedIn re-grounds the preference layer via a recompute (consent-gated in the helper)
     expect(mocks.maybeEnqueueConnectRecompute).toHaveBeenCalledWith("firebase-1");
+    // and kicks a best-effort LinkedIn POSTS deep-scrape (activity feed → archive → synthesis)
+    expect(mocks.maybeEnqueueConnectDeepScrape).toHaveBeenCalledWith(
+      expect.objectContaining({ firebaseUid: "firebase-1", platform: "linkedin", profileUrl: "https://www.linkedin.com/in/anilsachdev" }),
+    );
     expect(global.fetch).toHaveBeenCalledWith(
       "http://scraper.local/scrape",
       expect.objectContaining({

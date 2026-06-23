@@ -4,7 +4,7 @@ import type { ScanEmailAudienceDelivery, ScanEmailDeliverySummary } from "@/lib/
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
 import type { PreferenceEvidence } from "@/lib/social-intelligence/preference-profile";
 import { extractSocialArchive, ARCHIVE_MAX_ITEMS_PER_PROFILE } from "@/lib/social-intelligence/archive";
-import type { SocialProfileFull } from "@/lib/ria/types";
+import type { ArchiveSocialProfile, SocialProfileFull } from "@/lib/ria/types";
 import { getPrismaClient } from "./prisma";
 
 const USER_NOTIFICATION_TYPE = "scan_user_full_result";
@@ -582,7 +582,7 @@ export interface IndexSocialArchiveResult {
    safe). The 512 scrape/index CAP applies to every platform regardless; this set only gates the
    irreversible eviction. Override via ARCHIVE_ROLLING_PLATFORMS (comma-separated). */
 const ROLLING_WINDOW_PLATFORMS = new Set(
-  (process.env.ARCHIVE_ROLLING_PLATFORMS ?? "instagram,threads,x")
+  (process.env.ARCHIVE_ROLLING_PLATFORMS ?? "instagram,threads,x,linkedin")
     .split(",")
     .map((p) => p.trim().toLowerCase())
     .filter(Boolean),
@@ -597,7 +597,7 @@ export async function indexSocialArchive(input: {
   firebaseUid: string;
   scanRunId?: string | null;
   version: string;
-  profiles: SocialProfileFull[];
+  profiles: ArchiveSocialProfile[];
   maxItemsPerProfile?: number;
 }): Promise<IndexSocialArchiveResult | null> {
   const prisma = getPrismaClient();

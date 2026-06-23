@@ -4,7 +4,7 @@ import { normalizeLinkedInUrl } from "@/lib/auth/identity";
 import { persistConnectedProfile } from "@/lib/linkedin/connection";
 import { buildLinkedInHandshakeProfile, hasUrlEnrichedLinkedInProfile } from "@/lib/linkedin/profile";
 import { LinkedInScraperError, scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
-import { maybeEnqueueConnectRecompute } from "@/lib/social-intelligence/connect-pipeline";
+import { maybeEnqueueConnectDeepScrape, maybeEnqueueConnectRecompute } from "@/lib/social-intelligence/connect-pipeline";
 
 export const runtime = "nodejs";
 
@@ -50,6 +50,10 @@ export async function POST(request: Request) {
       // Connect-later: a refreshed career anchor re-grounds the preference layer via a recompute
       // (consent-gated, idempotent). Fire-and-forget — never blocks Add.
       void maybeEnqueueConnectRecompute(verified.uid).catch(() => undefined);
+      // Also enqueue a deep-scrape of the member's LinkedIn POSTS (activity feed) → archive → synthesis.
+      // Best-effort + isolated: a LinkedIn posts block fails only its own job, never this connect response.
+      const handle = profile.profileUrl ? profile.profileUrl.replace(/\/+$/, "").split("/").pop() || "" : "";
+      void maybeEnqueueConnectDeepScrape({ firebaseUid: verified.uid, platform: "linkedin", username: handle, profileUrl: normalizedUrl }).catch(() => undefined);
       return NextResponse.json({ ok: true, profile, normalizedUrl });
     }
 
