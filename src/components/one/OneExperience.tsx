@@ -2572,6 +2572,7 @@ function Settings({
   onInstagramConnected,
   onThreadsConnected,
   onXConnected,
+  onRefreshIntelligence,
 }: {
   name: string;
   email: string;
@@ -2590,8 +2591,17 @@ function Settings({
   onInstagramConnected: (profile: InstagramProfileFull) => void;
   onThreadsConnected: (profile: ThreadsProfileFull) => void;
   onXConnected: (profile: XProfileFull) => void;
+  onRefreshIntelligence: () => Promise<{ ok: boolean; alreadyRunning: boolean }>;
 }) {
   const hasLinkedIn = Boolean(profile);
+  const hasAnyConnection = hasLinkedIn || instagramProfiles.length > 0 || threadsProfiles.length > 0 || xProfiles.length > 0;
+  const [refreshState, setRefreshState] = useState<"idle" | "busy" | "done" | "running">("idle");
+  const runRefresh = async () => {
+    if (refreshState === "busy") return;
+    setRefreshState("busy");
+    const res = await onRefreshIntelligence();
+    setRefreshState(res.alreadyRunning ? "running" : res.ok ? "done" : "idle");
+  };
   return (
     <div className="screen settings screen-enter">
       <div className="content">
@@ -2675,6 +2685,22 @@ function Settings({
               <ConnectXInline authUser={authUser} profiles={xProfiles} onConnected={onXConnected} />
             </ConnectorDisclosure>
           </div>
+          {hasAnyConnection ? (
+            <div className="set-refresh">
+              <button type="button" className="cta" onClick={runRefresh} disabled={refreshState === "busy"}>
+                {refreshState === "busy"
+                  ? "Refreshing…"
+                  : refreshState === "done"
+                    ? "Refreshing — updating your dashboard ✓"
+                    : refreshState === "running"
+                      ? "Already refreshing — hang tight"
+                      : "Refresh intelligence"}
+              </button>
+              <p className="sub set-note">
+                {Icons.shield(14)} Posted something new on a connected account? Re-read your socials and rebuild your preference layer with the latest.
+              </p>
+            </div>
+          ) : null}
         </div>
 
         <div className="set-actions">
@@ -3353,6 +3379,25 @@ export default function OneExperience() {
     scopedSet(authUser, LS_LI_CONNECTED, "1");
     track("linkedin_connected");
     requestPreferenceRepoll();
+  };
+
+  // Manual "Refresh my intelligence" (Settings): re-pull the recent window for every connected platform
+  // (IG/Threads/X + LinkedIn posts) + recompute, so a user who just posted sees it reflected. Bumps the
+  // dashboard re-poll and, on success, jumps to the dashboard so they watch it rebuild. Returns the result
+  // so the button can show inline feedback (e.g. "already refreshing").
+  const onRefreshIntelligence = async (): Promise<{ ok: boolean; alreadyRunning: boolean }> => {
+    if (!authUser) return { ok: false, alreadyRunning: false };
+    try {
+      const authorization = await getFirebaseBearer(authUser as User);
+      const res = await fetch("/api/one/preferences/refresh", { method: "POST", headers: { Authorization: authorization } });
+      const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; alreadyRunning?: boolean; platforms?: string[] };
+      track("preference_manual_refresh", { ok: !!payload.ok, alreadyRunning: !!payload.alreadyRunning, platforms: payload.platforms ?? [] });
+      requestPreferenceRepoll();
+      if (payload.ok && dashboard) setTimeout(() => setStage("dashboard"), 700); // watch it rebuild
+      return { ok: !!payload.ok, alreadyRunning: !!payload.alreadyRunning };
+    } catch {
+      return { ok: false, alreadyRunning: false };
+    }
   };
 
   const onSocialPreferenceConsentChanged = (value: boolean) => {
@@ -4745,6 +4790,7 @@ export default function OneExperience() {
         onInstagramConnected={onInstagramConnectedFromSettings}
         onThreadsConnected={onThreadsConnectedFromSettings}
         onXConnected={onXConnectedFromSettings}
+        onRefreshIntelligence={onRefreshIntelligence}
       />
     );
   else if (stage === "manual")

@@ -25,6 +25,7 @@ vi.mock("@/lib/db/scan-store", () => ({
 }));
 
 import {
+  enqueueManualRefresh,
   getPreferenceConsentContext,
   maybeEnqueueConnectDeepScrape,
   maybeEnqueueConnectRecompute,
@@ -167,6 +168,54 @@ describe("maybeEnqueueConnectRecompute", () => {
   it("does NOT recompute without consent", async () => {
     withConsent(false);
     expect(await maybeEnqueueConnectRecompute("u1")).toEqual({ enqueued: false, reason: "no_consent" });
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+});
+
+describe("enqueueManualRefresh", () => {
+  beforeEach(resetMocks);
+
+  it("refresh-scrapes every connected feed + LinkedIn posts, then a recompute", async () => {
+    withConsent(true);
+    mocks.getConnectedFeedProfiles.mockResolvedValue([
+      { platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" },
+      { platform: "X", username: "xh", profileUrl: "https://x.com/xh" },
+    ]);
+    mocks.getLinkedInConnection.mockResolvedValue({ profileUrl: "https://www.linkedin.com/in/ankit/" });
+
+    const res = await enqueueManualRefresh("u1");
+    expect(res.ok).toBe(true);
+    expect(res.reason).toBe("enqueued");
+    expect(res.platforms).toEqual(expect.arrayContaining(["instagram", "x", "linkedin"]));
+    expect(res.recompute).toBe(true);
+    // 1st enqueue = the refresh scrape jobs (refresh:true recent window); 2nd = the recompute.
+    const scrapeCall = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0];
+    expect(scrapeCall?.jobs.map((j) => j.platform)).toEqual(expect.arrayContaining(["instagram", "x", "linkedin"]));
+    expect(scrapeCall?.jobs[0]?.metadata?.refresh).toBe(true);
+    const recomputeCall = mocks.enqueueSocialRefreshJobs.mock.calls[1]?.[0];
+    expect(recomputeCall?.jobs[0]?.platform).toBe("__recompute__");
+  });
+
+  it("returns already_running and enqueues nothing when preference work is in flight", async () => {
+    withConsent(true);
+    mocks.getConnectedFeedProfiles.mockResolvedValue([{ platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" }]);
+    mocks.hasPendingPreferenceWork.mockResolvedValue(true);
+    const res = await enqueueManualRefresh("u1");
+    expect(res).toMatchObject({ ok: true, alreadyRunning: true, reason: "already_running" });
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+
+  it("returns nothing_connected when the user has no socials", async () => {
+    withConsent(true); // consented but no connected accounts
+    const res = await enqueueManualRefresh("u1");
+    expect(res).toMatchObject({ ok: false, reason: "nothing_connected" });
+    expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
+  });
+
+  it("returns no_consent when not consented and nothing connected", async () => {
+    withConsent(false);
+    const res = await enqueueManualRefresh("u1");
+    expect(res).toMatchObject({ ok: false, reason: "no_consent" });
     expect(mocks.enqueueSocialRefreshJobs).not.toHaveBeenCalled();
   });
 });

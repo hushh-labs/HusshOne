@@ -25,6 +25,9 @@ import {
 // Matches the social-archive worker's FIRST_TARGET — a job with this maxPosts and NO `refresh` flag enters
 // the staged 240→512 deep climb (a `refresh:true` job would be the shallow recent-window path instead).
 const FIRST_TARGET = 240;
+// Manual-refresh window: a `refresh:true` job pulls the recent window (newest posts), upserts them into the
+// rolling archive, and completes (no staged re-grow). Matches the worker's refresh path + REFRESH_MAX_POSTS.
+const REFRESH_MAX_POSTS = 240;
 // linkedin is a deep platform too now: connecting it scrapes the member's activity feed (posts), not just
 // the career profile — professionals push on LinkedIn, so their posts must reach the preference layer.
 const DEEP_PLATFORMS = new Set(["instagram", "threads", "x", "linkedin"]);
@@ -117,5 +120,67 @@ export async function maybeEnqueueConnectRecompute(firebaseUid: string): Promise
     return { enqueued: n > 0, reason: n > 0 ? "enqueued" : "enqueue_failed" };
   } catch {
     return { enqueued: false, reason: "error" };
+  }
+}
+
+export interface ManualRefreshResult {
+  ok: boolean;
+  alreadyRunning: boolean;
+  platforms: string[]; // feed/linkedin platforms a fresh scrape was enqueued for
+  recompute: boolean;
+  reason: "enqueued" | "already_running" | "no_consent" | "nothing_connected" | "error";
+}
+
+/** User-initiated "Refresh my intelligence" (Settings button): pull the RECENT window for every connected
+ *  platform — IG/Threads/X feeds AND LinkedIn posts — then recompute, so a user who just posted sees their
+ *  new content reflected without a re-scan. `refresh:true` = recent-window upsert into the rolling archive
+ *  (not a full re-climb). Anti-thrash: if any preference work is already in flight, returns already_running
+ *  and enqueues nothing (so repeated taps can't hammer the single-Chrome VMs). Fully defensive. */
+export async function enqueueManualRefresh(firebaseUid: string): Promise<ManualRefreshResult> {
+  try {
+    if (!firebaseUid) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "error" };
+    const { consent, scanRunId } = await getPreferenceConsentContext(firebaseUid);
+    if (!consent) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "no_consent" };
+    if (await hasPendingPreferenceWork(firebaseUid)) {
+      return { ok: true, alreadyRunning: true, platforms: [], recompute: false, reason: "already_running" };
+    }
+
+    const [feeds, linkedin] = await Promise.all([
+      getConnectedFeedProfiles(firebaseUid).catch(() => []),
+      getLinkedInConnection(firebaseUid).catch(() => null),
+    ]);
+
+    const jobs: Array<{ platform: string; publicId: string; metadata: Record<string, unknown> }> = [];
+    for (const profile of feeds) {
+      const platform = profile.platform.trim().toLowerCase();
+      if (!DEEP_PLATFORMS.has(platform) || !profile.username || !profile.profileUrl) continue;
+      jobs.push({
+        platform,
+        publicId: profile.username.trim().toLowerCase(),
+        metadata: { url: profile.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId, refresh: true },
+      });
+    }
+    if (linkedin?.profileUrl) {
+      const handle = linkedin.profileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin";
+      jobs.push({
+        platform: "linkedin",
+        publicId: handle.toLowerCase(),
+        metadata: { url: linkedin.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId, refresh: true },
+      });
+    }
+
+    if (!jobs.length) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "nothing_connected" };
+
+    await enqueueSocialRefreshJobs({ firebaseUid, jobs });
+    // Also enqueue a recompute so synthesis re-runs even if a scrape returns no new posts (the archive
+    // worker also enqueues one after indexing — dedup makes the double safe).
+    await enqueueSocialRefreshJobs({
+      firebaseUid,
+      jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: scanRunId ?? "latest", metadata: { scanRunId }, priority: 1 }],
+    }).catch(() => 0);
+
+    return { ok: true, alreadyRunning: false, platforms: jobs.map((j) => j.platform), recompute: true, reason: "enqueued" };
+  } catch {
+    return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "error" };
   }
 }
