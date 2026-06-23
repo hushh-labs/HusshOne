@@ -49,13 +49,17 @@ const FETCH_TIMEOUT_MS = 150_000;
 // lifestyle_daily/mindset_values; Romance removed). Per-image now yields clothing brand+colour+type,
 // eyewear, footwear, objects, table/background items, surroundings, pose, expression, people count, event,
 // place + FACE/WEB Vision signals — all routed into the new sections. Forces a full recompute.
-const PREFERENCE_DATA_SHAPE_REV = "7";
+// rev "8": de-noised lifestyle cards (stopword + word-count cleanup; places no longer pull noisy
+// webEntities/bestGuessLabels; foods no longer pull tableItems) + 4 agents/section (was 2). Forces recompute
+// so existing users get the cleaner cards from their existing media (no re-scrape needed).
+const PREFERENCE_DATA_SHAPE_REV = "8";
 
 // Per-section multimodal: how many real images each section agent is shown (Vertex fileData parts), and how
-// many independent agents read each section (their answers are merged by consensus — agreement lifts
-// confidence). 6 sections × 2 agents = 12 calls, all parallel; fits the recompute worker's 300s budget.
-const MAX_SECTION_IMAGES = 10;
-const AGENTS_PER_SECTION = 2;
+// many independent agents read each section (their answers are merged by consensus — more agents = stronger
+// consensus + higher confidence). v5.1: scaled UP to 4 agents/section (6×4 = 24 parallel reads/recompute) +
+// 14 images/agent — deliberately compute-heavy for quality (cost is not the constraint here). Env-tunable.
+const MAX_SECTION_IMAGES = Number(process.env.PREFERENCE_SECTION_IMAGES) || 14;
+const AGENTS_PER_SECTION = Number(process.env.PREFERENCE_AGENTS_PER_SECTION) || 4;
 
 // Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
 // model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how
@@ -152,14 +156,15 @@ export const SECTION_EVIDENCE: Record<PreferenceQuestionSectionId, SectionEviden
     ],
   },
   travel_places: {
+    // v5.1: dropped vision.webEntities + bestGuessLabels here — reverse-image labels are noisy for PLACE
+    // ("Businessperson", "Presentation"). Places come from the model's explicit placeGuess/destination +
+    // detected landmarks, which are far more reliable.
     mediaSignals: [
       { label: "travelPlaceType", path: "semantic", key: "travelPlaceType", array: false },
       { label: "destinationName", path: "semantic", key: "destinationName", array: false },
       { label: "placeGuess", path: "semantic", key: "placeGuess", array: false },
       { label: "landmarksSeen", path: "semantic", key: "landmarksSeen", array: true },
       { label: "landmarks", path: "vision", key: "landmarks", array: true },
-      { label: "webEntities", path: "vision", key: "webEntities", array: true },
-      { label: "bestGuessLabels", path: "vision", key: "bestGuessLabels", array: true },
       { label: "scene", path: "semantic", key: "scene", array: false },
     ],
     textKeywords: [
@@ -786,7 +791,9 @@ export async function synthesizeSection(
   );
   const ok = reads.filter((r): r is SynthesizedAnswer[] => r !== null);
   if (!ok.length) return null;
-  return ok.length === 1 ? ok[0] : mergeSectionAnswers(ok[0], ok[1], questions);
+  // Merge ALL successful agent reads by consensus (pairwise fold) — works for any agent count. More agents
+  // → citations accumulate in the union → stronger, better-grounded answers (HIGH still needs ≥2 distinct).
+  return ok.reduce((acc, cur) => mergeSectionAnswers(acc, cur, questions));
 }
 
 export interface SynthesizeInput {
@@ -875,8 +882,33 @@ export interface LifestyleFacts {
   events: { events: number; casual: number; topTypes: LifestyleFact[] };
 }
 
+// v5.1: generic visual-noise tokens that Vision labels / web-detection / loose model reads emit but which
+// are NOT useful preference facts. Filtered out of every lifestyle card (exact, lowercased match).
+const GENERIC_FACT_STOPWORDS = new Set([
+  "person", "people", "man", "woman", "men", "women", "human", "adult", "boy", "girl", "businessperson",
+  "white collar worker", "white-collar worker", "employee", "spokesperson", "crowd", "audience",
+  "photograph", "photography", "photo", "picture", "image", "selfie", "portrait", "snapshot", "screenshot",
+  "presentation", "document", "text", "font", "line", "paper", "poster", "banner", "slide", "slideshow",
+  "product", "material property", "brand", "logo", "advertising", "advertisement", "job", "gesture",
+  "community", "organization", "company", "business", "management", "design", "graphics", "graphic",
+  "illustration", "art", "technology", "electronics", "gadget", "device", "object", "thing", "stock photography",
+  "event", "ceremony", "meeting", "room", "wall", "floor", "table", "smile", "happy", "fun",
+]);
+
+/** Clean a list of raw fact strings for a lifestyle card: trim, drop empties / pure-numbers / overly long
+ *  or wordy descriptions (e.g. "Digital Graphic With Map Elements") / generic visual-noise stopwords. */
+function cleanFactValues(values: string[], maxWords = 4): string[] {
+  return values
+    .map((v) => v.replace(/\s+/g, " ").trim())
+    .filter((v) => v.length > 0 && v.length <= 40)
+    .filter((v) => v.split(" ").length <= maxWords)
+    .filter((v) => !/^[\d.,%]+$/.test(v))
+    .filter((v) => !GENERIC_FACT_STOPWORDS.has(v.toLowerCase()));
+}
+
 /** Aggregate the deep per-image reads across all completed media analyses into factual lifestyle cards.
- *  Pure — reads the same MediaAnalysisRecord[] synthesis uses; every field is empty-safe. */
+ *  Pure — reads the same MediaAnalysisRecord[] synthesis uses; every field is empty-safe. v5.1: cleaned via
+ *  cleanFactValues + tighter sources (places: no reverse-image labels; foods: no generic table items). */
 export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): LifestyleFacts {
   const brands: string[] = [];
   const colours: string[] = [];
@@ -932,17 +964,16 @@ export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): L
     const fwOut = fwModel ? (fwLabel ? `${fwLabel} (${fwModel})` : fwModel) : fwLabel;
     if (fwOut) footwear.push(fwOut);
 
-    // Food.
+    // Food: actual food/drink + cuisine only (tableItems is too noisy — "water bottle", "small plant").
     for (const f of strArray(semantic.foodDrink)) foods.push(f);
     if (normText(semantic.cuisineCategory)) foods.push(normText(semantic.cuisineCategory));
-    for (const t of strArray(semantic.tableItems)) foods.push(t);
 
-    // Places.
+    // Places: the model's explicit place + detected landmarks only (NOT reverse-image web labels, which
+    // surface "Businessperson"/"Presentation"). cleanFactValues then strips any remaining noise.
     if (normText(semantic.placeGuess)) places.push(normText(semantic.placeGuess));
     if (normText(semantic.destinationName)) places.push(normText(semantic.destinationName));
     for (const l of strArray(semantic.landmarksSeen)) places.push(l);
     for (const l of strArray(vision.landmarks)) places.push(l);
-    for (const l of strArray(vision.bestGuessLabels)) places.push(l);
 
     // Time of day + surroundings.
     if (normText(semantic.timeOfDay)) timeOfDay.push(normText(semantic.timeOfDay));
@@ -969,16 +1000,16 @@ export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): L
 
   return {
     sampleSize,
-    topBrands: rankByFrequency(brands, 8),
-    topColours: rankByFrequency(colours, 8),
-    eyewear: { present: eyewearPresent, absent: eyewearAbsent, topStyles: rankByFrequency(eyewearStyles, 5) },
-    footwear: rankByFrequency(footwear, 6),
-    foods: rankByFrequency(foods, 8),
-    places: rankByFrequency(places, 8),
+    topBrands: rankByFrequency(cleanFactValues(brands), 8),
+    topColours: rankByFrequency(cleanFactValues(colours, 3), 8),
+    eyewear: { present: eyewearPresent, absent: eyewearAbsent, topStyles: rankByFrequency(cleanFactValues(eyewearStyles), 5) },
+    footwear: rankByFrequency(cleanFactValues(footwear), 6),
+    foods: rankByFrequency(cleanFactValues(foods), 8),
+    places: rankByFrequency(cleanFactValues(places), 8),
     soloVsSocial: { solo, group },
-    timeOfDay: rankByFrequency(timeOfDay, 4),
-    surroundings: rankByFrequency(surroundings, 6),
-    events: { events, casual, topTypes: rankByFrequency(eventTypes, 5) },
+    timeOfDay: rankByFrequency(cleanFactValues(timeOfDay), 4),
+    surroundings: rankByFrequency(cleanFactValues(surroundings), 6),
+    events: { events, casual, topTypes: rankByFrequency(cleanFactValues(eventTypes), 5) },
   };
 }
 
