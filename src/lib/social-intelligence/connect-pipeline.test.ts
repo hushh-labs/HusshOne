@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
   getConnectedFeedProfiles: vi.fn(async () => [] as unknown[]),
   getLinkedInConnection: vi.fn(async (): Promise<unknown> => null),
+  getArchiveDepthSummary: vi.fn(async (): Promise<unknown> => null),
   hasPendingPreferenceWork: vi.fn(async () => false),
   enqueueSocialRefreshJobs: vi.fn(async (_input: EnqueueArg) => 1),
 }));
@@ -19,10 +20,17 @@ vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
   getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
   getLinkedInConnection: mocks.getLinkedInConnection,
+  getArchiveDepthSummary: mocks.getArchiveDepthSummary,
   hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
   PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
 }));
+
+// Per-platform archived counts → the smart full-scrape-vs-refresh decision in enqueueManualRefresh.
+const depthOf = (perPlatform: Record<string, number>) => ({
+  perPlatform: Object.fromEntries(Object.entries(perPlatform).map(([p, items]) => [p, { items, mediaTotal: 0, mediaAnalyzed: 0, mediaPending: 0, mediaFailed: 0 }])),
+  totals: { items: 0, mediaTotal: 0, mediaAnalyzed: 0, mediaPending: 0 },
+});
 
 import {
   enqueueManualRefresh,
@@ -36,6 +44,7 @@ function resetMocks() {
   // clearAllMocks wipes call history but NOT implementations — re-establish the defaults each test.
   mocks.getConnectedFeedProfiles.mockResolvedValue([]);
   mocks.getLinkedInConnection.mockResolvedValue(null);
+  mocks.getArchiveDepthSummary.mockResolvedValue(null);
   mocks.hasPendingPreferenceWork.mockResolvedValue(false);
   mocks.enqueueSocialRefreshJobs.mockResolvedValue(1);
 }
@@ -175,25 +184,66 @@ describe("maybeEnqueueConnectRecompute", () => {
 describe("enqueueManualRefresh", () => {
   beforeEach(resetMocks);
 
-  it("refresh-scrapes every connected feed + LinkedIn posts, then a recompute", async () => {
+  it("DEEP-ENOUGH platforms get a cheap recent-window refresh, then a recompute", async () => {
     withConsent(true);
     mocks.getConnectedFeedProfiles.mockResolvedValue([
       { platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" },
       { platform: "X", username: "xh", profileUrl: "https://x.com/xh" },
     ]);
     mocks.getLinkedInConnection.mockResolvedValue({ profileUrl: "https://www.linkedin.com/in/ankit/" });
+    mocks.getArchiveDepthSummary.mockResolvedValue(depthOf({ instagram: 300, x: 300, linkedin: 300 })); // all deep enough
 
     const res = await enqueueManualRefresh("u1");
     expect(res.ok).toBe(true);
     expect(res.reason).toBe("enqueued");
     expect(res.platforms).toEqual(expect.arrayContaining(["instagram", "x", "linkedin"]));
+    expect(res.deepScraped).toEqual([]); // none thin → none deep-scraped
     expect(res.recompute).toBe(true);
-    // 1st enqueue = the refresh scrape jobs (refresh:true recent window); 2nd = the recompute.
     const scrapeCall = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0];
     expect(scrapeCall?.jobs.map((j) => j.platform)).toEqual(expect.arrayContaining(["instagram", "x", "linkedin"]));
-    expect(scrapeCall?.jobs[0]?.metadata?.refresh).toBe(true);
+    expect(scrapeCall?.jobs.every((j) => j.metadata?.refresh === true)).toBe(true); // all recent-window
     const recomputeCall = mocks.enqueueSocialRefreshJobs.mock.calls[1]?.[0];
     expect(recomputeCall?.jobs[0]?.platform).toBe("__recompute__");
+  });
+
+  it("THIN / never-scraped platform activates the FULL service layer (no refresh flag → deep climb)", async () => {
+    withConsent(true);
+    mocks.getConnectedFeedProfiles.mockResolvedValue([{ platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" }]);
+    mocks.getLinkedInConnection.mockResolvedValue({ profileUrl: "https://www.linkedin.com/in/ankit/" });
+    // IG is deep (300 ≥ 50); LinkedIn just added → not in depth map → archived 0 < 50 → DEEP
+    mocks.getArchiveDepthSummary.mockResolvedValue(depthOf({ instagram: 300 }));
+
+    const res = await enqueueManualRefresh("u1");
+    expect(res.deepScraped).toEqual(["linkedin"]);
+    const jobs = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0]?.jobs ?? [];
+    const ig = jobs.find((j) => j.platform === "instagram");
+    const li = jobs.find((j) => j.platform === "linkedin");
+    expect(ig?.metadata?.refresh).toBe(true); // deep enough → recent refresh
+    expect(li?.metadata).not.toHaveProperty("refresh"); // thin → full deep climb
+    expect(li?.metadata?.maxPosts).toBe(240); // FIRST_TARGET
+  });
+
+  it("threshold is strict: 49 → deep, 50 → refresh", async () => {
+    withConsent(true);
+    mocks.getConnectedFeedProfiles.mockResolvedValue([
+      { platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" },
+      { platform: "X", username: "xh", profileUrl: "https://x.com/xh" },
+    ]);
+    mocks.getArchiveDepthSummary.mockResolvedValue(depthOf({ instagram: 49, x: 50 }));
+    const res = await enqueueManualRefresh("u1");
+    expect(res.deepScraped).toEqual(["instagram"]); // 49 < 50 → deep; 50 not < 50 → refresh
+    const jobs = mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0]?.jobs ?? [];
+    expect(jobs.find((j) => j.platform === "instagram")?.metadata).not.toHaveProperty("refresh");
+    expect(jobs.find((j) => j.platform === "x")?.metadata?.refresh).toBe(true);
+  });
+
+  it("null depth (DB blip / new user) → every platform treated as thin → all deep", async () => {
+    withConsent(true);
+    mocks.getConnectedFeedProfiles.mockResolvedValue([{ platform: "Instagram", username: "ig", profileUrl: "https://www.instagram.com/ig/" }]);
+    mocks.getArchiveDepthSummary.mockResolvedValue(null);
+    const res = await enqueueManualRefresh("u1");
+    expect(res.deepScraped).toEqual(["instagram"]);
+    expect(mocks.enqueueSocialRefreshJobs.mock.calls[0]?.[0]?.jobs[0]?.metadata).not.toHaveProperty("refresh");
   });
 
   it("returns already_running and enqueues nothing when preference work is in flight", async () => {
