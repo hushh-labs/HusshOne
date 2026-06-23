@@ -14,6 +14,7 @@
    silently drop the 2nd/3rd platform a user connects in one session). */
 import {
   enqueueSocialRefreshJobs,
+  getArchiveDepthSummary,
   getConnectedFeedProfiles,
   getLatestScanForUser,
   getLinkedInConnection,
@@ -28,6 +29,12 @@ const FIRST_TARGET = 240;
 // Manual-refresh window: a `refresh:true` job pulls the recent window (newest posts), upserts them into the
 // rolling archive, and completes (no staged re-grow). Matches the worker's refresh path + REFRESH_MAX_POSTS.
 const REFRESH_MAX_POSTS = 240;
+// Smart refresh: a platform with FEWER than this many archived posts is treated as THIN — a recent-window
+// refresh isn't enough, so we activate the FULL service layer (a no-`refresh` job → the staged 240→512 deep
+// climb) to actually fill it. At/above the threshold we only pull the recent window (cheap; doesn't re-hammer
+// the single-Chrome VMs). A newly-added LinkedIn (0–10 posts) falls below → full climb; a deep IG (400+) →
+// recent refresh. Env override: REFRESH_FULL_SCRAPE_THRESHOLD.
+const FULL_SCRAPE_THRESHOLD = Number(process.env.REFRESH_FULL_SCRAPE_THRESHOLD) || 50;
 // linkedin is a deep platform too now: connecting it scrapes the member's activity feed (posts), not just
 // the career profile — professionals push on LinkedIn, so their posts must reach the preference layer.
 const DEEP_PLATFORMS = new Set(["instagram", "threads", "x", "linkedin"]);
@@ -127,49 +134,55 @@ export interface ManualRefreshResult {
   ok: boolean;
   alreadyRunning: boolean;
   platforms: string[]; // feed/linkedin platforms a fresh scrape was enqueued for
+  deepScraped: string[]; // subset getting the FULL service layer (thin archive → staged climb) vs a recent refresh
   recompute: boolean;
   reason: "enqueued" | "already_running" | "no_consent" | "nothing_connected" | "error";
 }
 
-/** User-initiated "Refresh my intelligence" (Settings button): pull the RECENT window for every connected
- *  platform — IG/Threads/X feeds AND LinkedIn posts — then recompute, so a user who just posted sees their
- *  new content reflected without a re-scan. `refresh:true` = recent-window upsert into the rolling archive
- *  (not a full re-climb). Anti-thrash: if any preference work is already in flight, returns already_running
+/** User-initiated "Refresh my intelligence" (Settings button). SMART per-platform: a THIN platform (archived
+ *  posts < FULL_SCRAPE_THRESHOLD — e.g. a just-added LinkedIn) gets the FULL service layer (a no-`refresh`
+ *  job → the staged 240→512 deep climb) so its archive actually fills; a platform already at depth gets a
+ *  cheap recent-window refresh (`refresh:true`). Always follows with a recompute, so a user who just posted
+ *  sees it without a re-scan. Anti-thrash: if any preference work is already in flight, returns already_running
  *  and enqueues nothing (so repeated taps can't hammer the single-Chrome VMs). Fully defensive. */
 export async function enqueueManualRefresh(firebaseUid: string): Promise<ManualRefreshResult> {
   try {
-    if (!firebaseUid) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "error" };
+    if (!firebaseUid) return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "error" };
     const { consent, scanRunId } = await getPreferenceConsentContext(firebaseUid);
-    if (!consent) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "no_consent" };
+    if (!consent) return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "no_consent" };
     if (await hasPendingPreferenceWork(firebaseUid)) {
-      return { ok: true, alreadyRunning: true, platforms: [], recompute: false, reason: "already_running" };
+      return { ok: true, alreadyRunning: true, platforms: [], deepScraped: [], recompute: false, reason: "already_running" };
     }
 
-    const [feeds, linkedin] = await Promise.all([
+    const [feeds, linkedin, depth] = await Promise.all([
       getConnectedFeedProfiles(firebaseUid).catch(() => []),
       getLinkedInConnection(firebaseUid).catch(() => null),
+      getArchiveDepthSummary(firebaseUid).catch(() => null),
     ]);
+    const archivedCount = (platform: string): number => depth?.perPlatform?.[platform]?.items ?? 0;
+    // THIN → full deep climb (no refresh flag); deep enough → recent-window refresh.
+    const jobFor = (platform: string, publicId: string, url: string) =>
+      archivedCount(platform) < FULL_SCRAPE_THRESHOLD
+        ? { platform, publicId, metadata: { url, maxPosts: FIRST_TARGET, scanRunId } } // full service layer
+        : { platform, publicId, metadata: { url, maxPosts: REFRESH_MAX_POSTS, scanRunId, refresh: true } };
 
     const jobs: Array<{ platform: string; publicId: string; metadata: Record<string, unknown> }> = [];
+    const deepScraped: string[] = [];
     for (const profile of feeds) {
       const platform = profile.platform.trim().toLowerCase();
       if (!DEEP_PLATFORMS.has(platform) || !profile.username || !profile.profileUrl) continue;
-      jobs.push({
-        platform,
-        publicId: profile.username.trim().toLowerCase(),
-        metadata: { url: profile.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId, refresh: true },
-      });
+      const job = jobFor(platform, profile.username.trim().toLowerCase(), profile.profileUrl);
+      if (!("refresh" in job.metadata)) deepScraped.push(platform);
+      jobs.push(job);
     }
     if (linkedin?.profileUrl) {
-      const handle = linkedin.profileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin";
-      jobs.push({
-        platform: "linkedin",
-        publicId: handle.toLowerCase(),
-        metadata: { url: linkedin.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId, refresh: true },
-      });
+      const handle = (linkedin.profileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin").toLowerCase();
+      const job = jobFor("linkedin", handle, linkedin.profileUrl);
+      if (!("refresh" in job.metadata)) deepScraped.push("linkedin");
+      jobs.push(job);
     }
 
-    if (!jobs.length) return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "nothing_connected" };
+    if (!jobs.length) return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "nothing_connected" };
 
     await enqueueSocialRefreshJobs({ firebaseUid, jobs });
     // Also enqueue a recompute so synthesis re-runs even if a scrape returns no new posts (the archive
@@ -179,8 +192,9 @@ export async function enqueueManualRefresh(firebaseUid: string): Promise<ManualR
       jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: scanRunId ?? "latest", metadata: { scanRunId }, priority: 1 }],
     }).catch(() => 0);
 
-    return { ok: true, alreadyRunning: false, platforms: jobs.map((j) => j.platform), recompute: true, reason: "enqueued" };
+    console.log(JSON.stringify({ event: "one.preference.manual_refresh", platforms: jobs.map((j) => j.platform), deepScraped, scanRunId }));
+    return { ok: true, alreadyRunning: false, platforms: jobs.map((j) => j.platform), deepScraped, recompute: true, reason: "enqueued" };
   } catch {
-    return { ok: false, alreadyRunning: false, platforms: [], recompute: false, reason: "error" };
+    return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "error" };
   }
 }

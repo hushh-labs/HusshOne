@@ -640,6 +640,31 @@ button { font-family: inherit; cursor: pointer; }
   padding: 0;
   /* separated by whitespace — no full-bleed rules (the inner cards carry the structure) */
 }
+/* "Refreshing your intelligence" banner — shown on the dashboard from the moment Refresh is tapped until a
+   newer profile lands, so a returning user with an existing dossier visibly sees the refresh happening. */
+.pref-refreshing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 11px 15px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.035);
+  font-size: 14px;
+  color: #333;
+}
+.pref-refreshing-dot {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.18);
+  border-top-color: #111;
+  animation: pref-refreshing-spin 0.8s linear infinite;
+}
+@keyframes pref-refreshing-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pref-refreshing-dot { animation: none; } }
 .pref-intel-loading {
   display: flex;
   align-items: center;

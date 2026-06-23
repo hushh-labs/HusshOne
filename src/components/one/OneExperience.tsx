@@ -1683,9 +1683,11 @@ function asCountRecord(value: unknown): Record<string, number> {
 function PreferenceIntelligence({
   profile,
   status,
+  refreshing,
 }: {
   profile?: OneDashboardResult["preferenceProfile"];
   status?: OneDashboardResult["preferenceStatus"];
+  refreshing?: boolean;
 }) {
   if (!profile) {
     if (!status || status === "idle") return null;
@@ -1815,6 +1817,11 @@ function PreferenceIntelligence({
 
   return (
     <section className="pref-intel">
+      {refreshing ? (
+        <div className="pref-refreshing" role="status">
+          <span className="pref-refreshing-dot" aria-hidden="true" /> Refreshing your intelligence — reading your latest posts. New insights will appear here shortly.
+        </div>
+      ) : null}
       <div className="pref-top">
         <div>
           <p className="eyebrow">What One understands about you</p>
@@ -1984,6 +1991,7 @@ function ProgressiveDashboardShell({
   preferenceProfile,
   elapsedMs,
   onReset,
+  refreshing,
 }: {
   phase1Status: LayerStatus;
   phase1Message: string | null;
@@ -1991,6 +1999,7 @@ function ProgressiveDashboardShell({
   preferenceProfile?: OneDashboardResult["preferenceProfile"];
   elapsedMs: number;
   onReset: () => void;
+  refreshing?: boolean;
 }) {
   const phaseDetail =
     phase1Status === "completed"
@@ -2023,7 +2032,7 @@ function ProgressiveDashboardShell({
           <LayerStateLine label="Phase 1 dossier" status={phase1Status} detail={`${phaseDetail} · ${mmss(elapsedMs)}`} />
         </div>
 
-        <PreferenceIntelligence profile={preferenceProfile} status={preferenceStatus} />
+        <PreferenceIntelligence profile={preferenceProfile} status={preferenceStatus} refreshing={refreshing} />
 
         <section className="dossier-shell" aria-busy={phase1Status === "running"}>
           <div>
@@ -2062,12 +2071,14 @@ function Dashboard({
   emailDelivery,
   onReset,
   onScanAgain,
+  refreshing,
 }: {
   result: OneDashboardResult;
   audit: PersonAuditStatus | null;
   emailDelivery: ScanEmailDeliverySummary | null;
   onReset: () => void;
   onScanAgain: () => void;
+  refreshing?: boolean;
 }) {
   // Deep Research path → render the markdown dossier instead of the structured grid.
   if (result.report) {
@@ -2085,7 +2096,7 @@ function Dashboard({
               </div>
             ) : null}
           </div>
-          <PreferenceIntelligence profile={result.preferenceProfile} status={result.preferenceStatus} />
+          <PreferenceIntelligence profile={result.preferenceProfile} status={result.preferenceStatus} refreshing={refreshing} />
           <DossierReport
             report={
               result.report +
@@ -3097,6 +3108,9 @@ export default function OneExperience() {
   const [phase1Status, setPhase1Status] = useState<LayerStatus>("idle");
   const [preferenceStatus, setPreferenceStatus] = useState<LayerStatus>("idle");
   const [preferenceProfile, setPreferenceProfile] = useState<OneDashboardResult["preferenceProfile"] | undefined>(undefined);
+  // True from the moment the user taps "Refresh intelligence" until a NEWER preference profile lands (or the
+  // poll gives up) — drives the visible "Refreshing…" banner so a returning user sees the refresh happening.
+  const [refreshingPrefs, setRefreshingPrefs] = useState(false);
   const [audit, setAudit] = useState<PersonAuditStatus | null>(null);
   const [emailDelivery, setEmailDelivery] = useState<ScanEmailDeliverySummary | null>(null);
   const [error, setError] = useState("");
@@ -3390,10 +3404,13 @@ export default function OneExperience() {
     try {
       const authorization = await getFirebaseBearer(authUser as User);
       const res = await fetch("/api/one/preferences/refresh", { method: "POST", headers: { Authorization: authorization } });
-      const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; alreadyRunning?: boolean; platforms?: string[] };
-      track("preference_manual_refresh", { ok: !!payload.ok, alreadyRunning: !!payload.alreadyRunning, platforms: payload.platforms ?? [] });
-      requestPreferenceRepoll();
-      if (payload.ok && dashboard) setTimeout(() => setStage("dashboard"), 700); // watch it rebuild
+      const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; alreadyRunning?: boolean; platforms?: string[]; deepScraped?: string[] };
+      track("preference_manual_refresh", { ok: !!payload.ok, alreadyRunning: !!payload.alreadyRunning, platforms: payload.platforms ?? [], deepScraped: payload.deepScraped ?? [] });
+      if (payload.ok) {
+        setRefreshingPrefs(true); // show the "Refreshing…" banner until a newer profile lands (cleared in the poll)
+        requestPreferenceRepoll();
+        if (dashboard) setTimeout(() => setStage("dashboard"), 700); // jump to the dashboard to watch it rebuild
+      }
       return { ok: !!payload.ok, alreadyRunning: !!payload.alreadyRunning };
     } catch {
       return { ok: false, alreadyRunning: false };
@@ -3816,16 +3833,19 @@ export default function OneExperience() {
                 signals: nextProfile?.topSignals.length ?? 0,
                 selectedEvidence: nextProfile?.selection?.selectedEvidenceCount ?? 0,
               });
+              setRefreshingPrefs(false); // a newer profile landed → drop the "Refreshing…" banner
               return;
             }
             if (payload?.preferenceStatus === "skipped") {
               setPreferenceLayer("skipped");
               setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "skipped" } : prev));
+              setRefreshingPrefs(false);
               return;
             }
             if (payload?.preferenceStatus === "failed") {
               setPreferenceLayer("failed");
               track("preference_failed", { scanRunId: id });
+              setRefreshingPrefs(false);
               return;
             }
           }
@@ -3843,6 +3863,7 @@ export default function OneExperience() {
           setPreferenceLayer("completed", lastProfile);
           setDashboard((prev) => (prev ? { ...prev, preferenceStatus: "completed", preferenceProfile: lastProfile } : prev));
         }
+        setRefreshingPrefs(false); // poll window ended — stop showing "Refreshing…" regardless
       }
     };
     void run();
@@ -4864,7 +4885,7 @@ export default function OneExperience() {
   else if (stage === "collect")
     view = <CollectionOverlay key="c" progress={progress} phaseIndex={phaseIndex} elapsedMs={elapsedMs} liveSource={liveSource} />;
   else if (stage === "dashboard" && dashboard)
-    view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} onScanAgain={scanAgain} />;
+    view = <Dashboard key="d" result={dashboard} audit={audit} emailDelivery={emailDelivery} onReset={reset} onScanAgain={scanAgain} refreshing={refreshingPrefs} />;
   else if (stage === "dashboard")
     view = (
       <ProgressiveDashboardShell
@@ -4875,6 +4896,7 @@ export default function OneExperience() {
         preferenceProfile={preferenceProfile}
         elapsedMs={elapsedMs}
         onReset={reset}
+        refreshing={refreshingPrefs}
       />
     );
   else if (stage === "empty")
