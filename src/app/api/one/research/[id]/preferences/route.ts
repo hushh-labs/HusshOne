@@ -5,6 +5,7 @@ import {
   enqueueSocialRefreshJobs,
   getArchiveFreshness,
   getConnectedFeedProfiles,
+  getLinkedInConnection,
   getResearchJob,
   getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash,
@@ -138,12 +139,18 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     // re-scan and no schema migration. `usingConnectionsFallback` = we're relying purely on live connections
     // (the scan input had none), which also triggers the initial archive fill below.
     const connectedProfiles = await getConnectedFeedProfiles(verified.uid).catch(() => []);
-    const effectiveConsent = stored.socialPreferenceConsent === true || connectedProfiles.length > 0;
+    // LinkedIn is also a feed now (we scrape the member's posts). A LinkedIn-only professional — the whole
+    // reason for this — must get the layer too, so a LinkedIn connection counts as consent + a feed source.
+    const linkedinConnection = await getLinkedInConnection(verified.uid).catch(() => null);
+    const linkedinProfileUrl = linkedinConnection?.profileUrl ?? null;
+    const hasLinkedInFeed = !!linkedinProfileUrl;
+    const effectiveConsent = stored.socialPreferenceConsent === true || connectedProfiles.length > 0 || hasLinkedInFeed;
     const effectiveSocialProfiles: SocialProfileFull[] = stored.socialProfiles?.length
       ? (stored.socialProfiles as SocialProfileFull[])
       : connectedProfiles;
-    const usingConnectionsFallback = !stored.socialProfiles?.length && connectedProfiles.length > 0;
-    const effectivelyEnabled = effectiveConsent && effectiveSocialProfiles.length > 0;
+    const hasAnyFeedSource = effectiveSocialProfiles.length > 0 || hasLinkedInFeed;
+    const usingConnectionsFallback = !stored.socialProfiles?.length && (connectedProfiles.length > 0 || hasLinkedInFeed);
+    const effectivelyEnabled = effectiveConsent && hasAnyFeedSource;
 
     if (
       result &&
@@ -203,7 +210,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return NextResponse.json({ ok: true, preferenceStatus: v3Status, preferenceProfile: v3.profile, result: merged ?? result });
     }
 
-    if (!effectiveConsent || !effectiveSocialProfiles.length) {
+    if (!effectiveConsent || !hasAnyFeedSource) {
       const durationMs = Date.now() - startedAt;
       await logUserPreferenceRun({
         firebaseUid: verified.uid,
@@ -250,6 +257,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
               // No `refresh` flag → the social-archive worker runs the staged deep climb (initial full fill).
               metadata: { url: p.profileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id },
             }));
+          // LinkedIn posts initial fill — a connected LinkedIn account (even with no IG/X/Threads) gets its
+          // activity feed scraped so a LinkedIn-only professional's posts reach synthesis.
+          if (linkedinProfileUrl) {
+            const handle = linkedinProfileUrl.replace(/\/+$/, "").split("/").pop() || "linkedin";
+            fillJobs.push({ platform: "linkedin", publicId: handle, metadata: { url: linkedinProfileUrl, maxPosts: REFRESH_MAX_POSTS, scanRunId: id } });
+          }
           if (fillJobs.length) {
             void enqueueSocialRefreshJobs({ firebaseUid: verified.uid, jobs: fillJobs }).catch(() => 0);
             logInfo({ event: "one.preference.connect_backfill_enqueued", severity: "INFO", scanRunId: id, platforms: fillJobs.map((j) => j.platform) });

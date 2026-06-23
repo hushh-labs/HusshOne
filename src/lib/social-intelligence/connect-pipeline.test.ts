@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getLatestScanForUser: vi.fn(),
   getResearchJob: vi.fn(),
   getConnectedFeedProfiles: vi.fn(async () => [] as unknown[]),
+  getLinkedInConnection: vi.fn(async (): Promise<unknown> => null),
   hasPendingPreferenceWork: vi.fn(async () => false),
   enqueueSocialRefreshJobs: vi.fn(async (_input: EnqueueArg) => 1),
 }));
@@ -17,6 +18,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   getLatestScanForUser: mocks.getLatestScanForUser,
   getResearchJob: mocks.getResearchJob,
   getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
+  getLinkedInConnection: mocks.getLinkedInConnection,
   hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
   PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
@@ -32,6 +34,7 @@ function resetMocks() {
   vi.clearAllMocks();
   // clearAllMocks wipes call history but NOT implementations — re-establish the defaults each test.
   mocks.getConnectedFeedProfiles.mockResolvedValue([]);
+  mocks.getLinkedInConnection.mockResolvedValue(null);
   mocks.hasPendingPreferenceWork.mockResolvedValue(false);
   mocks.enqueueSocialRefreshJobs.mockResolvedValue(1);
 }
@@ -121,9 +124,31 @@ describe("maybeEnqueueConnectDeepScrape", () => {
   });
 
   it("ignores non-deep platforms", async () => {
-    const res = await maybeEnqueueConnectDeepScrape({ firebaseUid: "u1", platform: "linkedin", username: "a", profileUrl: "https://linkedin.com/in/a" });
+    const res = await maybeEnqueueConnectDeepScrape({ firebaseUid: "u1", platform: "facebook", username: "a", profileUrl: "https://facebook.com/a" });
     expect(res).toEqual({ enqueued: false, reason: "not_deep_platform" });
     expect(mocks.getLatestScanForUser).not.toHaveBeenCalled();
+  });
+
+  it("enqueues a LinkedIn POSTS deep-scrape (linkedin is a deep platform now)", async () => {
+    withConsent(true);
+    const res = await maybeEnqueueConnectDeepScrape({
+      firebaseUid: "u1",
+      platform: "linkedin",
+      username: "ankit-kumar-singh",
+      profileUrl: "https://www.linkedin.com/in/ankit-kumar-singh/",
+    });
+    expect(res).toEqual({ enqueued: true, reason: "enqueued" });
+    expect(firstJob()?.jobs[0]?.platform).toBe("linkedin");
+    expect(firstJob()?.jobs[0]?.metadata).not.toHaveProperty("refresh");
+  });
+
+  it("a connected LinkedIn account is itself consent (LinkedIn-only professional)", async () => {
+    mocks.getLatestScanForUser.mockResolvedValue({ id: "scan-1" });
+    mocks.getResearchJob.mockResolvedValue({ input: { socialPreferenceConsent: false } });
+    mocks.getConnectedFeedProfiles.mockResolvedValue([]); // no IG/X/Threads
+    mocks.getLinkedInConnection.mockResolvedValue({ profileUrl: "https://www.linkedin.com/in/ankit/" });
+    const res = await maybeEnqueueConnectDeepScrape({ firebaseUid: "u1", platform: "linkedin", username: "ankit", profileUrl: "https://www.linkedin.com/in/ankit/" });
+    expect(res).toEqual({ enqueued: true, reason: "enqueued" });
   });
 });
 

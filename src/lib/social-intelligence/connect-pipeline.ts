@@ -16,6 +16,7 @@ import {
   enqueueSocialRefreshJobs,
   getConnectedFeedProfiles,
   getLatestScanForUser,
+  getLinkedInConnection,
   getResearchJob,
   hasPendingPreferenceWork,
   PREFERENCE_RECOMPUTE_PLATFORM,
@@ -24,7 +25,9 @@ import {
 // Matches the social-archive worker's FIRST_TARGET — a job with this maxPosts and NO `refresh` flag enters
 // the staged 240→512 deep climb (a `refresh:true` job would be the shallow recent-window path instead).
 const FIRST_TARGET = 240;
-const DEEP_PLATFORMS = new Set(["instagram", "threads", "x"]);
+// linkedin is a deep platform too now: connecting it scrapes the member's activity feed (posts), not just
+// the career profile — professionals push on LinkedIn, so their posts must reach the preference layer.
+const DEEP_PLATFORMS = new Set(["instagram", "threads", "x", "linkedin"]);
 
 export interface PreferenceConsentContext {
   consent: boolean;
@@ -44,11 +47,16 @@ export async function getPreferenceConsentContext(firebaseUid: string): Promise<
       const input = (job?.input ?? null) as { socialPreferenceConsent?: unknown } | null;
       consent = input?.socialPreferenceConsent === true;
     }
-    // Connect-later opt-in: a connected feed account anywhere means preference building is consented, even
-    // when the scan the dashboard polls was created with socials skipped.
+    // Connect-later opt-in: a connected feed account (IG/Threads/X) OR a connected LinkedIn account anywhere
+    // means preference building is consented, even when the scan the dashboard polls was created with socials
+    // skipped. LinkedIn counts because a professional may connect ONLY LinkedIn — and we now scrape its posts.
     if (!consent) {
       const connected = await getConnectedFeedProfiles(firebaseUid).catch(() => []);
       if (connected.length > 0) consent = true;
+      else {
+        const linkedin = await getLinkedInConnection(firebaseUid).catch(() => null);
+        if (linkedin) consent = true;
+      }
     }
     return { consent, scanRunId };
   } catch {

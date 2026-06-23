@@ -1,10 +1,17 @@
 import type { LinkedInProfileFull } from "@/lib/linkedin/profile";
+import type { LinkedInPostsProfile } from "@/lib/linkedin/posts";
 import type { InstagramProfileFull } from "@/lib/instagram/profile";
 import type { ThreadsProfileFull } from "@/lib/threads/profile";
 import type { XProfileFull } from "@/lib/x/profile";
 import type { UserPreferenceProfile } from "@/lib/social-intelligence/preference-profile";
 
+/** The IG/Threads/X feed profiles used by the v2 fast-pass build (scan.input snapshot). */
 export type SocialProfileFull = InstagramProfileFull | ThreadsProfileFull | XProfileFull;
+
+/** What the social ARCHIVE pipeline ingests: the feed profiles PLUS LinkedIn posts (a member's activity
+ *  feed). LinkedIn posts are kept OUT of SocialProfileFull on purpose — they belong in the archive/synthesis
+ *  path (extractSocialArchive → SocialContentItem → recompute), not the v2 fast pass which reads scan.input. */
+export type ArchiveSocialProfile = SocialProfileFull | LinkedInPostsProfile;
 
 export type LocationMode = "precise" | "limited";
 export type ConfidenceLevel = "low" | "medium" | "high";

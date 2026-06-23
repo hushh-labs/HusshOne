@@ -5,6 +5,7 @@ import { PREFERENCE_SYNTHESIS_VERSION } from "@/lib/social-intelligence/preferen
 const mocks = vi.hoisted(() => ({
   getResearchJob: vi.fn(),
   getConnectedFeedProfiles: vi.fn(async (): Promise<unknown[]> => []),
+  getLinkedInConnection: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfile: vi.fn(async (): Promise<unknown> => null),
   getUserPreferenceProfileByInputHash: vi.fn(async (): Promise<unknown> => null),
   getArchiveFreshness: vi.fn(async (): Promise<number | null> => null),
@@ -34,6 +35,7 @@ vi.mock("@/lib/auth/verify", () => ({
 vi.mock("@/lib/db/scan-store", () => ({
   getResearchJob: mocks.getResearchJob,
   getConnectedFeedProfiles: mocks.getConnectedFeedProfiles,
+  getLinkedInConnection: mocks.getLinkedInConnection,
   getUserPreferenceProfile: mocks.getUserPreferenceProfile,
   getUserPreferenceProfileByInputHash: mocks.getUserPreferenceProfileByInputHash,
   getArchiveFreshness: mocks.getArchiveFreshness,

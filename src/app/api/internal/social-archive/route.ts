@@ -15,13 +15,14 @@ import {
 import { scrapeInstagramProfileUrl } from "@/lib/instagram/scraper-profile";
 import { scrapeThreadsProfileUrl } from "@/lib/threads/scraper-profile";
 import { scrapeXProfileUrl } from "@/lib/x/scraper-profile";
+import { scrapeLinkedInPostsUrl } from "@/lib/linkedin/scraper-posts";
 import { PROFILE_VERSION } from "@/lib/social-intelligence/preference-profile";
-import type { SocialProfileFull } from "@/lib/ria/types";
+import type { ArchiveSocialProfile } from "@/lib/ria/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const DEEP_PLATFORMS = ["instagram", "threads", "x"];
+const DEEP_PLATFORMS = ["instagram", "threads", "x", "linkedin"];
 // Staged batched deep-scrape: the first scrape targets FIRST_TARGET posts, then each successful run grows
 // the SAME job by STEP up to CEILING (or until the account is exhausted). Asking for the full depth in one
 // shot was timing out on the node-side fetch (~120s); modest batches finish reliably and depth fills in
@@ -35,17 +36,18 @@ const TOLERANCE = 12; // in-VM dedupe can return a few fewer than requested — 
 
 /** How many posts the scraper actually returned this run (raw, pre-index-dedupe) — the honest signal for
  *  whether more depth is available. (indexed.perPlatform[].items is deduped/capped, so unreliable here.) */
-function scrapedPostCount(platform: string, profile: SocialProfileFull): number {
-  const p = profile as { recentPublicPosts?: unknown[]; recentThreads?: unknown[]; timelineItems?: unknown[] };
+function scrapedPostCount(platform: string, profile: ArchiveSocialProfile): number {
+  const p = profile as { recentPublicPosts?: unknown[]; recentThreads?: unknown[]; timelineItems?: unknown[]; recentPosts?: unknown[] };
   if (platform === "instagram") return p.recentPublicPosts?.length ?? 0;
   if (platform === "threads") return p.recentThreads?.length ?? 0;
   if (platform === "x") return p.timelineItems?.length ?? 0;
+  if (platform === "linkedin") return p.recentPosts?.length ?? 0;
   return 0;
 }
 
 /** The account's stated total post/thread count (handles "1,234" / "1.2K" / "3M"). Best-effort: returns
  *  null when it can't parse confidently, so it only ever STOPS the ladder early, never falsely. */
-function accountTotalCount(platform: string, profile: SocialProfileFull): number | null {
+function accountTotalCount(platform: string, profile: ArchiveSocialProfile): number | null {
   const stats = (profile as { stats?: { posts?: string | null; threads?: string | null } }).stats;
   const raw = platform === "threads" ? stats?.threads : stats?.posts;
   if (typeof raw !== "string") return null;
@@ -60,7 +62,7 @@ function accountTotalCount(platform: string, profile: SocialProfileFull): number
   return n > 0 ? Math.round(n) : null;
 }
 
-async function scrapeProfile(platform: string, url: string, maxPosts: number): Promise<SocialProfileFull | null> {
+async function scrapeProfile(platform: string, url: string, maxPosts: number): Promise<ArchiveSocialProfile | null> {
   if (platform === "instagram") {
     const outcome = await scrapeInstagramProfileUrl(url, { maxPosts });
     return outcome.status === "profile" ? outcome.profile : null;
@@ -71,6 +73,12 @@ async function scrapeProfile(platform: string, url: string, maxPosts: number): P
   }
   if (platform === "x") {
     const outcome = await scrapeXProfileUrl(url, { maxPosts });
+    return outcome.status === "profile" ? outcome.profile : null;
+  }
+  if (platform === "linkedin") {
+    // LinkedIn posts (activity feed) — best-effort + isolated. authwall/empty → null → the staged logic
+    // retries with backoff (a block never touches profile-connect; it just leaves a one.scrape.result trail).
+    const outcome = await scrapeLinkedInPostsUrl(url, { maxPosts });
     return outcome.status === "profile" ? outcome.profile : null;
   }
   return null;

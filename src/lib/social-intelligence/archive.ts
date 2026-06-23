@@ -4,7 +4,7 @@
    the rows (and evicts the oldest beyond this window) and the media worker reads the media assets.
    Kept pure so it is exhaustively unit-testable. */
 import crypto from "node:crypto";
-import type { SocialProfileFull } from "@/lib/ria/types";
+import type { ArchiveSocialProfile, SocialProfileFull } from "@/lib/ria/types";
 
 /** Rolling-window size: the newest N items/profile we keep + feed the intelligence layer. 512 fresh
  *  posts beat an unbounded pile of stale ones — and the synthesis layer reads far fewer per topic, so
@@ -44,7 +44,7 @@ export function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function platformKey(profile: SocialProfileFull): string {
+function platformKey(profile: ArchiveSocialProfile): string {
   return profile.platform.trim().toLowerCase();
 }
 
@@ -165,7 +165,24 @@ function xItems(profile: Extract<SocialProfileFull, { platform: "X" }>, limit: n
   });
 }
 
-function profileItems(profile: SocialProfileFull, limit: number): ArchiveContentRow[] {
+function linkedinItems(profile: Extract<ArchiveSocialProfile, { platform: "LinkedIn" }>, limit: number): ArchiveContentRow[] {
+  const publicId = profile.username;
+  return (profile.recentPosts ?? []).slice(0, limit).map((post, index) => {
+    const mediaCandidates: Array<[string, ArchiveMediaType]> = [];
+    for (const url of post.media ?? []) mediaCandidates.push([url ?? "", "image"]);
+    const itemType = post.type === "reshare" || post.type === "reply" || post.type === "article" ? post.type : "post";
+    return buildRow("linkedin", publicId, index, {
+      url: cleanUrl(post.url),
+      itemType,
+      text: cleanText(post.text),
+      timestamp: cleanText(post.timestamp),
+      mediaCandidates,
+      metrics: metricsObject({ reactions: post.reactions, comments: post.comments, reposts: post.reposts }),
+    });
+  });
+}
+
+function profileItems(profile: ArchiveSocialProfile, limit: number): ArchiveContentRow[] {
   switch (profile.platform) {
     case "Instagram":
       return instagramItems(profile, limit);
@@ -173,6 +190,8 @@ function profileItems(profile: SocialProfileFull, limit: number): ArchiveContent
       return threadsItems(profile, limit);
     case "X":
       return xItems(profile, limit);
+    case "LinkedIn":
+      return linkedinItems(profile, limit);
     default:
       return [];
   }
@@ -181,7 +200,7 @@ function profileItems(profile: SocialProfileFull, limit: number): ArchiveContent
 /** Extract the full archive from scraped profiles. Pure: no DB, no network. Media is deduped
  *  globally by (platform, assetHash) so re-shared images are analyzed once. */
 export function extractSocialArchive(
-  profiles: SocialProfileFull[] | undefined,
+  profiles: ArchiveSocialProfile[] | undefined,
   opts: { maxItemsPerProfile?: number } = {},
 ): SocialArchive {
   const limit = Math.max(0, Math.min(opts.maxItemsPerProfile ?? ARCHIVE_MAX_ITEMS_PER_PROFILE, ARCHIVE_MAX_ITEMS_PER_PROFILE));

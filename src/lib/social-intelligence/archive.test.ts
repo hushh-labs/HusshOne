@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { extractSocialArchive, ARCHIVE_MAX_ITEMS_PER_PROFILE, sha256 } from "./archive";
-import type { SocialProfileFull } from "@/lib/ria/types";
+import type { ArchiveSocialProfile, SocialProfileFull } from "@/lib/ria/types";
 
 function instagram(posts: number): SocialProfileFull {
   return {
@@ -87,6 +87,36 @@ describe("extractSocialArchive", () => {
     expect(archive.content.map((c) => c.itemType)).toEqual(["tweet", "reply"]);
     expect(archive.media).toHaveLength(1);
     expect(archive.perPlatform.x).toEqual({ items: 2, media: 1 });
+  });
+
+  it("indexes LinkedIn posts as a feed platform (types post/reshare/reply/article + reaction metrics)", () => {
+    const linkedin: ArchiveSocialProfile = {
+      platform: "LinkedIn",
+      username: "ankit-kumar-singh",
+      profileUrl: "https://www.linkedin.com/in/ankit-kumar-singh/",
+      source: "scraper",
+      recentPosts: [
+        {
+          urn: "urn:li:activity:111",
+          url: "https://www.linkedin.com/feed/update/urn:li:activity:111/",
+          type: "post",
+          text: "Shipping a new AI feature today.",
+          timestamp: "2d",
+          reactions: "120",
+          comments: "8",
+          reposts: "3",
+          media: ["https://media.licdn.com/post-111.jpg"],
+        },
+        { urn: "urn:li:activity:222", url: "https://www.linkedin.com/feed/update/urn:li:activity:222/", type: "reshare", text: "Great read", reactions: "5" },
+      ],
+    };
+    const archive = extractSocialArchive([linkedin]);
+    expect(archive.content.map((c) => c.itemType)).toEqual(["post", "reshare"]);
+    expect(archive.content[0].platform).toBe("linkedin");
+    expect(archive.content[0].text).toBe("Shipping a new AI feature today.");
+    expect(archive.content[0].metrics).toEqual({ reactions: "120", comments: "8", reposts: "3" });
+    expect(archive.content[0].media?.primaryUrl).toBe("https://media.licdn.com/post-111.jpg");
+    expect(archive.perPlatform.linkedin.items).toBe(2);
   });
 
   it("returns an empty archive for no profiles", () => {
