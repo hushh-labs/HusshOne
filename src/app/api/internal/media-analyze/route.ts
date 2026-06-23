@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
   for (const asset of assets) {
     try {
-      const result = await analyzeMediaAsset({ sourceUrl: asset.sourceUrl, mediaType: asset.mediaType, assetHash: asset.assetHash });
+      const result = await analyzeMediaAsset({ sourceUrl: asset.sourceUrl, mediaType: asset.mediaType, assetHash: asset.assetHash, context: asset.caption ?? "" });
       await updateMediaAssetAnalysis({
         assetId: asset.id,
         analysisStatus: result.status,

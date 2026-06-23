@@ -20,8 +20,10 @@ import {
   getLinkedInConnection,
   getResearchJob,
   hasPendingPreferenceWork,
+  requeueOutdatedMediaAssets,
   PREFERENCE_RECOMPUTE_PLATFORM,
 } from "@/lib/db/scan-store";
+import { MEDIA_ANALYSIS_VERSION } from "@/lib/social-intelligence/media-analyze";
 
 // Matches the social-archive worker's FIRST_TARGET — a job with this maxPosts and NO `refresh` flag enters
 // the staged 240→512 deep climb (a `refresh:true` job would be the shallow recent-window path instead).
@@ -185,6 +187,10 @@ export async function enqueueManualRefresh(firebaseUid: string): Promise<ManualR
     if (!jobs.length) return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "nothing_connected" };
 
     await enqueueSocialRefreshJobs({ firebaseUid, jobs });
+    // v5: force a re-analysis of recently-rescraped images that were analyzed on an OLDER media version, so the
+    // freshly pulled posts get the deep pixel read (clothing/eyewear/footwear/place/etc). Fresh-URL-windowed in
+    // the helper so expired-CDN assets aren't churned. Best-effort — never blocks the refresh.
+    const requeued = await requeueOutdatedMediaAssets({ firebaseUid, currentVersion: MEDIA_ANALYSIS_VERSION, limit: 256 }).catch(() => 0);
     // Also enqueue a recompute so synthesis re-runs even if a scrape returns no new posts (the archive
     // worker also enqueues one after indexing — dedup makes the double safe).
     await enqueueSocialRefreshJobs({
@@ -192,7 +198,7 @@ export async function enqueueManualRefresh(firebaseUid: string): Promise<ManualR
       jobs: [{ platform: PREFERENCE_RECOMPUTE_PLATFORM, publicId: scanRunId ?? "latest", metadata: { scanRunId }, priority: 1 }],
     }).catch(() => 0);
 
-    console.log(JSON.stringify({ event: "one.preference.manual_refresh", platforms: jobs.map((j) => j.platform), deepScraped, scanRunId }));
+    console.log(JSON.stringify({ event: "one.preference.manual_refresh", platforms: jobs.map((j) => j.platform), deepScraped, requeuedMedia: requeued, scanRunId }));
     return { ok: true, alreadyRunning: false, platforms: jobs.map((j) => j.platform), deepScraped, recompute: true, reason: "enqueued" };
   } catch {
     return { ok: false, alreadyRunning: false, platforms: [], deepScraped: [], recompute: false, reason: "error" };

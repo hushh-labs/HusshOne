@@ -78,6 +78,7 @@ const mocks = vi.hoisted(() => ({
   synthesizePreferences: vi.fn(),
   toRenderablePreferenceProfile: vi.fn(),
   buildPreferenceCollage: vi.fn(() => []),
+  aggregateLifestyleFacts: vi.fn(() => ({ sampleSize: 0, topBrands: [], topColours: [], eyewear: { present: 0, absent: 0, topStyles: [] }, footwear: [], foods: [], places: [], soloVsSocial: { solo: 0, group: 0 }, timeOfDay: [], surroundings: [], events: { events: 0, casual: 0, topTypes: [] } })),
 }));
 
 vi.mock("@/lib/auth/internal", () => ({
@@ -106,6 +107,7 @@ vi.mock("@/lib/social-intelligence/preference-synthesis", () => ({
   // Faithful coverage counter over whatever merged answers the route hands us.
   toRenderablePreferenceProfile: mocks.toRenderablePreferenceProfile,
   buildPreferenceCollage: mocks.buildPreferenceCollage,
+  aggregateLifestyleFacts: mocks.aggregateLifestyleFacts,
 }));
 
 import { POST } from "./route";
@@ -325,38 +327,10 @@ describe("POST /api/internal/preference-recompute", () => {
     expect(json.results[0]).toMatchObject({ answeredTotal: 28, carriedForward: 22, preferenceStatus: "completed" });
   });
 
-  it("does NOT carry a sensitive question unless the prior was self-declared", async () => {
-    const sensitiveId = PREFERENCE_QUESTIONS.find((q) => q.sensitive)!.id;
-    mocks.getUserPreferenceProfile.mockResolvedValue({
-      status: "completed",
-      version: "test-v3",
-      profile: { generatedAt: new Date().toISOString(), questionAnswers: [priorAnswer(sensitiveId, "answered", "observed")] },
-    });
-    mocks.synthesizePreferences
-      .mockResolvedValueOnce(fullResult(0))
-      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
-
-    const res = await POST(req());
-    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
-
-    expect(json.results[0]).toMatchObject({ carriedForward: 0 });
-  });
-
-  it("DOES carry a sensitive question when the prior was self-declared", async () => {
-    const sensitiveId = PREFERENCE_QUESTIONS.find((q) => q.sensitive)!.id;
-    mocks.getUserPreferenceProfile.mockResolvedValue({
-      status: "completed",
-      version: "test-v3",
-      profile: { generatedAt: new Date().toISOString(), questionAnswers: [priorAnswer(sensitiveId, "answered", "self_declared")] },
-    });
-    mocks.synthesizePreferences
-      .mockResolvedValueOnce(fullResult(0))
-      .mockImplementation(async (input: { questions: Array<{ id: string }> }) => rePassResult(input.questions, 0));
-
-    const res = await POST(req());
-    const json = (await res.json()) as { results: Array<Record<string, unknown>> };
-
-    expect(json.results[0]).toMatchObject({ carriedForward: 1, answeredTotal: 1 });
+  // v5 has no sensitive questions (Partner & Romance removed), so the worker's SENSITIVE_IDS carry-forward
+  // guardrail is moot — the generic carry-forward (covered above) applies to every question uniformly.
+  it("v5 registry has no sensitive questions, so no special carry-forward casing applies", () => {
+    expect(PREFERENCE_QUESTIONS.some((q) => q.sensitive)).toBe(false);
   });
 
   it("does NOT carry from a prior profile older than the age cap", async () => {

@@ -1861,6 +1861,108 @@ function PreferenceIntelligence({
         );
       })()}
 
+      {(() => {
+        // v5: factual "lifestyle at a glance" cards aggregated from the deep per-image reads — what you
+        // wear/eat, your colours, places, solo-vs-social, when you post. Present only on a v5 profile.
+        type LF = { value: string; count: number };
+        const lifestyle = (profile as {
+          lifestyle?: {
+            sampleSize?: number;
+            topBrands?: LF[];
+            topColours?: LF[];
+            footwear?: LF[];
+            foods?: LF[];
+            places?: LF[];
+            surroundings?: LF[];
+            timeOfDay?: LF[];
+            eyewear?: { present?: number; absent?: number; topStyles?: LF[] };
+            soloVsSocial?: { solo?: number; group?: number };
+            events?: { events?: number; casual?: number; topTypes?: LF[] };
+          } | null;
+        }).lifestyle;
+        if (!lifestyle) return null;
+        const listCards: Array<{ title: string; items: LF[] }> = [
+          { title: "Top brands", items: lifestyle.topBrands ?? [] },
+          { title: "Colours you wear", items: lifestyle.topColours ?? [] },
+          { title: "Footwear", items: lifestyle.footwear ?? [] },
+          { title: "What you eat", items: lifestyle.foods ?? [] },
+          { title: "Places", items: lifestyle.places ?? [] },
+          { title: "Surroundings", items: lifestyle.surroundings ?? [] },
+          { title: "When you post", items: lifestyle.timeOfDay ?? [] },
+        ].filter((c) => c.items.length);
+        const eyewear = lifestyle.eyewear;
+        const hasEyewear = Boolean(eyewear && (eyewear.present ?? 0) + (eyewear.absent ?? 0) > 0);
+        const social = lifestyle.soloVsSocial;
+        const hasSocial = Boolean(social && (social.solo ?? 0) + (social.group ?? 0) > 0);
+        const events = lifestyle.events;
+        const hasEvents = Boolean(events && (events.events ?? 0) + (events.casual ?? 0) > 0);
+        if (!listCards.length && !hasEyewear && !hasSocial && !hasEvents) return null;
+        const pill = (it: LF) => (it.count > 1 ? `${it.value} ·${it.count}` : it.value);
+        return (
+          <div className="pref-lifestyle" aria-label="Lifestyle at a glance">
+            <span className="pref-lifestyle-head">
+              Lifestyle at a glance
+              {lifestyle.sampleSize ? ` · from ${lifestyle.sampleSize} ${lifestyle.sampleSize === 1 ? "image" : "images"}` : ""}
+            </span>
+            <div className="pref-lifestyle-grid">
+              {listCards.map((card) => (
+                <div className="pref-lifestyle-card" key={card.title}>
+                  <span className="pref-lifestyle-card-title">{card.title}</span>
+                  <div className="pref-lifestyle-pills">
+                    {card.items.slice(0, 3).map((it) => (
+                      <span className="pref-lifestyle-pill" key={it.value}>
+                        {pill(it)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {hasEyewear && eyewear ? (
+                <div className="pref-lifestyle-card">
+                  <span className="pref-lifestyle-card-title">Eyewear</span>
+                  <div className="pref-lifestyle-pills">
+                    <span className="pref-lifestyle-pill">
+                      {(eyewear.present ?? 0) >= (eyewear.absent ?? 0) ? "usually glasses" : "usually no glasses"}
+                    </span>
+                    {(eyewear.topStyles ?? []).slice(0, 2).map((it) => (
+                      <span className="pref-lifestyle-pill" key={it.value}>
+                        {pill(it)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {hasSocial && social ? (
+                <div className="pref-lifestyle-card">
+                  <span className="pref-lifestyle-card-title">Solo vs social</span>
+                  <div className="pref-lifestyle-pills">
+                    <span className="pref-lifestyle-pill">{(social.group ?? 0) > (social.solo ?? 0) ? "more in groups" : "more solo"}</span>
+                    <span className="pref-lifestyle-pill">solo ·{social.solo ?? 0}</span>
+                    <span className="pref-lifestyle-pill">group ·{social.group ?? 0}</span>
+                  </div>
+                </div>
+              ) : null}
+              {hasEvents && events ? (
+                <div className="pref-lifestyle-card">
+                  <span className="pref-lifestyle-card-title">Events</span>
+                  <div className="pref-lifestyle-pills">
+                    {(events.topTypes ?? []).length
+                      ? (events.topTypes ?? []).slice(0, 3).map((it) => (
+                          <span className="pref-lifestyle-pill" key={it.value}>
+                            {pill(it)}
+                          </span>
+                        ))
+                      : (
+                        <span className="pref-lifestyle-pill">{(events.events ?? 0) > (events.casual ?? 0) ? "often at events" : "mostly casual"}</span>
+                      )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        );
+      })()}
+
       {questionAnswers.length ? (
         <div className="pref-question-sections" aria-label="Preference question answers">
           {sectionRows.map(({ summary, answers }) => (

@@ -101,25 +101,25 @@ describe("buildUserPreferenceProfile", () => {
         "AI, product, privacy, and startup building",
       ]),
     );
-    expect(profile.questionAnswers.find((answer) => answer.questionId === "travel_perfect_escape")).toMatchObject({
+    // v5 section ids: travel_kind_of_place / look_color_palette / food_go_to_cuisine (Romance removed).
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "travel_kind_of_place")).toMatchObject({
       status: expect.stringMatching(/answered|inferred|needs_confirmation/),
       normalizedValue: "beach",
       evidenceIds: expect.arrayContaining([expect.any(String)]),
     });
-    expect(profile.questionAnswers.find((answer) => answer.questionId === "style_power_color")).toMatchObject({
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "look_color_palette")).toMatchObject({
       status: expect.stringMatching(/answered|inferred|needs_confirmation/),
       evidenceIds: expect.arrayContaining([expect.any(String)]),
     });
-    expect(profile.questionAnswers.find((answer) => answer.questionId === "food_death_row_meal")).toMatchObject({
-      status: "needs_confirmation",
+    expect(profile.questionAnswers.find((answer) => answer.questionId === "food_go_to_cuisine")).toMatchObject({
+      status: expect.stringMatching(/answered|inferred|needs_confirmation/),
       evidenceIds: expect.arrayContaining([expect.any(String)]),
     });
-    expect(profile.questionAnswers.find((answer) => answer.questionId === "romance_non_negotiables")).toMatchObject({
-      status: "needs_confirmation",
-      answer: null,
-      unknownReason: "unsafe_to_infer",
-      evidenceIds: [],
-    });
+    // No question is sensitive in v5 (Partner & Romance section removed).
+    expect(PREFERENCE_QUESTIONS.some((q) => q.sensitive)).toBe(false);
+    expect(new Set(PREFERENCE_QUESTIONS.map((q) => q.sectionId))).toEqual(
+      new Set(["brand_look", "food_drink", "travel_places", "social_vibe", "lifestyle_daily", "mindset_values"]),
+    );
     expect(profile.collage.some((item) => item.imageUrl === "https://cdn.example.com/goa.jpg")).toBe(true);
     expect(profile.mediaIntelligence).toMatchObject({
       status: "pending",

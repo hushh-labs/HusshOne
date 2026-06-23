@@ -45,7 +45,11 @@ const FETCH_TIMEOUT_MS = 150_000;
 // rev "6": MULTIMODAL synthesis — each section now SEES the real images (Vertex fileData) + 2 agents/section
 // merged by consensus + always-answer. The biggest quality lever yet (the model reads the photos, not just
 // text tokens). Forces a full recompute.
-const PREFERENCE_DATA_SHAPE_REV = "6";
+// rev "7": DEEP PIXEL extraction + redesigned 6 sections (brand_look/food_drink/travel_places/social_vibe/
+// lifestyle_daily/mindset_values; Romance removed). Per-image now yields clothing brand+colour+type,
+// eyewear, footwear, objects, table/background items, surroundings, pose, expression, people count, event,
+// place + FACE/WEB Vision signals — all routed into the new sections. Forces a full recompute.
+const PREFERENCE_DATA_SHAPE_REV = "7";
 
 // Per-section multimodal: how many real images each section agent is shown (Vertex fileData parts), and how
 // many independent agents read each section (their answers are merged by consensus — agreement lifts
@@ -95,26 +99,35 @@ export interface PreferenceSynthesisResult {
   context: { platforms: string[]; contentItems: number; mediaAnalyzed: number };
 }
 
-/* ── Section evidence routing ───────────────────────────────────────────────────────────────────
-   For each section we declare: which media-signal keys matter (read from each analysis's
-   vision/semantic, including the NEW optional semantic fields another agent is adding), and which
-   text keywords help pre-filter the most relevant snippets. partner_romance is TEXT ONLY (sensitive):
-   it gets no media signals so we never feed a face/scene to a romance inference. */
+/* ── Section evidence routing (v5) ───────────────────────────────────────────────────────────────
+   For each of the 6 preference sections we declare: which media-signal keys matter (read from each
+   analysis's vision/semantic, incl. the v5 deep pixel fields — clothing/eyewear/footwear/objects/
+   surroundings/place/expression/pose/faces), and which text keywords help pre-filter snippets. Some
+   fields are nested objects/arrays-of-objects (clothing, eyewear, footwear, faces, behavioralRead) →
+   they carry a `transform` so readSignalFromAnalysis flattens them to citable strings. */
+
+export type MediaSignalTransform = "clothing" | "eyewear" | "footwear" | "facesCount" | "objectField";
 
 export interface SectionEvidenceSpec {
-  /** Media-signal sources pulled from each completed analysis. `path` is vision|semantic; `key` is
-   *  the field; `array` says whether the value is a string[] (collected) or a scalar string. */
-  mediaSignals: Array<{ label: string; path: "vision" | "semantic"; key: string; array: boolean }>;
+  /** Media-signal sources pulled from each completed analysis. `path` is vision|semantic; `key` is the
+   *  field; `array` says whether the value is a string[] (collected) or a scalar string; `transform`
+   *  (optional) flattens a nested object/array-of-objects to citable strings; `objectKey` names the
+   *  inner field for transform "objectField" (e.g. behavioralRead.sociability). */
+  mediaSignals: Array<{ label: string; path: "vision" | "semantic"; key: string; array: boolean; transform?: MediaSignalTransform; objectKey?: string }>;
   /** Lowercase keyword fragments used to bias text-snippet selection toward this section. */
   textKeywords: string[];
-  /** When true this section never receives media signals (sensitive — text/self-declared only). */
+  /** When true this section never receives media signals (text/self-declared only). Unused in v5. */
   textOnly?: boolean;
 }
 
 export const SECTION_EVIDENCE: Record<PreferenceQuestionSectionId, SectionEvidenceSpec> = {
-  style_brands_color: {
+  brand_look: {
     mediaSignals: [
       { label: "brands", path: "semantic", key: "brands", array: true },
+      { label: "clothing", path: "semantic", key: "clothing", array: false, transform: "clothing" },
+      { label: "eyewear", path: "semantic", key: "eyewear", array: false, transform: "eyewear" },
+      { label: "footwear", path: "semantic", key: "footwear", array: false, transform: "footwear" },
+      { label: "accessories", path: "semantic", key: "accessories", array: true },
       { label: "logos", path: "vision", key: "logos", array: true },
       { label: "dominantColors", path: "vision", key: "dominantColors", array: true },
       { label: "colorAesthetic", path: "semantic", key: "colorAesthetic", array: true },
@@ -123,64 +136,77 @@ export const SECTION_EVIDENCE: Record<PreferenceQuestionSectionId, SectionEviden
     ],
     textKeywords: [
       "brand", "style", "outfit", "wear", "fashion", "color", "colour", "aesthetic", "logo", "luxury",
-      "minimal", "fit check", "sneaker", "streetwear", "wardrobe", "design", "palette",
+      "minimal", "sneaker", "shoes", "glasses", "watch", "streetwear", "wardrobe", "palette",
     ],
   },
-  travel_wanderlust: {
-    mediaSignals: [
-      { label: "travelPlaceType", path: "semantic", key: "travelPlaceType", array: false },
-      { label: "destinationName", path: "semantic", key: "destinationName", array: false },
-      { label: "landmarks", path: "vision", key: "landmarks", array: true },
-      { label: "scene", path: "semantic", key: "scene", array: false },
-    ],
-    textKeywords: [
-      "travel", "trip", "flight", "hotel", "beach", "mountain", "city", "trek", "vacation", "holiday",
-      "wander", "itinerary", "resort", "stay", "airbnb", "destination", "explore", "escape", "abroad",
-    ],
-  },
-  food_culinary: {
+  food_drink: {
     mediaSignals: [
       { label: "foodDrink", path: "semantic", key: "foodDrink", array: true },
       { label: "cuisineCategory", path: "semantic", key: "cuisineCategory", array: false },
       { label: "venueType", path: "semantic", key: "venueType", array: false },
-      { label: "scene", path: "semantic", key: "scene", array: false },
+      { label: "tableItems", path: "semantic", key: "tableItems", array: true },
     ],
     textKeywords: [
       "food", "eat", "dinner", "lunch", "brunch", "cafe", "coffee", "restaurant", "menu", "dish",
-      "cook", "recipe", "drink", "cocktail", "wine", "street food", "chai", "dining", "tasty", "meal",
+      "cook", "recipe", "drink", "cocktail", "wine", "street food", "chai", "dining", "meal",
     ],
   },
-  partner_romance: {
-    // SENSITIVE: text only, never media. We still pre-filter by relationship language, but inference
-    // stays gated to self-declaration via the code guardrail in parseSectionAnswers.
-    mediaSignals: [],
-    textKeywords: [
-      "partner", "love", "relationship", "date", "crush", "romantic", "girlfriend", "boyfriend",
-      "marriage", "wedding", "couple", "my type", "love language", "red flag", "green flag",
-    ],
-    textOnly: true,
-  },
-  deep_likes_dislikes: {
+  travel_places: {
     mediaSignals: [
-      { label: "socialSetting", path: "semantic", key: "socialSetting", array: false },
-      { label: "activity", path: "semantic", key: "activity", array: false },
+      { label: "travelPlaceType", path: "semantic", key: "travelPlaceType", array: false },
+      { label: "destinationName", path: "semantic", key: "destinationName", array: false },
+      { label: "placeGuess", path: "semantic", key: "placeGuess", array: false },
+      { label: "landmarksSeen", path: "semantic", key: "landmarksSeen", array: true },
+      { label: "landmarks", path: "vision", key: "landmarks", array: true },
+      { label: "webEntities", path: "vision", key: "webEntities", array: true },
+      { label: "bestGuessLabels", path: "vision", key: "bestGuessLabels", array: true },
       { label: "scene", path: "semantic", key: "scene", array: false },
-      { label: "timeOfDay", path: "semantic", key: "timeOfDay", array: false },
     ],
     textKeywords: [
-      "love", "hate", "favorite", "favourite", "pet peeve", "annoy", "cringe", "recharge", "alone",
-      "friends", "morning", "introvert", "extrovert", "party", "quiet", "weekend", "vibe", "opinion",
+      "travel", "trip", "flight", "hotel", "beach", "mountain", "city", "trek", "vacation", "holiday",
+      "wander", "resort", "stay", "destination", "explore", "abroad", "outdoor",
     ],
   },
-  mental_models: {
+  social_vibe: {
+    mediaSignals: [
+      { label: "people", path: "vision", key: "faces", array: false, transform: "facesCount" },
+      { label: "socialSetting", path: "semantic", key: "socialSetting", array: false },
+      { label: "eventType", path: "semantic", key: "eventType", array: false },
+      { label: "expression", path: "semantic", key: "expression", array: false },
+      { label: "pose", path: "semantic", key: "pose", array: false },
+      { label: "sociability", path: "semantic", key: "behavioralRead", array: false, transform: "objectField", objectKey: "sociability" },
+    ],
+    textKeywords: [
+      "party", "friends", "group", "solo", "alone", "gathering", "event", "celebration", "squad",
+      "crowd", "smile", "vibe", "hangout", "introvert", "extrovert", "people",
+    ],
+  },
+  lifestyle_daily: {
+    mediaSignals: [
+      { label: "timeOfDay", path: "semantic", key: "timeOfDay", array: false },
+      { label: "surroundings", path: "semantic", key: "surroundings", array: false },
+      { label: "objects", path: "semantic", key: "objects", array: true },
+      { label: "tableItems", path: "semantic", key: "tableItems", array: true },
+      { label: "backgroundItems", path: "semantic", key: "backgroundItems", array: true },
+      { label: "activity", path: "semantic", key: "activity", array: false },
+      { label: "pixelNotes", path: "semantic", key: "pixelNotes", array: false },
+    ],
+    textKeywords: [
+      "morning", "night", "home", "office", "desk", "room", "setup", "daily", "routine", "workspace",
+      "gym", "outdoor", "indoor", "lifestyle", "weekend",
+    ],
+  },
+  mindset_values: {
     mediaSignals: [
       { label: "musicOrEntertainment", path: "semantic", key: "musicOrEntertainment", array: true },
       { label: "ocrText", path: "vision", key: "ocrText", array: false },
       { label: "activity", path: "semantic", key: "activity", array: false },
+      { label: "pixelNotes", path: "semantic", key: "pixelNotes", array: false },
+      { label: "webEntities", path: "vision", key: "webEntities", array: true },
     ],
     textKeywords: [
       "music", "song", "playlist", "genre", "review", "research", "decision", "buy", "purchase",
-      "freedom", "respect", "creative", "build", "ship", "founder", "friend group", "money", "think",
+      "freedom", "respect", "creative", "build", "ship", "founder", "money", "think", "book", "learn",
     ],
   },
 };
@@ -238,6 +264,53 @@ function normText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
+/** Flatten a v5 nested media field (object / array-of-objects) into citable strings. */
+function transformSignal(transform: MediaSignalTransform, value: unknown, objectKey?: string): string[] {
+  if (transform === "clothing") {
+    // value: Array<{ type?, color?, brand? }> → e.g. "navy blazer (Zara)", "white sneakers".
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((raw) => {
+        const o = asRecord(raw);
+        const label = [normText(o.color), normText(o.type)].filter(Boolean).join(" ");
+        const brand = normText(o.brand);
+        const out = brand ? (label ? `${label} (${brand})` : brand) : label;
+        return out.trim();
+      })
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+  if (transform === "eyewear") {
+    // value: { present?, color?, style? } → only when glasses are present.
+    const o = asRecord(value);
+    if (o.present === false) return [];
+    const detail = [normText(o.color), normText(o.style)].filter(Boolean).join(" ");
+    if (o.present === true || detail) return [detail ? `glasses: ${detail}` : "glasses"];
+    return [];
+  }
+  if (transform === "footwear") {
+    const o = asRecord(value);
+    const label = [normText(o.color), normText(o.type)].filter(Boolean).join(" ");
+    const model = normText(o.model);
+    const out = model ? (label ? `${label} (${model})` : model) : label;
+    return out.trim() ? [out.trim()] : [];
+  }
+  if (transform === "facesCount") {
+    // value: { count, ... } → "solo" / "2 people" / "3 people" — feeds solo-vs-group.
+    const o = asRecord(value);
+    const count = typeof o.count === "number" && Number.isFinite(o.count) ? Math.round(o.count) : 0;
+    if (count <= 0) return [];
+    return [count === 1 ? "solo (1 person)" : `${count} people`];
+  }
+  if (transform === "objectField") {
+    // value: { [objectKey]: scalar } → the inner scalar (e.g. behavioralRead.sociability).
+    const o = asRecord(value);
+    const scalar = normText(objectKey ? o[objectKey] : undefined);
+    return scalar ? [scalar] : [];
+  }
+  return [];
+}
+
 /** Pull a single media-signal's raw values from one completed analysis, per its spec. */
 function readSignalFromAnalysis(
   analysis: Record<string, unknown>,
@@ -245,6 +318,7 @@ function readSignalFromAnalysis(
 ): string[] {
   const bag = asRecord(analysis[spec.path]);
   const value = bag[spec.key];
+  if (spec.transform) return transformSignal(spec.transform, value, spec.objectKey);
   if (spec.array) return strArray(value);
   const scalar = normText(value);
   return scalar ? [scalar] : [];
@@ -421,6 +495,7 @@ const SYNTH_INSTRUCTION = `You are One's preference analyst. The user consented 
 
 How to reason:
 - READ THE ATTACHED IMAGES, not just the text tokens. Derive concrete signal from what you actually see (e.g. the colors they wear/post, the kinds of places, the social settings, the aesthetics) and infer with calibrated confidence.
+- The aggregated mediaSignals already carry DEEP per-image reads — clothing (colour/type/brand), eyewear, footwear, accessories, objects, table & background items, surroundings, pose, expression, people count, event type, and place/landmark guesses. Use them together with the images to answer concretely (e.g. "wears mostly black/grey, sneakers, no logos" or "usually outdoors, in group settings, morning posts").
 - ALWAYS give a best-effort answer for EVERY non-sensitive question — never "no signal". If the direct signal is thin, make your best inference from the closest adjacent evidence (their professional context, the overall vibe of the images, recurring themes) and mark it status "inferred" with low confidence. Use "answered" when self-declared or the evidence (incl. images) is strong and unambiguous; "inferred" otherwise.
 - Cite your evidence: snippet ids in evidenceIds, and the image tags you used in mediaEvidenceIds (use the bare assetHash from [img:<assetHash>]). Citing the specific images you read is what earns medium/high confidence — do it. Do NOT contradict what the evidence shows.
 - Put a short justification in \`why\`.
@@ -776,6 +851,137 @@ export function buildPreferenceCollage(contentItems: ArchiveContentRecord[], lim
   return out;
 }
 
+/* ── Lifestyle facts (v5) ─────────────────────────────────────────────────────────────────────────
+   Beyond the 6 taste sections, aggregate the deep per-image pixel reads into FACTUAL frequency cards —
+   "where you are / what you wear / what you eat / who-with vibe" — surfaced as their own dashboard band.
+   Pure + empty-safe; reuses rankByFrequency. */
+
+export interface LifestyleFact {
+  value: string;
+  count: number;
+}
+
+export interface LifestyleFacts {
+  sampleSize: number; // completed media analyses considered
+  topBrands: LifestyleFact[];
+  topColours: LifestyleFact[];
+  eyewear: { present: number; absent: number; topStyles: LifestyleFact[] };
+  footwear: LifestyleFact[];
+  foods: LifestyleFact[];
+  places: LifestyleFact[];
+  soloVsSocial: { solo: number; group: number };
+  timeOfDay: LifestyleFact[];
+  surroundings: LifestyleFact[];
+  events: { events: number; casual: number; topTypes: LifestyleFact[] };
+}
+
+/** Aggregate the deep per-image reads across all completed media analyses into factual lifestyle cards.
+ *  Pure — reads the same MediaAnalysisRecord[] synthesis uses; every field is empty-safe. */
+export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): LifestyleFacts {
+  const brands: string[] = [];
+  const colours: string[] = [];
+  const eyewearStyles: string[] = [];
+  const footwear: string[] = [];
+  const foods: string[] = [];
+  const places: string[] = [];
+  const timeOfDay: string[] = [];
+  const surroundings: string[] = [];
+  const eventTypes: string[] = [];
+  let eyewearPresent = 0;
+  let eyewearAbsent = 0;
+  let solo = 0;
+  let group = 0;
+  let events = 0;
+  let casual = 0;
+  let sampleSize = 0;
+
+  const CASUAL_EVENTS = new Set(["casual", "other"]);
+  const GROUP_SETTINGS = new Set(["couple", "small_group", "large_gathering"]);
+
+  for (const record of mediaAnalyses) {
+    const analysis = asRecord(record.analysis);
+    if (analysis.status !== "completed") continue;
+    sampleSize += 1;
+    const semantic = asRecord(analysis.semantic);
+    const vision = asRecord(analysis.vision);
+    const clothing = Array.isArray(semantic.clothing) ? semantic.clothing.map((c) => asRecord(c)) : [];
+
+    // Brands: declared brands + per-garment brand + detected logos.
+    for (const b of strArray(semantic.brands)) brands.push(b);
+    for (const c of clothing) if (normText(c.brand)) brands.push(normText(c.brand));
+    for (const l of strArray(vision.logos)) brands.push(l);
+
+    // Colours: aesthetic palette + per-garment colour.
+    for (const c of strArray(semantic.colorAesthetic)) colours.push(c);
+    for (const c of clothing) if (normText(c.color)) colours.push(normText(c.color));
+
+    // Eyewear present/absent + style.
+    const eyewear = asRecord(semantic.eyewear);
+    if (eyewear.present === true) {
+      eyewearPresent += 1;
+      const detail = [normText(eyewear.color), normText(eyewear.style)].filter(Boolean).join(" ");
+      if (detail) eyewearStyles.push(detail);
+    } else if (eyewear.present === false) {
+      eyewearAbsent += 1;
+    }
+
+    // Footwear.
+    const fw = asRecord(semantic.footwear);
+    const fwLabel = [normText(fw.color), normText(fw.type)].filter(Boolean).join(" ");
+    const fwModel = normText(fw.model);
+    const fwOut = fwModel ? (fwLabel ? `${fwLabel} (${fwModel})` : fwModel) : fwLabel;
+    if (fwOut) footwear.push(fwOut);
+
+    // Food.
+    for (const f of strArray(semantic.foodDrink)) foods.push(f);
+    if (normText(semantic.cuisineCategory)) foods.push(normText(semantic.cuisineCategory));
+    for (const t of strArray(semantic.tableItems)) foods.push(t);
+
+    // Places.
+    if (normText(semantic.placeGuess)) places.push(normText(semantic.placeGuess));
+    if (normText(semantic.destinationName)) places.push(normText(semantic.destinationName));
+    for (const l of strArray(semantic.landmarksSeen)) places.push(l);
+    for (const l of strArray(vision.landmarks)) places.push(l);
+    for (const l of strArray(vision.bestGuessLabels)) places.push(l);
+
+    // Time of day + surroundings.
+    if (normText(semantic.timeOfDay)) timeOfDay.push(normText(semantic.timeOfDay));
+    if (normText(semantic.surroundings)) surroundings.push(normText(semantic.surroundings));
+    if (normText(semantic.venueType)) surroundings.push(normText(semantic.venueType));
+
+    // Solo vs social: isGroup → socialSetting → face count, first signal wins.
+    const faceCount = (() => {
+      const f = asRecord(vision.faces);
+      return typeof f.count === "number" && Number.isFinite(f.count) ? Math.round(f.count) : null;
+    })();
+    const setting = normText(semantic.socialSetting);
+    if (semantic.isGroup === true || GROUP_SETTINGS.has(setting) || (faceCount !== null && faceCount > 1)) group += 1;
+    else if (semantic.isGroup === false || setting === "solo" || faceCount === 1) solo += 1;
+
+    // Events.
+    const eventType = normText(semantic.eventType);
+    if (eventType) {
+      eventTypes.push(eventType);
+      if (CASUAL_EVENTS.has(eventType)) casual += 1;
+      else events += 1;
+    }
+  }
+
+  return {
+    sampleSize,
+    topBrands: rankByFrequency(brands, 8),
+    topColours: rankByFrequency(colours, 8),
+    eyewear: { present: eyewearPresent, absent: eyewearAbsent, topStyles: rankByFrequency(eyewearStyles, 5) },
+    footwear: rankByFrequency(footwear, 6),
+    foods: rankByFrequency(foods, 8),
+    places: rankByFrequency(places, 8),
+    soloVsSocial: { solo, group },
+    timeOfDay: rankByFrequency(timeOfDay, 4),
+    surroundings: rankByFrequency(surroundings, 6),
+    events: { events, casual, topTypes: rankByFrequency(eventTypes, 5) },
+  };
+}
+
 /** A subset-compatible UserPreferenceProfile the dashboard can render, carrying the v3 answers,
  *  coverage, section summaries, and the live archive depth. Stored as JSON; the client reads it as
  *  `preferenceProfile`. */
@@ -792,12 +998,14 @@ export interface RenderablePreferenceProfile {
   questionCoverage: { total: number; answered: number; inferred: number; needsConfirmation: number; unknown: number; blockedByAccess: number };
   sectionSummaries: Array<{ sectionId: string; title: string; summary: string; answeredCount: number; totalCount: number; confidence: "low" | "medium" | "high" }>;
   archiveDepth: ArchiveDepthLike | null;
+  /** v5: factual lifestyle aggregation (top brands/colours/places/foods/…) for the dashboard cards. */
+  lifestyle?: LifestyleFacts | null;
 }
 
 export function toRenderablePreferenceProfile(
   result: PreferenceSynthesisResult,
   depth: ArchiveDepthLike | null,
-  opts: { generatedAt: string; preferenceStatus: "partial" | "completed"; collage?: CollageItem[] },
+  opts: { generatedAt: string; preferenceStatus: "partial" | "completed"; collage?: CollageItem[]; lifestyle?: LifestyleFacts | null },
 ): RenderablePreferenceProfile {
   const byId = new Map(PREFERENCE_QUESTIONS.map((q) => [q.id, q]));
   const questionAnswers = result.answers.map((a) => {
@@ -861,6 +1069,7 @@ export function toRenderablePreferenceProfile(
     questionCoverage,
     sectionSummaries,
     archiveDepth: depth,
+    lifestyle: opts.lifestyle ?? null,
   };
 }
 

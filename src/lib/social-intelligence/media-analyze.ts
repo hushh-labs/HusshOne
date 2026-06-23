@@ -8,7 +8,10 @@
 import { adcAccessToken, vertexConfig, vertexGenerateContentUrl } from "@/lib/gcp/auth";
 import { uploadMediaCache } from "@/lib/gcp/storage";
 
-export const MEDIA_ANALYSIS_VERSION = "2026-06-18.media-v3";
+// v5 (pixel): much deeper per-image read — added FACE/WEB/DOCUMENT_TEXT Vision features + a far richer
+// Gemini schema (clothing brand+colour+type, eyewear, footwear, objects, pose, expression, people count,
+// event, place, time-of-day, surroundings). Bumping this string is what part B's requeue keys off.
+export const MEDIA_ANALYSIS_VERSION = "2026-06-24.media-v5-pixel";
 export const DEFAULT_MEDIA_MODEL = "gemini-2.5-flash";
 
 const VISION_URL = "https://vision.googleapis.com/v1/images:annotate";
@@ -17,15 +20,35 @@ const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // skip absurdly large assets to bound 
 
 const VISION_FEATURES = [
   { type: "TEXT_DETECTION", maxResults: 1 },
+  { type: "DOCUMENT_TEXT_DETECTION", maxResults: 1 }, // dense signage/menus (shares fullTextAnnotation)
   { type: "LABEL_DETECTION", maxResults: 15 },
   { type: "LOGO_DETECTION", maxResults: 8 },
   { type: "LANDMARK_DETECTION", maxResults: 5 },
-  { type: "OBJECT_LOCALIZATION", maxResults: 12 },
+  { type: "OBJECT_LOCALIZATION", maxResults: 15 },
+  { type: "FACE_DETECTION", maxResults: 15 }, // count + smile/headwear likelihoods ONLY — never identity
+  { type: "WEB_DETECTION", maxResults: 10 }, // reverse-image: web entities + best-guess label (place/context)
   { type: "IMAGE_PROPERTIES" },
   { type: "SAFE_SEARCH_DETECTION" },
 ] as const;
 
-/** Forced JSON schema for the Gemini semantic read (Vertex controlled generation). */
+export const EVENT_TYPES = [
+  "party",
+  "conference",
+  "wedding",
+  "work",
+  "outdoor",
+  "dining",
+  "concert",
+  "sports",
+  "travel",
+  "casual",
+  "other",
+] as const;
+
+/** Forced JSON schema for the Gemini semantic read (Vertex controlled generation). v5 adds the deep
+ *  "pixel" fields: clothing (type+colour+brand), eyewear, footwear, objects, table/background items,
+ *  surroundings, pose, expression, people count, event, place. All ADDITIVE — the original 16 keys are
+ *  kept so previously-stored rows still parse. */
 export const PREFERENCE_MEDIA_SCHEMA = {
   type: "object",
   properties: {
@@ -45,13 +68,64 @@ export const PREFERENCE_MEDIA_SCHEMA = {
     socialSetting: { type: "string", enum: ["solo", "couple", "small_group", "large_gathering"] },
     timeOfDay: { type: "string", enum: ["morning", "afternoon", "evening", "night"] },
     musicOrEntertainment: { type: "array", items: { type: "string" } },
+    // ── v5 deep pixel read ───────────────────────────────────────────────────────────────────
+    clothing: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { type: { type: "string" }, color: { type: "string" }, brand: { type: "string" } },
+      },
+    },
+    eyewear: {
+      type: "object",
+      properties: { present: { type: "boolean" }, color: { type: "string" }, style: { type: "string" } },
+    },
+    footwear: {
+      type: "object",
+      properties: { type: { type: "string" }, color: { type: "string" }, model: { type: "string" } },
+    },
+    accessories: { type: "array", items: { type: "string" } },
+    objects: { type: "array", items: { type: "string" } },
+    tableItems: { type: "array", items: { type: "string" } },
+    backgroundItems: { type: "array", items: { type: "string" } },
+    surroundings: { type: "string" },
+    pose: { type: "string" },
+    expression: { type: "string" },
+    peopleCount: { type: "integer" },
+    isGroup: { type: "boolean" },
+    eventType: { type: "string", enum: [...EVENT_TYPES] },
+    placeGuess: { type: "string" },
+    landmarksSeen: { type: "array", items: { type: "string" } },
+    pixelNotes: { type: "string" },
+    // Soft, low-confidence sociability read (solo-vs-group + pose) — NOT a clinical personality label.
+    behavioralRead: {
+      type: "object",
+      properties: { sociability: { type: "string" }, confidence: { type: "string", enum: ["low", "medium", "high"] } },
+    },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
     notes: { type: "string" },
   },
   required: ["confidence"],
 } as const;
 
-const GEMINI_INSTRUCTION = `You are extracting PREFERENCE signals from ONE public social image for a user who consented to a self-audit. Describe ONLY what is visibly present. Infer brand/device/style/food/travel/aesthetic preferences cautiously and set confidence accordingly (low if unsure). When clearly evident from the image, also fill: cuisineCategory (e.g. "Indian", "Japanese", "Italian"), venueType (e.g. "fine dining", "cafe", "street food", "home"), destinationName (a specific place or city only if clearly visible, else empty), socialSetting (one of "solo", "couple", "small_group", "large_gathering"), timeOfDay (one of "morning", "afternoon", "evening", "night"), and musicOrEntertainment (visible Spotify/concert/film references). Fill these ONLY from what is visibly present — leave them empty or omit them when not evident; never guess. Do NOT identify or describe specific people, do NOT guess identity, religion, health, politics, or sensitive traits. If the image shows none of these signals, return empty arrays and confidence "low". Output must match the provided JSON schema exactly.`;
+const GEMINI_INSTRUCTION = `You are extracting PREFERENCE signals from ONE public social image for a user who consented to a self-audit. Read the image like a careful analyst: note EVERYTHING visibly present and fill as many schema fields as the image truly supports. Describe ONLY what is visibly present; never guess — leave a field empty/omit it when not clearly evident, and set confidence accordingly (low if unsure).
+
+Capture, when visible:
+- clothing: an entry per visible garment with its type (e.g. "t-shirt", "blazer", "kurta"), color, and brand (only if a logo/text makes the brand clear).
+- eyewear: present true/false, plus color and style (e.g. "black wayfarer", "round metal") when worn.
+- footwear: type/color and model (e.g. "white sneakers", "Air Jordan 1") when visible.
+- accessories (watch, bag, cap, jewellery), objects in frame, tableItems (what's on the table/plate), backgroundItems (what's behind the subject), and surroundings (a short phrase: "home living room", "rooftop cafe", "mountain trail", "conference hall").
+- pose (e.g. "candid walking", "seated at desk", "group selfie") and expression (e.g. "smiling", "relaxed", "neutral").
+- peopleCount (integer, how many people are visible) and isGroup (true if more than one person).
+- eventType (one of the schema enum values) when the scene is clearly an event.
+- placeGuess (a city/venue/region ONLY if strongly evident from signage, landmarks, or unmistakable scenery) and landmarksSeen.
+- timeOfDay, cuisineCategory, venueType, colorAesthetic, devices, foodDrink, musicOrEntertainment, scene, activity, mood, languageInImage — as before.
+- behavioralRead: a SOFT sociability read (e.g. "appears social / outgoing" vs "appears reserved") inferred only from solo-vs-group and pose; ALWAYS set its confidence to "low". This is a gentle behavioural hint, never a clinical or definitive personality label.
+- pixelNotes: a short free-text line capturing any other concrete visible detail worth remembering.
+
+STRICT GUARDRAILS — never violate: Do NOT identify or name any specific person. Do NOT infer or describe skin tone, race, ethnicity, religion, health, disability, politics, or sexuality — leave anything touching these blank. These are about the user's own visible scene and self-presentation only.
+
+If the image shows none of these signals, return empty arrays and confidence "low". Output must match the provided JSON schema exactly.`;
 
 export interface VisionFacts {
   ocrText: string | null;
@@ -61,6 +135,18 @@ export interface VisionFacts {
   objects: string[];
   dominantColors: Array<{ rgb: string; score: number; fraction: number }>;
   safeSearch: Record<string, string>;
+  /** v5: face COUNT + smile/headwear likelihood tallies only — never boxes, landmarks, or identity. */
+  faces?: { count: number; joyLikely: number; headwearLikely: number };
+  /** v5: reverse-image context (web entities, best-guess labels, page titles). No page URLs (privacy). */
+  webEntities?: string[];
+  bestGuessLabels?: string[];
+  webPageTitles?: string[];
+}
+
+export interface MediaClothingItem {
+  type?: string;
+  color?: string;
+  brand?: string;
 }
 
 export interface PreferenceMediaSemantic {
@@ -80,6 +166,24 @@ export interface PreferenceMediaSemantic {
   socialSetting?: string;
   timeOfDay?: string;
   musicOrEntertainment?: string[];
+  // ── v5 deep pixel read ───────────────────────────────────────────────────────────────────────
+  clothing?: MediaClothingItem[];
+  eyewear?: { present?: boolean; color?: string; style?: string };
+  footwear?: { type?: string; color?: string; model?: string };
+  accessories?: string[];
+  objects?: string[];
+  tableItems?: string[];
+  backgroundItems?: string[];
+  surroundings?: string;
+  pose?: string;
+  expression?: string;
+  peopleCount?: number;
+  isGroup?: boolean;
+  eventType?: string;
+  placeGuess?: string;
+  landmarksSeen?: string[];
+  pixelNotes?: string;
+  behavioralRead?: { sociability?: string; confidence: "low" | "medium" | "high" };
   confidence: "low" | "medium" | "high";
   notes?: string;
 }
@@ -153,7 +257,41 @@ export function parseVisionResponse(json: unknown): VisionFacts {
     if (typeof ss[key] === "string") safeSearch[key] = ss[key] as string;
   }
 
-  return { ocrText, labels, logos, landmarks, objects, dominantColors, safeSearch };
+  // v5: FACE_DETECTION → count + smile/headwear tallies ONLY. No bounding boxes, landmarks, or identity.
+  const faceAnnotations = arr(r.faceAnnotations);
+  const likely = new Set(["LIKELY", "VERY_LIKELY"]);
+  const faces = {
+    count: faceAnnotations.length,
+    joyLikely: faceAnnotations.filter((f) => likely.has(String(f.joyLikelihood ?? ""))).length,
+    headwearLikely: faceAnnotations.filter((f) => likely.has(String(f.headwearLikelihood ?? ""))).length,
+  };
+
+  // v5: WEB_DETECTION → reverse-image context. Entities + best-guess labels + page TITLES only (no URLs).
+  const web = (r.webDetection && typeof r.webDetection === "object" ? r.webDetection : {}) as Record<string, unknown>;
+  const webEntities = arr(web.webEntities)
+    .filter((e) => num(e.score) > 0.3)
+    .map((e) => String(e.description ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  const bestGuessLabels = arr(web.bestGuessLabels).map((l) => String(l.label ?? "").trim()).filter(Boolean).slice(0, 3);
+  const webPageTitles = arr(web.pagesWithMatchingImages)
+    .map((p) => String(p.pageTitle ?? "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return {
+    ocrText,
+    labels,
+    logos,
+    landmarks,
+    objects,
+    dominantColors,
+    safeSearch,
+    faces,
+    ...(webEntities.length ? { webEntities } : {}),
+    ...(bestGuessLabels.length ? { bestGuessLabels } : {}),
+    ...(webPageTitles.length ? { webPageTitles } : {}),
+  };
 }
 
 /** Safe-search gate: exclude assets flagged LIKELY/VERY_LIKELY for adult, racy, or violence. */
@@ -175,7 +313,7 @@ export function buildGeminiRequestBody(imageBase64: string, mimeType: string, co
       responseMimeType: "application/json",
       responseSchema: PREFERENCE_MEDIA_SCHEMA,
       temperature: 0.2,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048, // v5: bigger schema (clothing/eyewear/footwear/objects/pixelNotes) needs headroom
     },
   };
 }
@@ -193,6 +331,43 @@ export function parseGeminiStructured(json: unknown): PreferenceMediaSemantic | 
       const s = str(v);
       return s && allowed.includes(s) ? s : undefined;
     };
+    const boolVal = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+    const intVal = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined;
+    const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+    // clothing[]: keep only entries that carry at least one of type/color/brand.
+    const clothingArr = (v: unknown): MediaClothingItem[] | undefined => {
+      if (!Array.isArray(v)) return undefined;
+      const items = v
+        .map((x) => rec(x))
+        .map((o) => ({ type: str(o.type), color: str(o.color), brand: str(o.brand) }))
+        .filter((o) => o.type || o.color || o.brand)
+        .slice(0, 8);
+      return items.length ? items : undefined;
+    };
+    const eyewear = (() => {
+      const o = rec(parsed.eyewear);
+      const present = boolVal(o.present);
+      const color = str(o.color);
+      const style = str(o.style);
+      if (present === undefined && !color && !style) return undefined;
+      return { ...(present !== undefined ? { present } : {}), ...(color ? { color } : {}), ...(style ? { style } : {}) };
+    })();
+    const footwear = (() => {
+      const o = rec(parsed.footwear);
+      const type = str(o.type);
+      const color = str(o.color);
+      const model = str(o.model);
+      if (!type && !color && !model) return undefined;
+      return { ...(type ? { type } : {}), ...(color ? { color } : {}), ...(model ? { model } : {}) };
+    })();
+    // behavioralRead: a soft hint — its confidence is ALWAYS forced to "low".
+    const behavioralRead = (() => {
+      const o = rec(parsed.behavioralRead);
+      const sociability = str(o.sociability);
+      if (!sociability) return undefined;
+      return { sociability, confidence: "low" as const };
+    })();
     const confidence = parsed.confidence === "high" || parsed.confidence === "medium" ? parsed.confidence : "low";
     return {
       scene: str(parsed.scene),
@@ -211,6 +386,24 @@ export function parseGeminiStructured(json: unknown): PreferenceMediaSemantic | 
       socialSetting: oneOf(parsed.socialSetting, ["solo", "couple", "small_group", "large_gathering"]),
       timeOfDay: oneOf(parsed.timeOfDay, ["morning", "afternoon", "evening", "night"]),
       musicOrEntertainment: strArr(parsed.musicOrEntertainment),
+      // ── v5 deep pixel read ─────────────────────────────────────────────────────────────────────
+      clothing: clothingArr(parsed.clothing),
+      eyewear,
+      footwear,
+      accessories: strArr(parsed.accessories),
+      objects: strArr(parsed.objects),
+      tableItems: strArr(parsed.tableItems),
+      backgroundItems: strArr(parsed.backgroundItems),
+      surroundings: str(parsed.surroundings),
+      pose: str(parsed.pose),
+      expression: str(parsed.expression),
+      peopleCount: intVal(parsed.peopleCount),
+      isGroup: boolVal(parsed.isGroup),
+      eventType: oneOf(parsed.eventType, EVENT_TYPES),
+      placeGuess: str(parsed.placeGuess),
+      landmarksSeen: strArr(parsed.landmarksSeen),
+      pixelNotes: str(parsed.pixelNotes),
+      behavioralRead,
       confidence,
       notes: str(parsed.notes),
     };

@@ -662,9 +662,20 @@ export async function indexSocialArchive(input: {
         /* eviction is best-effort; never break a scan */
       }
     }
+    // v5: map each media asset to its owning post's caption so the media worker can pass it as context
+    // to the per-image read (grounds brand/place cues). Best-effort, seeded into the pending analysis JSON.
+    const captionByHash = new Map<string, string>();
+    for (const row of archive.content) {
+      const caption = row.text?.replace(/\s+/g, " ").trim();
+      if (!caption) continue;
+      for (const m of row.mediaAssets) {
+        if (!captionByHash.has(m.assetHash)) captionByHash.set(m.assetHash, caption.slice(0, 600));
+      }
+    }
     let mediaAssets = 0;
     for (const asset of archive.media) {
       try {
+        const caption = captionByHash.get(asset.assetHash) ?? null;
         await prisma.socialMediaAsset.upsert({
           where: { userId_platform_assetHash: { userId: user.id, platform: asset.platform, assetHash: asset.assetHash } },
           create: {
@@ -674,7 +685,7 @@ export async function indexSocialArchive(input: {
             sourceUrl: asset.sourceUrl,
             mediaType: asset.mediaType,
             analysisStatus: "pending",
-            analysis: safeJson({ status: "pending", source: "preference_v3_archive", scanRunId: input.scanRunId || null }),
+            analysis: safeJson({ status: "pending", source: "preference_v3_archive", scanRunId: input.scanRunId || null, caption }),
           },
           // Preserve completed analysis on re-index — only refresh the source URL + media type.
           update: { sourceUrl: asset.sourceUrl, mediaType: asset.mediaType },
@@ -1055,7 +1066,7 @@ export async function claimSocialRefreshJobs(
  *  "processing" so concurrent invocations don't double-pay. Returns the owner's firebaseUid too. */
 export async function claimPendingMediaAssetsGlobal(
   limit = 8,
-): Promise<Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string }>> {
+): Promise<Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string; caption: string | null }>> {
   const prisma = getPrismaClient();
   if (!prisma) return [];
   try {
@@ -1065,7 +1076,7 @@ export async function claimPendingMediaAssetsGlobal(
       take: Math.max(1, Math.min(limit, 64)),
       include: { user: { select: { firebaseUid: true } } },
     });
-    const claimed: Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string }> = [];
+    const claimed: Array<{ id: string; firebaseUid: string | null; platform: string; assetHash: string; sourceUrl: string; mediaType: string; caption: string | null }> = [];
     for (const asset of candidates) {
       try {
         const res = await prisma.socialMediaAsset.updateMany({
@@ -1073,6 +1084,9 @@ export async function claimPendingMediaAssetsGlobal(
           data: { analysisStatus: "processing" },
         });
         if (res.count === 1) {
+          // Best-effort caption: seeded into the pending analysis JSON at index time (see indexSocialArchive).
+          const seed = asset.analysis && typeof asset.analysis === "object" ? (asset.analysis as Record<string, unknown>) : {};
+          const caption = typeof seed.caption === "string" && seed.caption.trim() ? seed.caption.trim() : null;
           claimed.push({
             id: asset.id,
             firebaseUid: asset.user?.firebaseUid ?? null,
@@ -1080,6 +1094,7 @@ export async function claimPendingMediaAssetsGlobal(
             assetHash: asset.assetHash,
             sourceUrl: asset.sourceUrl,
             mediaType: asset.mediaType,
+            caption,
           });
         }
       } catch {
@@ -1089,6 +1104,51 @@ export async function claimPendingMediaAssetsGlobal(
     return claimed;
   } catch {
     return [];
+  }
+}
+
+// v5: only re-pend assets re-scraped within this window — their CDN URLs are still alive so a re-analysis
+// can actually fetch the bytes. Older assets (expired URLs) are left on their last good analysis.
+const MEDIA_FRESH_URL_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/** Version-aware re-analysis trigger: flip recently-rescraped media assets analyzed on an OLDER version back
+ *  to "pending" so the media worker re-reads them with the current MEDIA_ANALYSIS_VERSION (e.g. the v5 deep
+ *  pixel schema). Scoped to one user when firebaseUid is given, else global. Guarded by a fresh-URL window so
+ *  expired-CDN assets aren't churned into guaranteed byte-fetch failures. Defensive → returns 0 on any error. */
+export async function requeueOutdatedMediaAssets(input: {
+  firebaseUid?: string;
+  currentVersion: string;
+  limit?: number;
+}): Promise<number> {
+  const prisma = getPrismaClient();
+  if (!prisma) return 0;
+  try {
+    let userId: string | undefined;
+    if (input.firebaseUid) {
+      const user = await prisma.oneUser.findUnique({ where: { firebaseUid: input.firebaseUid }, select: { id: true } });
+      if (!user) return 0;
+      userId = user.id;
+    }
+    const freshSince = new Date(Date.now() - MEDIA_FRESH_URL_WINDOW_MS);
+    const stale = await prisma.socialMediaAsset.findMany({
+      where: {
+        ...(userId ? { userId } : {}),
+        analysisStatus: { in: ["completed", "failed", "skipped"] },
+        analysisVersion: { not: input.currentVersion },
+        lastSeenAt: { gt: freshSince },
+      },
+      orderBy: { lastSeenAt: "desc" },
+      take: Math.max(1, Math.min(input.limit ?? 256, 2000)),
+      select: { id: true },
+    });
+    if (!stale.length) return 0;
+    const res = await prisma.socialMediaAsset.updateMany({
+      where: { id: { in: stale.map((s) => s.id) }, analysisStatus: { in: ["completed", "failed", "skipped"] } },
+      data: { analysisStatus: "pending" },
+    });
+    return res.count;
+  } catch {
+    return 0;
   }
 }
 

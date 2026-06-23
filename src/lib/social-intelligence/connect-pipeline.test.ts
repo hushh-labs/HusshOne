@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getArchiveDepthSummary: vi.fn(async (): Promise<unknown> => null),
   hasPendingPreferenceWork: vi.fn(async () => false),
   enqueueSocialRefreshJobs: vi.fn(async (_input: EnqueueArg) => 1),
+  requeueOutdatedMediaAssets: vi.fn(async () => 0),
 }));
 
 vi.mock("@/lib/db/scan-store", () => ({
@@ -23,6 +24,7 @@ vi.mock("@/lib/db/scan-store", () => ({
   getArchiveDepthSummary: mocks.getArchiveDepthSummary,
   hasPendingPreferenceWork: mocks.hasPendingPreferenceWork,
   enqueueSocialRefreshJobs: mocks.enqueueSocialRefreshJobs,
+  requeueOutdatedMediaAssets: mocks.requeueOutdatedMediaAssets,
   PREFERENCE_RECOMPUTE_PLATFORM: "__recompute__",
 }));
 
@@ -47,6 +49,7 @@ function resetMocks() {
   mocks.getArchiveDepthSummary.mockResolvedValue(null);
   mocks.hasPendingPreferenceWork.mockResolvedValue(false);
   mocks.enqueueSocialRefreshJobs.mockResolvedValue(1);
+  mocks.requeueOutdatedMediaAssets.mockResolvedValue(0);
 }
 
 const withConsent = (consent: boolean) => {

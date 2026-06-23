@@ -14,7 +14,18 @@ describe("buildVisionRequestBody", () => {
     expect(body.requests[0].image.content).toBe("BASE64");
     const types = body.requests[0].features.map((f) => f.type);
     expect(types).toEqual(
-      expect.arrayContaining(["TEXT_DETECTION", "LABEL_DETECTION", "LOGO_DETECTION", "LANDMARK_DETECTION", "OBJECT_LOCALIZATION", "IMAGE_PROPERTIES", "SAFE_SEARCH_DETECTION"]),
+      expect.arrayContaining([
+        "TEXT_DETECTION",
+        "DOCUMENT_TEXT_DETECTION",
+        "LABEL_DETECTION",
+        "LOGO_DETECTION",
+        "LANDMARK_DETECTION",
+        "OBJECT_LOCALIZATION",
+        "FACE_DETECTION",
+        "WEB_DETECTION",
+        "IMAGE_PROPERTIES",
+        "SAFE_SEARCH_DETECTION",
+      ]),
     );
   });
 });
@@ -48,9 +59,44 @@ describe("parseVisionResponse", () => {
     expect(facts.safeSearch.adult).toBe("VERY_UNLIKELY");
   });
 
-  it("returns empty facts for a malformed response", () => {
+  it("returns empty facts for a malformed response (faces present with zero counts)", () => {
     const facts = parseVisionResponse({});
-    expect(facts).toEqual({ ocrText: null, labels: [], logos: [], landmarks: [], objects: [], dominantColors: [], safeSearch: {} });
+    expect(facts).toEqual({
+      ocrText: null,
+      labels: [],
+      logos: [],
+      landmarks: [],
+      objects: [],
+      dominantColors: [],
+      safeSearch: {},
+      faces: { count: 0, joyLikely: 0, headwearLikely: 0 },
+    });
+  });
+
+  it("v5: parses FACE_DETECTION (count + smile/headwear tallies, no identity) and WEB_DETECTION", () => {
+    const facts = parseVisionResponse({
+      responses: [
+        {
+          faceAnnotations: [
+            { joyLikelihood: "VERY_LIKELY", headwearLikelihood: "UNLIKELY" },
+            { joyLikelihood: "LIKELY", headwearLikelihood: "VERY_LIKELY" },
+            { joyLikelihood: "UNLIKELY", headwearLikelihood: "VERY_UNLIKELY" },
+          ],
+          webDetection: {
+            webEntities: [
+              { description: "Eiffel Tower", score: 0.9 },
+              { description: "lowscore", score: 0.1 },
+            ],
+            bestGuessLabels: [{ label: "paris at night" }],
+            pagesWithMatchingImages: [{ pageTitle: "Trip to Paris" }],
+          },
+        },
+      ],
+    });
+    expect(facts.faces).toEqual({ count: 3, joyLikely: 2, headwearLikely: 1 });
+    expect(facts.webEntities).toEqual(["Eiffel Tower"]); // score>0.3 only
+    expect(facts.bestGuessLabels).toEqual(["paris at night"]);
+    expect(facts.webPageTitles).toEqual(["Trip to Paris"]);
   });
 });
 
@@ -71,6 +117,7 @@ describe("buildGeminiRequestBody", () => {
     expect(body.contents[0].parts[1].inlineData).toEqual({ mimeType: "image/png", data: "IMG64" });
     expect(body.contents[0].parts[0].text).toContain("trip");
     expect(body.contents[0].parts[0].text).toContain("Do NOT identify");
+    expect(body.generationConfig.maxOutputTokens).toBe(2048); // v5: bigger schema headroom
   });
 });
 
@@ -128,6 +175,64 @@ describe("parseGeminiStructured", () => {
       musicOrEntertainment: ["Spotify Wrapped", "concert poster"],
       confidence: "high",
     });
+  });
+
+  it("v5: parses the deep pixel fields (clothing/eyewear/footwear/people/event) + forces behavioralRead low", () => {
+    const semantic = parseGeminiStructured({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                text: JSON.stringify({
+                  clothing: [{ type: "blazer", color: "navy", brand: "Zara" }, { type: "", color: "", brand: "" }],
+                  eyewear: { present: true, color: "black", style: "wayfarer" },
+                  footwear: { type: "sneakers", model: "Air Jordan 1" },
+                  accessories: ["watch", ""],
+                  objects: ["laptop"],
+                  tableItems: ["coffee cup"],
+                  surroundings: "rooftop cafe",
+                  pose: "candid",
+                  expression: "smiling",
+                  peopleCount: 3,
+                  isGroup: true,
+                  eventType: "party",
+                  placeGuess: "Mumbai",
+                  pixelNotes: "neon signage in background",
+                  behavioralRead: { sociability: "appears outgoing", confidence: "high" },
+                  confidence: "medium",
+                }),
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(semantic).toMatchObject({
+      clothing: [{ type: "blazer", color: "navy", brand: "Zara" }], // empty entry dropped
+      eyewear: { present: true, color: "black", style: "wayfarer" },
+      footwear: { type: "sneakers", model: "Air Jordan 1" },
+      accessories: ["watch"],
+      objects: ["laptop"],
+      tableItems: ["coffee cup"],
+      surroundings: "rooftop cafe",
+      pose: "candid",
+      expression: "smiling",
+      peopleCount: 3,
+      isGroup: true,
+      eventType: "party",
+      placeGuess: "Mumbai",
+      pixelNotes: "neon signage in background",
+    });
+    // behavioralRead confidence is ALWAYS forced to low, never the model's claim.
+    expect(semantic?.behavioralRead).toEqual({ sociability: "appears outgoing", confidence: "low" });
+  });
+
+  it("v5: drops out-of-enum eventType", () => {
+    const semantic = parseGeminiStructured({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ eventType: "rave", confidence: "low" }) }] } }],
+    });
+    expect(semantic?.eventType).toBeUndefined();
   });
 
   it("drops out-of-enum socialSetting/timeOfDay values", () => {
