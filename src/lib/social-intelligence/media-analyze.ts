@@ -6,6 +6,7 @@
    fully defensive — a failed asset never throws, it returns a failed/skipped result. No facial
    recognition; only public/visible media; safe-search gates unsafe content out of synthesis. */
 import { adcAccessToken, vertexConfig, vertexGenerateContentUrl } from "@/lib/gcp/auth";
+import { uploadMediaCache } from "@/lib/gcp/storage";
 
 export const MEDIA_ANALYSIS_VERSION = "2026-06-18.media-v3";
 export const DEFAULT_MEDIA_MODEL = "gemini-2.5-flash";
@@ -92,6 +93,10 @@ export interface MediaAnalysisResult {
   safe: boolean;
   vision?: VisionFacts;
   semantic?: PreferenceMediaSemantic;
+  /** gs:// URI of the persisted image bytes (set when safe + uploaded) so synthesis can read the REAL
+   *  image via Vertex fileData after the social CDN URL expires. Plus its mimeType. */
+  cacheUri?: string | null;
+  cacheMime?: string | null;
   error?: string;
 }
 
@@ -279,6 +284,9 @@ export interface AnalyzeMediaInput {
   mediaType: string;
   context?: string;
   model?: string;
+  /** sha256(sourceUrl) — when present + the image is safe, the fetched bytes are uploaded to the media-cache
+   *  bucket so synthesis can read the real image later (the CDN URL will have expired). */
+  assetHash?: string;
 }
 
 /** Analyze one media asset end-to-end. Never throws — returns a completed/failed/skipped result.
@@ -303,5 +311,15 @@ export async function analyzeMediaAsset(input: AnalyzeMediaInput): Promise<Media
   const safe = isSafeForSynthesis(vision);
   // Skip the semantic LLM read for unsafe media — keep it out of preference synthesis entirely.
   const semantic = safe ? await runGeminiSemantic(bytes.base64, bytes.mimeType, input.context ?? "", model) : null;
-  return { ...base, status: "completed", safe, vision, ...(semantic ? { semantic } : {}) };
+  // Persist the image bytes to the media-cache bucket (safe media only) so synthesis can read the REAL image
+  // multimodally later — the social CDN URL will have expired by then. Best-effort: failure ⇒ no cacheUri.
+  const cache = safe && input.assetHash ? await uploadMediaCache(input.assetHash, bytes.base64, bytes.mimeType) : null;
+  return {
+    ...base,
+    status: "completed",
+    safe,
+    vision,
+    ...(semantic ? { semantic } : {}),
+    ...(cache ? { cacheUri: cache.fileUri, cacheMime: cache.mimeType } : {}),
+  };
 }

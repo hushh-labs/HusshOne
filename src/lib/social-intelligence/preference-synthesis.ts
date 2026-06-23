@@ -42,7 +42,16 @@ const FETCH_TIMEOUT_MS = 150_000;
 // evidence-grounded confidence cap, wider aggregation caps (learnings from the 40-agent Sundar run).
 // rev "5": LinkedIn posts (activity feed) now flow into the archive as a feed platform → synthesis sees
 // LinkedIn content as evidence for professionals who push there, not just IG/X/Threads.
-const PREFERENCE_DATA_SHAPE_REV = "5";
+// rev "6": MULTIMODAL synthesis — each section now SEES the real images (Vertex fileData) + 2 agents/section
+// merged by consensus + always-answer. The biggest quality lever yet (the model reads the photos, not just
+// text tokens). Forces a full recompute.
+const PREFERENCE_DATA_SHAPE_REV = "6";
+
+// Per-section multimodal: how many real images each section agent is shown (Vertex fileData parts), and how
+// many independent agents read each section (their answers are merged by consensus — agreement lifts
+// confidence). 6 sections × 2 agents = 12 calls, all parallel; fits the recompute worker's 300s budget.
+const MAX_SECTION_IMAGES = 10;
+const AGENTS_PER_SECTION = 2;
 
 // Context budgets — generous on purpose. We route PER SECTION, each call sees a focused slice, and the
 // model (Gemini 2.5 Pro) has a large context window — so the real lever on preference quality is how
@@ -195,6 +204,9 @@ export interface SectionContext {
   mediaSignals: SectionMediaSignal[];
   /** Representative assetHashes so answers can cite mediaEvidenceIds. Empty for text-only sections. */
   mediaAssetHashes: string[];
+  /** The actual images (gs:// fileUri + mimeType) shown to the section agents via Vertex fileData, labeled
+   *  by assetHash so answers can cite them. Subset of mediaAssetHashes that have a persisted cacheUri. */
+  mediaImages: Array<{ assetHash: string; fileUri: string; mimeType: string }>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -308,6 +320,7 @@ export function buildSectionContext(
   const signalBuckets = new Map<string, string[]>();
   for (const s of spec.mediaSignals) signalBuckets.set(s.label, []);
   const assetHashes: string[] = [];
+  const mediaImages: SectionContext["mediaImages"] = [];
   let mediaAnalyzedCount = 0;
 
   if (!spec.textOnly) {
@@ -329,6 +342,13 @@ export function buildSectionContext(
       if (contributed && record.assetHash && assetHashes.length < REPRESENTATIVE_ASSETS) {
         if (!assetHashes.includes(record.assetHash)) assetHashes.push(record.assetHash);
       }
+      // Collect the REAL image (gs:// cacheUri) for the top section-relevant assets so the agent can SEE it.
+      const cacheUri = normText(analysis.cacheUri);
+      if (contributed && cacheUri && record.assetHash && mediaImages.length < MAX_SECTION_IMAGES) {
+        if (!mediaImages.some((m) => m.assetHash === record.assetHash)) {
+          mediaImages.push({ assetHash: record.assetHash, fileUri: cacheUri, mimeType: normText(analysis.cacheMime) || "image/jpeg" });
+        }
+      }
     }
   } else {
     // Still report how much media exists overall (for context counts) without exposing it.
@@ -349,6 +369,7 @@ export function buildSectionContext(
     textSnippets,
     mediaSignals,
     mediaAssetHashes: assetHashes,
+    mediaImages,
   };
 }
 
@@ -396,18 +417,16 @@ function questionsBlock(questions: PreferenceQuestionDefinition[]): string {
    calibrated inference — answer wherever any reasonable pattern exists, label confidence honestly,
    and reserve "unknown" for genuinely zero-signal questions. The sensitive rule is unchanged and is
    ALSO enforced in code (parseSectionAnswers) regardless of what the model returns. */
-const SYNTH_INSTRUCTION = `You are One's preference analyst. The user consented to a self-audit of their OWN public social presence. You are given a FOCUSED evidence slice for ONE section of the preference profile (this section's text snippets + the aggregated media signals relevant to it, with frequency counts). Answer EVERY question in this section.
+const SYNTH_INSTRUCTION = `You are One's preference analyst. The user consented to a self-audit of their OWN public social presence. You are given a FOCUSED evidence slice for ONE section: this section's text snippets, aggregated media signals (frequency counts), AND — attached to this message — the ACTUAL IMAGES from their posts (each labeled with an [img:<assetHash>] tag in the IMAGES list below, in attachment order). LOOK AT THE IMAGES CAREFULLY — they are your richest evidence (colors, outfits, settings, places, food, objects, how the person shows up). Answer EVERY question in this section.
 
 How to reason:
-- Infer with calibrated confidence from the evidence. Use status "inferred" with low or medium confidence whenever a reasonable pattern exists across the posts/media — frequent brands, recurring places, repeated foods, dominant colors, etc. are all valid grounds to infer.
-- Use status "answered" with the matching confidence when the user states it directly (self-declared) or the evidence is strong and unambiguous.
-- Use "unknown" ONLY when there is genuinely ZERO relevant signal for that question. A weak or partial signal is still an "inferred" answer with low confidence — do not throw it away.
-- Always write a concrete \`answer\` string with your best read (the schema requires it). Never leave it blank; if truly nothing is known, set status "unknown" and write a one-line note in \`answer\` saying no signal was found.
-- Ground every answer in the evidence and cite the snippet ids you used in evidenceIds and the media asset hashes in mediaEvidenceIds. Do NOT contradict the evidence.
+- READ THE ATTACHED IMAGES, not just the text tokens. Derive concrete signal from what you actually see (e.g. the colors they wear/post, the kinds of places, the social settings, the aesthetics) and infer with calibrated confidence.
+- ALWAYS give a best-effort answer for EVERY non-sensitive question — never "no signal". If the direct signal is thin, make your best inference from the closest adjacent evidence (their professional context, the overall vibe of the images, recurring themes) and mark it status "inferred" with low confidence. Use "answered" when self-declared or the evidence (incl. images) is strong and unambiguous; "inferred" otherwise.
+- Cite your evidence: snippet ids in evidenceIds, and the image tags you used in mediaEvidenceIds (use the bare assetHash from [img:<assetHash>]). Citing the specific images you read is what earns medium/high confidence — do it. Do NOT contradict what the evidence shows.
 - Put a short justification in \`why\`.
 
 Hard rules (never violate):
-- SENSITIVE questions (partner/romance/attraction/red-flags/love-language): NEVER state as fact and NEVER infer from photos or scenes. Use "needs_confirmation" or "unknown" unless the user themselves self-declared it in their own text (then source "self_declared").
+- SENSITIVE questions (partner/romance/attraction/red-flags/love-language): NEVER state as fact and NEVER infer from photos or scenes. Use "needs_confirmation" or "unknown" unless the user themselves self-declared it in their own text (then source "self_declared"). The "always answer" rule does NOT apply to sensitive questions.
 - Do NOT infer protected/sensitive traits (health, religion, politics, sexuality) and never identify other people in media.
 
 Output MUST match the JSON schema exactly (an "answers" array, one object per question in this section).`;
@@ -459,18 +478,30 @@ export function buildSectionSynthesisRequest(
   context: SectionContext,
   questions: PreferenceQuestionDefinition[],
   professionalContext?: string,
+  opts: { agentIndex?: number } = {},
 ) {
+  const images = context.mediaImages ?? [];
+  const imagesNote = images.length
+    ? `\n\nIMAGES (attached below, in this order — these are the user's real post images; cite the ones you read by their bare assetHash):\n${images
+        .map((m, i) => `${i + 1}. [img:${m.assetHash}]`)
+        .join("\n")}`
+    : "";
   const text = `${SYNTH_INSTRUCTION}\n\nSECTION: ${context.sectionId}\n\nQUESTIONS (answer all ${questions.length}):\n${questionsBlock(
     questions,
-  )}\n\nEVIDENCE:\n\`\`\`json\n${sectionEvidenceJson(context, professionalContext)}\n\`\`\``;
+  )}\n\nEVIDENCE:\n\`\`\`json\n${sectionEvidenceJson(context, professionalContext)}\n\`\`\`${imagesNote}`;
+  // Multimodal: the text part first, then one fileData part per real image (Vertex reads gs:// directly).
+  const parts: Array<Record<string, unknown>> = [{ text }];
+  for (const m of images) parts.push({ fileData: { fileUri: m.fileUri, mimeType: m.mimeType } });
+  // Two agents read each section; vary temperature so the reads are genuinely independent (then merged).
+  const temperature = 0.35 + (opts.agentIndex ?? 0) * 0.25;
   return {
     model,
     body: {
-      contents: [{ role: "user", parts: [{ text }] }],
+      contents: [{ role: "user", parts }],
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: PREFERENCE_SYNTH_SCHEMA,
-        temperature: 0.4,
+        temperature,
         maxOutputTokens: 8192,
       },
     },
@@ -525,12 +556,11 @@ function mapOneAnswer(a: Record<string, unknown>, q: PreferenceQuestionDefinitio
   const mediaEvidenceIds = strArray(a.mediaEvidenceIds).slice(0, 16);
   const why = typeof a.why === "string" && a.why.trim() ? a.why.trim() : null;
 
-  // Evidence-grounded confidence: trust the model's self-reported confidence only as far as the citations
-  // back it. 0 distinct citations → low; exactly 1 → cap at medium; ≥2 → allow high. Stops a hallucinated
-  // "high"/"medium" inference (the kind the 40-agent verify pass caught) from shipping over-confident.
+  // Per-agent evidence floor: a claim citing ZERO evidence (no snippet, no image) can't be confident — a
+  // pure ungrounded guess is "low". The HIGH cap (needs ≥2 distinct citations) is applied later on the UNION
+  // of the 2 agents' citations in mergeAnswerPair, so two agents each reading 1 image can together reach high.
   const evCount = new Set([...evidenceIds, ...mediaEvidenceIds]).size;
   if (evCount === 0) confidence = "low";
-  else if (evCount === 1 && confidence === "high") confidence = "medium";
 
   // Parse rule: status "unknown" ONLY when there is no answer text. Otherwise keep the model's read
   // even at low confidence (the whole point of the reframe — don't discard weak-but-real signal).
@@ -618,8 +648,50 @@ async function callVertex(model: string, body: unknown): Promise<unknown | null>
   }
 }
 
-/** Synthesize ONE section: build its targeted context, make one Vertex call, parse its answers.
- *  Returns null if Vertex is unavailable/failed for this section (caller fills it with unknowns). */
+const CONF_ORDER: Record<SynthConfidence, number> = { low: 0, medium: 1, high: 2 };
+
+/** Merge two independent agent reads of the SAME answer into one, by consensus. The final confidence is
+ *  shaped by agreement + the UNION of citations: both agents committed (answered/inferred) + ≥1 citation →
+ *  at least medium; HIGH requires ≥2 distinct citations across the two reads; an ungrounded lone guess
+ *  stays low. Sensitive answers (already downgraded per-agent) are never amplified past medium. */
+export function mergeAnswerPair(a: SynthesizedAnswer, b: SynthesizedAnswer): SynthesizedAnswer {
+  const committed = (x: SynthesizedAnswer) => x.status === "answered" || x.status === "inferred";
+  const evidenceIds = [...new Set([...a.evidenceIds, ...b.evidenceIds])].slice(0, 16);
+  const mediaEvidenceIds = [...new Set([...a.mediaEvidenceIds, ...b.mediaEvidenceIds])].slice(0, 16);
+  const evCount = new Set([...evidenceIds, ...mediaEvidenceIds]).size;
+  const rank = (x: SynthesizedAnswer) =>
+    (committed(x) ? 2 : x.status === "needs_confirmation" ? 1 : 0) * 100 + new Set([...x.evidenceIds, ...x.mediaEvidenceIds]).size;
+  const primary = rank(a) >= rank(b) ? a : b;
+  const bothCommitted = committed(a) && committed(b);
+
+  let confidence: SynthConfidence = CONF_ORDER[a.confidence] >= CONF_ORDER[b.confidence] ? a.confidence : b.confidence;
+  if (bothCommitted && evCount >= 1 && confidence === "low") confidence = "medium"; // consensus + grounded
+  if (confidence === "high" && evCount < 2) confidence = "medium"; // high needs ≥2 distinct citations (union)
+  if (evCount === 0 && !bothCommitted) confidence = "low"; // ungrounded lone guess
+  if (primary.status === "needs_confirmation" && confidence === "high") confidence = "medium"; // never amplify sensitive
+
+  return { ...primary, confidence, evidenceIds, mediaEvidenceIds };
+}
+
+/** Merge two agents' full section answer-sets, question by question. */
+export function mergeSectionAnswers(
+  a: SynthesizedAnswer[],
+  b: SynthesizedAnswer[],
+  questions: PreferenceQuestionDefinition[],
+): SynthesizedAnswer[] {
+  const am = new Map(a.map((x) => [x.questionId, x]));
+  const bm = new Map(b.map((x) => [x.questionId, x]));
+  return questions.map((q) => {
+    const x = am.get(q.id);
+    const y = bm.get(q.id);
+    if (x && y) return mergeAnswerPair(x, y);
+    return x ?? y ?? mapOneAnswer({}, q);
+  });
+}
+
+/** Synthesize ONE section: build its targeted context (text + REAL images), run AGENTS_PER_SECTION
+ *  independent multimodal Vertex reads in parallel, and merge them by consensus. Returns null only if
+ *  EVERY agent failed (Vertex unavailable) so the caller can fall back to honest unknowns / the fast pass. */
 export async function synthesizeSection(
   sectionId: PreferenceQuestionSectionId,
   questions: PreferenceQuestionDefinition[],
@@ -630,10 +702,16 @@ export async function synthesizeSection(
 ): Promise<SynthesizedAnswer[] | null> {
   if (!questions.length) return [];
   const context = buildSectionContext(sectionId, contentItems, mediaAnalyses);
-  const { body } = buildSectionSynthesisRequest(model, context, questions, professionalContext);
-  const json = await callVertex(model, body);
-  if (!json) return null;
-  return parseSectionAnswers(json, questions);
+  const reads = await Promise.all(
+    Array.from({ length: AGENTS_PER_SECTION }, async (_agent, agentIndex) => {
+      const { body } = buildSectionSynthesisRequest(model, context, questions, professionalContext, { agentIndex });
+      const json = await callVertex(model, body);
+      return json ? parseSectionAnswers(json, questions) : null;
+    }),
+  );
+  const ok = reads.filter((r): r is SynthesizedAnswer[] => r !== null);
+  if (!ok.length) return null;
+  return ok.length === 1 ? ok[0] : mergeSectionAnswers(ok[0], ok[1], questions);
 }
 
 export interface SynthesizeInput {
