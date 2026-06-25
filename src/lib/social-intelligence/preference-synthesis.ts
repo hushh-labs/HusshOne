@@ -52,7 +52,9 @@ const FETCH_TIMEOUT_MS = 150_000;
 // rev "8": de-noised lifestyle cards (stopword + word-count cleanup; places no longer pull noisy
 // webEntities/bestGuessLabels; foods no longer pull tableItems) + 4 agents/section (was 2). Forces recompute
 // so existing users get the cleaner cards from their existing media (no re-scrape needed).
-const PREFERENCE_DATA_SHAPE_REV = "8";
+// rev "9": stopword top-up — strip literal null/placeholder tokens, planet-scale "places" (Earth/World),
+// and generic containers (water bottle / monitor) that still leaked into the cards.
+const PREFERENCE_DATA_SHAPE_REV = "9";
 
 // Per-section multimodal: how many real images each section agent is shown (Vertex fileData parts), and how
 // many independent agents read each section (their answers are merged by consensus — more agents = stronger
@@ -893,6 +895,10 @@ const GENERIC_FACT_STOPWORDS = new Set([
   "community", "organization", "company", "business", "management", "design", "graphics", "graphic",
   "illustration", "art", "technology", "electronics", "gadget", "device", "object", "thing", "stock photography",
   "event", "ceremony", "meeting", "room", "wall", "floor", "table", "smile", "happy", "fun",
+  // v5.2: literal null/placeholder tokens + planet-scale "places" + generic containers the model emits.
+  "null", "none", "n/a", "na", "nil", "unknown", "undefined", "not visible", "not applicable", "not specified",
+  "earth", "world", "planet", "globe", "map", "water bottle", "water bottles", "bottle", "computer monitor",
+  "computer monitors", "monitor", "screen", "indoor", "outdoor", "background", "foreground",
 ]);
 
 /** Clean a list of raw fact strings for a lifestyle card: trim, drop empties / pure-numbers / overly long
