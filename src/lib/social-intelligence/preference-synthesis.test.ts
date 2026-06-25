@@ -560,9 +560,10 @@ describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
           vision: { landmarks: [], bestGuessLabels: ["Businessperson", "Presentation"] }, // reverse-image noise → must NOT become places
           semantic: {
             brands: ["Apple", "Logo", "Product"], // "Logo"/"Product" are generic → dropped
-            foodDrink: ["coffee"],
-            tableItems: ["Water Bottle", "Small Plant"], // not food → must NOT appear in foods
+            foodDrink: ["coffee", "Water Bottle", "null"], // "water bottle"/"null" → dropped (v5.2)
+            tableItems: ["Small Plant"], // not routed to foods at all
             placeGuess: "Tokyo",
+            landmarksSeen: ["Earth", "World"], // planet-scale → dropped (v5.2)
             surroundings: "Digital Graphic With Map Elements", // 5 words → dropped by word-count cap
           },
         },
@@ -570,8 +571,8 @@ describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
       ),
     ]);
     expect(facts.topBrands.map((b) => b.value)).toEqual(["Apple"]); // generic "Logo"/"Product" filtered
-    expect(facts.foods.map((f) => f.value.toLowerCase())).toEqual(["coffee"]); // no "water bottle"/"small plant"
-    expect(facts.places.map((p) => p.value)).toEqual(["Tokyo"]); // no "Businessperson"/"Presentation"
+    expect(facts.foods.map((f) => f.value.toLowerCase())).toEqual(["coffee"]); // no "water bottle"/"null"
+    expect(facts.places.map((p) => p.value)).toEqual(["Tokyo"]); // no "Earth"/"World"
     expect(facts.surroundings).toEqual([]); // wordy description dropped
   });
 
