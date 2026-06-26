@@ -54,7 +54,10 @@ const FETCH_TIMEOUT_MS = 150_000;
 // so existing users get the cleaner cards from their existing media (no re-scrape needed).
 // rev "9": stopword top-up — strip literal null/placeholder tokens, planet-scale "places" (Earth/World),
 // and generic containers (water bottle / monitor) that still leaked into the cards.
-const PREFERENCE_DATA_SHAPE_REV = "9";
+// rev "10": ROBUST de-noise — realText() drops "None"/"null" component values at the source (no more
+// "None None (None)" footwear), and cleanFactValues is token-aware: drops all-junk values + (for places)
+// continent/planet-scale tokens ("Africa Continent").
+const PREFERENCE_DATA_SHAPE_REV = "10";
 
 // Per-section multimodal: how many real images each section agent is shown (Vertex fileData parts), and how
 // many independent agents read each section (their answers are merged by consensus — more agents = stronger
@@ -271,6 +274,14 @@ function normText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
+// v5.3: placeholder/junk values the model emits for an absent field. Treated as empty so a nested object
+// like footwear {color:"None", type:"None", model:"None"} yields NO signal (was "None None (None)").
+const JUNK_VALUES = new Set(["none", "null", "n/a", "na", "nil", "unknown", "undefined", "not visible", "not applicable", "not specified", "n a"]);
+function realText(value: unknown): string {
+  const t = normText(value);
+  return t && !JUNK_VALUES.has(t.toLowerCase()) ? t : "";
+}
+
 /** Flatten a v5 nested media field (object / array-of-objects) into citable strings. */
 function transformSignal(transform: MediaSignalTransform, value: unknown, objectKey?: string): string[] {
   if (transform === "clothing") {
@@ -279,8 +290,8 @@ function transformSignal(transform: MediaSignalTransform, value: unknown, object
     return value
       .map((raw) => {
         const o = asRecord(raw);
-        const label = [normText(o.color), normText(o.type)].filter(Boolean).join(" ");
-        const brand = normText(o.brand);
+        const label = [realText(o.color), realText(o.type)].filter(Boolean).join(" ");
+        const brand = realText(o.brand);
         const out = brand ? (label ? `${label} (${brand})` : brand) : label;
         return out.trim();
       })
@@ -291,14 +302,14 @@ function transformSignal(transform: MediaSignalTransform, value: unknown, object
     // value: { present?, color?, style? } → only when glasses are present.
     const o = asRecord(value);
     if (o.present === false) return [];
-    const detail = [normText(o.color), normText(o.style)].filter(Boolean).join(" ");
+    const detail = [realText(o.color), realText(o.style)].filter(Boolean).join(" ");
     if (o.present === true || detail) return [detail ? `glasses: ${detail}` : "glasses"];
     return [];
   }
   if (transform === "footwear") {
     const o = asRecord(value);
-    const label = [normText(o.color), normText(o.type)].filter(Boolean).join(" ");
-    const model = normText(o.model);
+    const label = [realText(o.color), realText(o.type)].filter(Boolean).join(" ");
+    const model = realText(o.model);
     const out = model ? (label ? `${label} (${model})` : model) : label;
     return out.trim() ? [out.trim()] : [];
   }
@@ -901,15 +912,35 @@ const GENERIC_FACT_STOPWORDS = new Set([
   "computer monitors", "monitor", "screen", "indoor", "outdoor", "background", "foreground",
 ]);
 
+// v5.3: continent/planet-scale tokens — too broad to be a useful "place". Dropped from the PLACES card
+// (token-level, so "Africa Continent" / "Earth" go, but a real brand/word elsewhere is untouched).
+const BROAD_PLACE_TOKENS = new Set([
+  "earth", "world", "planet", "globe", "continent", "africa", "asia", "europe", "antarctica", "oceania",
+]);
+// Connector/junk tokens — a value made ENTIRELY of these (e.g. "None None (None)") carries no signal.
+const JUNK_TOKENS = new Set(["none", "null", "n/a", "na", "nil", "unknown", "undefined", "the", "a", "an", "of", "with", "and", "or"]);
+const tokenize = (v: string): string[] => v.toLowerCase().split(/\s+/).map((t) => t.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")).filter(Boolean);
+
 /** Clean a list of raw fact strings for a lifestyle card: trim, drop empties / pure-numbers / overly long
- *  or wordy descriptions (e.g. "Digital Graphic With Map Elements") / generic visual-noise stopwords. */
-function cleanFactValues(values: string[], maxWords = 4): string[] {
+ *  or wordy descriptions / generic visual-noise stopwords / all-junk values ("None None (None)") and —
+ *  for places — continent/planet-scale tokens. */
+function cleanFactValues(values: string[], opts: { maxWords?: number; dropBroadPlaces?: boolean } = {}): string[] {
+  const maxWords = opts.maxWords ?? 4;
   return values
     .map((v) => v.replace(/\s+/g, " ").trim())
     .filter((v) => v.length > 0 && v.length <= 40)
     .filter((v) => v.split(" ").length <= maxWords)
     .filter((v) => !/^[\d.,%]+$/.test(v))
-    .filter((v) => !GENERIC_FACT_STOPWORDS.has(v.toLowerCase()));
+    .filter((v) => !GENERIC_FACT_STOPWORDS.has(v.toLowerCase()))
+    .filter((v) => {
+      const toks = tokenize(v);
+      if (!toks.length) return false;
+      // Drop values that are ENTIRELY junk/stopword tokens (e.g. "None None (None)").
+      if (toks.every((t) => JUNK_TOKENS.has(t) || GENERIC_FACT_STOPWORDS.has(t))) return false;
+      // For places, drop anything containing a continent/planet-scale token.
+      if (opts.dropBroadPlaces && toks.some((t) => BROAD_PLACE_TOKENS.has(t))) return false;
+      return true;
+    });
 }
 
 /** Aggregate the deep per-image reads across all completed media analyses into factual lifestyle cards.
@@ -944,29 +975,29 @@ export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): L
     const vision = asRecord(analysis.vision);
     const clothing = Array.isArray(semantic.clothing) ? semantic.clothing.map((c) => asRecord(c)) : [];
 
-    // Brands: declared brands + per-garment brand + detected logos.
+    // Brands: declared brands + per-garment brand + detected logos. realText drops "None"/"null" placeholders.
     for (const b of strArray(semantic.brands)) brands.push(b);
-    for (const c of clothing) if (normText(c.brand)) brands.push(normText(c.brand));
+    for (const c of clothing) if (realText(c.brand)) brands.push(realText(c.brand));
     for (const l of strArray(vision.logos)) brands.push(l);
 
     // Colours: aesthetic palette + per-garment colour.
     for (const c of strArray(semantic.colorAesthetic)) colours.push(c);
-    for (const c of clothing) if (normText(c.color)) colours.push(normText(c.color));
+    for (const c of clothing) if (realText(c.color)) colours.push(realText(c.color));
 
     // Eyewear present/absent + style.
     const eyewear = asRecord(semantic.eyewear);
     if (eyewear.present === true) {
       eyewearPresent += 1;
-      const detail = [normText(eyewear.color), normText(eyewear.style)].filter(Boolean).join(" ");
+      const detail = [realText(eyewear.color), realText(eyewear.style)].filter(Boolean).join(" ");
       if (detail) eyewearStyles.push(detail);
     } else if (eyewear.present === false) {
       eyewearAbsent += 1;
     }
 
-    // Footwear.
+    // Footwear. realText drops all-"None" rows → no "None None (None)".
     const fw = asRecord(semantic.footwear);
-    const fwLabel = [normText(fw.color), normText(fw.type)].filter(Boolean).join(" ");
-    const fwModel = normText(fw.model);
+    const fwLabel = [realText(fw.color), realText(fw.type)].filter(Boolean).join(" ");
+    const fwModel = realText(fw.model);
     const fwOut = fwModel ? (fwLabel ? `${fwLabel} (${fwModel})` : fwModel) : fwLabel;
     if (fwOut) footwear.push(fwOut);
 
@@ -1007,11 +1038,11 @@ export function aggregateLifestyleFacts(mediaAnalyses: MediaAnalysisRecord[]): L
   return {
     sampleSize,
     topBrands: rankByFrequency(cleanFactValues(brands), 8),
-    topColours: rankByFrequency(cleanFactValues(colours, 3), 8),
+    topColours: rankByFrequency(cleanFactValues(colours, { maxWords: 3 }), 8),
     eyewear: { present: eyewearPresent, absent: eyewearAbsent, topStyles: rankByFrequency(cleanFactValues(eyewearStyles), 5) },
     footwear: rankByFrequency(cleanFactValues(footwear), 6),
     foods: rankByFrequency(cleanFactValues(foods), 8),
-    places: rankByFrequency(cleanFactValues(places), 8),
+    places: rankByFrequency(cleanFactValues(places, { dropBroadPlaces: true }), 8),
     soloVsSocial: { solo, group },
     timeOfDay: rankByFrequency(cleanFactValues(timeOfDay), 4),
     surroundings: rankByFrequency(cleanFactValues(surroundings), 6),

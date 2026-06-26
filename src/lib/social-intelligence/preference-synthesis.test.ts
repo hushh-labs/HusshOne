@@ -563,7 +563,8 @@ describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
             foodDrink: ["coffee", "Water Bottle", "null"], // "water bottle"/"null" → dropped (v5.2)
             tableItems: ["Small Plant"], // not routed to foods at all
             placeGuess: "Tokyo",
-            landmarksSeen: ["Earth", "World"], // planet-scale → dropped (v5.2)
+            landmarksSeen: ["Earth", "World", "Africa Continent"], // planet/continent-scale → dropped
+            footwear: { color: "None", type: "None", model: "None" }, // all-junk → no "None None (None)" (v5.3)
             surroundings: "Digital Graphic With Map Elements", // 5 words → dropped by word-count cap
           },
         },
@@ -572,7 +573,8 @@ describe("aggregateLifestyleFacts (v5 lifestyle cards)", () => {
     ]);
     expect(facts.topBrands.map((b) => b.value)).toEqual(["Apple"]); // generic "Logo"/"Product" filtered
     expect(facts.foods.map((f) => f.value.toLowerCase())).toEqual(["coffee"]); // no "water bottle"/"null"
-    expect(facts.places.map((p) => p.value)).toEqual(["Tokyo"]); // no "Earth"/"World"
+    expect(facts.places.map((p) => p.value)).toEqual(["Tokyo"]); // no "Earth"/"World"/"Africa Continent"
+    expect(facts.footwear).toEqual([]); // all-"None" footwear row produces no signal
     expect(facts.surroundings).toEqual([]); // wordy description dropped
   });
 
