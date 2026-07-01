@@ -11,7 +11,9 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
   return (
     <div className={styles.shell}>
       <DocsNav />
-      <main className={styles.content}>{children}</main>
+      <main className={styles.content}>
+        <div className={styles.article}>{children}</div>
+      </main>
     </div>
   );
 }
