@@ -45,6 +45,13 @@ export const DOC_SECTIONS: DocSection[] = [
       { slug: "security", title: "Security & privacy", blurb: "BYOC trust model: your keys and data stay yours.", source: "docs/specs/byoc-security-privacy.md" },
     ],
   },
+  {
+    title: "Developer API",
+    docs: [
+      { slug: "api-streaming", title: "Streaming + preferences", blurb: "Submit a subject, stream live progress (SSE), get the dossier + preference & lifestyle profile.", source: "docs/one-api-streaming.md" },
+      { slug: "api-basics", title: "Scan API basics", blurb: "The two-call poll flow: start a scan, poll for the dossier.", source: "docs/one-api.md" },
+    ],
+  },
 ];
 
 export const ALL_DOCS: DocMeta[] = DOC_SECTIONS.flatMap((s) => s.docs);
