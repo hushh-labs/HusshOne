@@ -29,26 +29,27 @@ describe("GET /api/v1/scan/[id]", () => {
     mocks.verifyDevApiRequest.mockReturnValue({ keyId: "acme" });
   });
 
-  it("returns the native dossier result + scraped profiles, with the preference layer stripped", async () => {
+  it("returns the FULL native dossier result + scraped profiles + a top-level preferences block", async () => {
     mocks.recoverScan.mockResolvedValueOnce({
       httpStatus: 200,
-      body: {
-        ok: true,
-        status: "completed",
-        result: { report: "# Dossier", summary: "S", preferenceProfile: { x: 1 }, preferenceStatus: "completed" },
-      },
+      body: { ok: true, status: "completed", result: { report: "# Dossier", summary: "S" } },
     });
+    // No socials/consent in the stored input → readDevPreferences resolves to "skipped" (no cross-subject read).
     mocks.getResearchJob.mockResolvedValueOnce({ input: { apiProfiles: { linkedin: { name: "Sundar" }, instagram: null, threads: null, x: null } } });
 
     const res = await GET(req(), ctx("scan-1"));
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { ok: boolean; status: string; profiles: Record<string, unknown>; result: Record<string, unknown> };
+    const json = (await res.json()) as {
+      ok: boolean;
+      status: string;
+      profiles: Record<string, unknown>;
+      result: Record<string, unknown>;
+      preferences: { status: string; profile: unknown };
+    };
     expect(json).toMatchObject({ ok: true, scanId: "scan-1", status: "completed" });
     expect((json.profiles.linkedin as { name: string }).name).toBe("Sundar");
-    expect(json.result.report).toBe("# Dossier");
-    // preference layer must NOT leak into the v1 contract
-    expect(json.result).not.toHaveProperty("preferenceProfile");
-    expect(json.result).not.toHaveProperty("preferenceStatus");
+    expect(json.result.report).toBe("# Dossier"); // full result, not stripped
+    expect(json.preferences).toEqual({ status: "skipped", profile: null });
     // ownership scoped to the key's synthetic user
     expect(mocks.recoverScan).toHaveBeenCalledWith(expect.objectContaining({ uid: "api:acme", id: "scan-1" }));
   });

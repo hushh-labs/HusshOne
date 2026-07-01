@@ -25,7 +25,7 @@ vi.mock("@/lib/research/dossier", () => ({ buildPersonDossierQuestion: mocks.bui
 vi.mock("@/lib/research/client", () => ({ startResearch: mocks.startResearch }));
 vi.mock("@/lib/db/scan-store", () => ({ upsertOneUser: mocks.upsertOneUser, createConsentAndScan: mocks.createConsentAndScan }));
 
-import { POST } from "./route";
+import { POST, OPTIONS } from "./route";
 
 function req(body: unknown, headers: Record<string, string> = { authorization: "Bearer sk" }): Request {
   return new Request("https://one.hushh.ai/api/v1/scan", { method: "POST", headers, body: JSON.stringify(body) });
@@ -68,5 +68,28 @@ describe("POST /api/v1/scan", () => {
     const res = await POST(req({ email: "s@e.com" }));
     expect(res.status).toBe(400);
     expect(mocks.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("403 consent_required when consentAttestation is false — before any research starts", async () => {
+    mocks.buildV1ScanInput.mockResolvedValueOnce({
+      input: { name: "Sundar", email: "s@e.com", zipCode: "94040", purpose: "self_audit", consentAttestation: false },
+      profiles: { linkedin: null, instagram: null, threads: null, x: null },
+    });
+    const res = await POST(req({ name: "Sundar", email: "s@e.com", zipCode: "94040", consentAttestation: false }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ ok: false, code: "consent_required" });
+    expect(mocks.startResearch).not.toHaveBeenCalled();
+  });
+
+  it("returns links{self,stream,preferences} on 202", async () => {
+    const res = await POST(req({ name: "Sundar", email: "s@e.com", latitude: 1, longitude: 2 }));
+    const json = (await res.json()) as { links?: { self: string; stream: string; preferences: string } };
+    expect(json.links).toEqual({ self: "/api/v1/scan/scan-1", stream: "/api/v1/scan/scan-1/stream", preferences: "/api/v1/scan/scan-1/preferences" });
+  });
+
+  it("OPTIONS preflight is 204 with CORS", () => {
+    const res = OPTIONS();
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
   });
 });

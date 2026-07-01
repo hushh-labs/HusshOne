@@ -57,6 +57,14 @@ function asNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Boolean flag with a default: absent/null → default; explicit false → false; anything truthy → true. */
+function asBool(value: unknown, dflt: boolean): boolean {
+  if (value === undefined || value === null) return dflt;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return !/^(false|0|no)$/i.test(value.trim());
+  return Boolean(value);
+}
+
 async function enrichLinkedIn(url: unknown): Promise<{ profile?: LinkedInProfileFull; report: V1ProfileReport }> {
   if (!asString(url)) return { report: null };
   try {
@@ -118,15 +126,24 @@ export async function buildV1ScanInput(body: Record<string, unknown>): Promise<V
   const socialProfiles = [ig.profile, th.profile, x.profile].filter((p): p is SocialProfileFull => Boolean(p));
   const confirmedProfiles = confirmedFrom(li.profile, socialProfiles);
 
+  const phone = asString(body.phone) || undefined;
+  // Consent is part of the contract: default true (the API-key holder attests authorization), the dev may
+  // override to false. consentAttestation=false → the route rejects with 403. socialPreferenceConsent
+  // gates the preference/lifestyle layer (default true, like the One web app).
+  const consentAttestation = asBool(body.consentAttestation, true);
+  const socialPreferenceConsent = asBool(body.socialPreferenceConsent, true);
+
   const input: OneSubjectInput = {
     name,
     email,
     ...(hasGeo ? { latitude, longitude } : {}),
     ...(zipCode ? { zipCode } : {}),
+    ...(phone ? { phone } : {}),
     ...(li.profile ? { linkedinProfile: li.profile } : {}),
     ...(socialProfiles.length ? { socialProfiles } : {}),
     confirmedProfiles,
-    consentAttestation: true,
+    consentAttestation,
+    socialPreferenceConsent,
     purpose: "self_audit",
   };
 

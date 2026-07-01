@@ -1,30 +1,29 @@
 /* Developer API — POST /api/v1/scan
    Auth: ONE_DEV_API_KEYS (Bearer). Body: name+email+location (required) + optional LinkedIn/X/Threads/
-   Instagram URLs. Each provided URL is scraped via its service VM, preloaded into Phase-1 (exactly like
-   the One web app), and the scan is started. Returns 202 with the scanId + the scraped per-platform
-   contracts. No preference layer. Poll GET /api/v1/scan/{id} for the dossier. */
-import { NextResponse } from "next/server";
+   Instagram URLs + phone + consent flags. Each provided URL is scraped via its service VM, preloaded
+   into Phase-1 (exactly like the One web app), the scan is started, and — when consent + a social feed
+   are present — the preference/lifestyle pipeline is enabled per-subject. Returns 202 with the scanId,
+   the scraped per-platform contracts, and links to poll / stream / read preferences. Behaves like
+   one.hushh.ai: stream GET /api/v1/scan/{id}/stream for live progress, or poll GET /api/v1/scan/{id}. */
 import type { Prisma } from "@prisma/client";
 import { verifyDevApiRequest, apiOwnerUid } from "@/lib/auth/dev-api";
 import { buildV1ScanInput, V1InputError } from "@/lib/api/v1-input";
 import { buildPersonDossierQuestion } from "@/lib/research/dossier";
 import { startResearch, type ResearchDepth } from "@/lib/research/client";
 import { createConsentAndScan, upsertOneUser } from "@/lib/db/scan-store";
+import { enableDevPreferences } from "@/lib/api/v1-preferences";
+import { apiError, apiJson, corsPreflight, statusCodeOf } from "@/lib/api/http";
 import type { LocationMode } from "@/lib/ria/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // live scraping (VM browser) can take tens of seconds per platform
 
-function toJsonValue(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+export function OPTIONS() {
+  return corsPreflight();
 }
 
-function statusCodeOf(error: unknown, fallback = 500): number {
-  if (typeof error === "object" && error && "statusCode" in error) {
-    const n = Number((error as { statusCode?: number }).statusCode);
-    if (Number.isFinite(n) && n >= 400) return n;
-  }
-  return fallback;
+function toJsonValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 function clientIp(request: Request): string | null {
@@ -36,12 +35,18 @@ export async function POST(request: Request) {
   try {
     ({ keyId } = verifyDevApiRequest(request));
   } catch (error) {
-    return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "Unauthorized" }, { status: 401 });
+    return apiError(401, "unauthorized", error instanceof Error ? error.message : "Unauthorized");
   }
 
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const { input, profiles } = await buildV1ScanInput(body);
+
+    // Consent is part of the contract (default true; the API-key holder attests authorization). If the
+    // dev explicitly sends consentAttestation:false, we do not scan.
+    if (!input.consentAttestation) {
+      return apiError(403, "consent_required", "consentAttestation must be true to run a scan.");
+    }
 
     const ownerUid = apiOwnerUid(keyId);
     const user = await upsertOneUser({
@@ -69,21 +74,28 @@ export async function POST(request: Request) {
       userAgent: request.headers.get("user-agent"),
     });
 
-    return NextResponse.json(
+    // Enable the preference/lifestyle layer per-subject (own synthetic user → no cross-subject collision):
+    // inline fast-pass now + enqueue the deep climb (→ media-analyze → recompute → v3 + lifestyle). Best-effort.
+    const prefEnabled = await enableDevPreferences({ keyId, input, scanRunId: scan.scanRunId }).catch(() => null);
+
+    const base = scan.scanRunId ? `/api/v1/scan/${scan.scanRunId}` : null;
+    return apiJson(
       {
         ok: true,
         scanId: scan.scanRunId,
         status: "running",
-        statusUrl: scan.scanRunId ? `/api/v1/scan/${scan.scanRunId}` : null,
+        statusUrl: base, // back-compat
+        links: base ? { self: base, stream: `${base}/stream`, preferences: `${base}/preferences` } : null,
+        preferences: { enabled: Boolean(prefEnabled), status: prefEnabled ? "running" : "skipped" },
         profiles,
       },
-      { status: 202 },
+      202,
     );
   } catch (error) {
     const status = error instanceof V1InputError ? error.statusCode : statusCodeOf(error, 502);
     const code = error instanceof V1InputError ? error.code : "scan_start_failed";
     const message = error instanceof Error ? error.message : "Could not start the scan";
     console[status >= 500 ? "error" : "warn"](JSON.stringify({ event: "one.v1.scan_start_failed", severity: status >= 500 ? "ERROR" : "WARNING", keyId, status, code, message }));
-    return NextResponse.json({ ok: false, error: message, code }, { status });
+    return apiError(status, code, message);
   }
 }

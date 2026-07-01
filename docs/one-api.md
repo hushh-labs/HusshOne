@@ -9,7 +9,7 @@ Two calls: **`POST /api/v1/scan`** to start (returns immediately with the scrape
 - Base URL: `https://one.hushh.ai`
 - Auth: `Authorization: Bearer <YOUR_API_KEY>` on every request.
 - Async: the dossier takes a few minutes — poll the GET every ~10s until `status` is `completed`.
-- The **preference layer is not part of this API** — it returns the identity dossier only.
+- For **live streaming progress** plus the **preference + lifestyle layer**, see [Streaming + preferences](one-api-streaming.md) — this page covers the basic two-call poll flow.
 
 ---
 
