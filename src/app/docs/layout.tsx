@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import DocsNav from "./DocsNav";
-import styles from "./docs.module.css";
+import DocsShell from "./DocsShell";
 
 export const metadata: Metadata = {
   title: "Docs — One Burst Compute",
@@ -8,12 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function DocsLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className={styles.shell}>
-      <DocsNav />
-      <main className={styles.content}>
-        <div className={styles.article}>{children}</div>
-      </main>
-    </div>
-  );
+  return <DocsShell>{children}</DocsShell>;
 }
