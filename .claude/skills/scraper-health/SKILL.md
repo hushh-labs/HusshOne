@@ -20,10 +20,19 @@ checks all four **safely** (read-only — no scrape, so it never consumes rate-l
 - **VMs live in project `hushh-tech-prod`**, zone `us-central1-c`:
   | Service | VM name | Endpoint |
   |---|---|---|
-  | Instagram | `instagram-scraper-vm` | `http://35.192.178.122:8080` |
+  | Instagram | `instagram-scraper-vm` | `http://35.192.178.122:8080` ⚠️ EPHEMERAL — drifts on VM restart |
   | X / Twitter | `twitter-scraper-vm` | `http://34.27.236.224:8080` |
   | Threads | `threads-scraper-vm` | `http://34.56.201.251:8080` |
   | LinkedIn | `linkedin-scraper-vm` | `https://linkedin-scraper.136.114.82.27.sslip.io` |
+
+  ⚠️ **IG /health 000 is usually a stale IP, NOT a down service.** The reserved static IP
+  `instagram-scraper-ip`=`35.192.178.122` is currently DETACHED (RESERVED, not attached); the VM runs on an
+  ephemeral IP that changes on restart. The TRUTH is the `one` Cloud Run service's `INSTAGRAM_SCRAPER_URL`
+  env (that's what the app actually calls) — or `gcloud compute instances describe instagram-scraper-vm
+  --project hushh-tech-prod --zone us-central1-c --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`.
+  Durable fix: re-attach the static IP to the VM (delete its ephemeral access-config, add
+  `--address=35.192.178.122`) and set `INSTAGRAM_SCRAPER_URL=http://35.192.178.122:8080`. Verify inside the
+  VM first: `ssh … curl localhost:8080/health` — 200 there but 000 outside == IP/network, not the service.
 - **API-key secrets live in project `hushone-app`** (the One app's project), NOT `hushh-tech-prod`:
   `instagram-scraper-api-key`, `twitter-scraper-api-key`, `threads-scraper-api-key`, `linkedin-scraper-api-key`.
   ⚠️ **Trap:** fetching with `--project hushh-tech-prod` returns empty → 401 "Unauthorized". Always
