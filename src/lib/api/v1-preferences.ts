@@ -29,18 +29,26 @@ const FIRST_TARGET = 240;
 
 export type DevPreferenceStatus = "skipped" | "running" | "completed";
 
-/** Deterministic hash of the subject's scraped socials (version-salted) — the per-subject identity. */
+/** Deterministic, ORDER-STABLE hash of the subject's social handles (version-salted) — the per-subject
+ *  identity. Keyed on the sorted profile URLs/usernames, NOT the full scraped objects: those get stored in
+ *  Postgres `jsonb`, which does not preserve key order, so hashing the whole object would produce a
+ *  DIFFERENT hash at POST (in-memory) vs GET (from the DB) → the profile saved under one subject-uid but
+ *  read under another. Sorted scalar handles are stable across that round-trip. */
 export function subjectInputHash(input: { linkedinProfile?: unknown; socialProfiles?: unknown }): string {
+  const ids: string[] = [];
+  const li = input.linkedinProfile as { profileUrl?: unknown } | null | undefined;
+  const liUrl = li && typeof li.profileUrl === "string" ? li.profileUrl : "";
+  if (liUrl) ids.push(`linkedin:${liUrl.toLowerCase().replace(/\/+$/, "")}`);
+  const socials = Array.isArray(input.socialProfiles) ? (input.socialProfiles as Array<Record<string, unknown>>) : [];
+  for (const p of socials) {
+    const platform = typeof p.platform === "string" ? p.platform.toLowerCase() : "social";
+    const handle = (typeof p.profileUrl === "string" && p.profileUrl) || (typeof p.username === "string" && p.username) || "";
+    if (handle) ids.push(`${platform}:${String(handle).toLowerCase().replace(/\/+$/, "")}`);
+  }
+  ids.sort();
   return crypto
     .createHash("sha256")
-    .update(
-      JSON.stringify({
-        profileVersion: PROFILE_VERSION,
-        questionRegistryVersion: QUESTION_REGISTRY_VERSION,
-        linkedinProfile: input.linkedinProfile ?? null,
-        socialProfiles: input.socialProfiles ?? [],
-      }),
-    )
+    .update(JSON.stringify({ profileVersion: PROFILE_VERSION, questionRegistryVersion: QUESTION_REGISTRY_VERSION, ids }))
     .digest("hex");
 }
 

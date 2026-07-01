@@ -71,6 +71,17 @@ describe("subjectInputHash + apiSubjectUid", () => {
     expect(apiSubjectUid("acme", a)).toMatch(/^api:acme:[0-9a-f]{24}$/);
     expect(apiSubjectUid("acme", a)).not.toBe(apiSubjectUid("acme", b));
   });
+
+  it("is STABLE across key reordering + extra fields (jsonb round-trip safe)", () => {
+    // Postgres jsonb doesn't preserve key order — the hash must key on handles only, not object shape.
+    const inMemory = { socialProfiles: [{ platform: "X", username: "sundarpichai", profileUrl: "https://x.com/sundarpichai", timelineItems: [{ text: "a" }] }] };
+    const fromJsonb = { socialProfiles: [{ profileUrl: "https://x.com/sundarpichai", timelineItems: [{ text: "a" }], username: "sundarpichai", platform: "X" }] };
+    expect(subjectInputHash(inMemory)).toBe(subjectInputHash(fromJsonb));
+    // trailing slash / case differences on the URL also normalize to the same subject
+    expect(subjectInputHash({ socialProfiles: [{ platform: "X", profileUrl: "https://X.com/SundarPichai/" }] })).toBe(
+      subjectInputHash({ socialProfiles: [{ platform: "x", profileUrl: "https://x.com/sundarpichai" }] }),
+    );
+  });
 });
 
 describe("devPreferencesEnabled", () => {
