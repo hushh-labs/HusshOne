@@ -53,7 +53,7 @@ export default function DocsShell({ children }: { children: React.ReactNode }) {
           ☰
         </button>
         <a href="/docs" className={styles.topbarBrand}>
-          🤫 One Docs
+          🤫 One API Docs
         </a>
         <button className={styles.iconBtn} aria-label="Toggle theme" onClick={toggleTheme}>
           {theme === "light" ? "🌙" : "☀️"}

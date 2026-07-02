@@ -1,8 +1,7 @@
-/* The public documentation site for One Burst Compute (rendered at /docs).
-   A curated, customer- and developer-facing set sourced from the repo markdown so the
-   site and the repo never drift. Internal-ops docs (SLO/observability, the FDE rollback
-   runbook, the QA test plan) are intentionally NOT published here — they live in the
-   repo and the internal wiki.
+/* The public documentation site for the One Developer API (rendered at /docs) — One's intelligence
+   over HTTP: dossier + preference/lifestyle profile, with live SSE streaming. Sourced from the repo
+   markdown so the site and the repo never drift. The separate "One Burst Compute" product docs live
+   in the repo but are intentionally NOT published on this site.
 
    This module is CLIENT-SAFE (pure data + link resolution). The filesystem read lives in
    ./read.ts so it never enters the browser bundle. */
@@ -24,33 +23,15 @@ export const DOC_SECTIONS: DocSection[] = [
   {
     title: "Start here",
     docs: [
-      { slug: "overview", title: "Overview", blurb: "What One Burst Compute is and how it works.", source: "docs/xtreme-compute-burst.md" },
-      { slug: "getting-started", title: "Getting started", blurb: "Connect your cloud and run your first burst.", source: "docs/customer/getting-started.md" },
-      { slug: "provisioning", title: "Provision your cloud", blurb: "One command or Terraform to set up your BYOC project.", source: "provisioning/README.md" },
+      { slug: "overview", title: "Overview", blurb: "What the One intelligence API is and what you can do with it.", source: "docs/one-overview.md" },
+      { slug: "api-overview", title: "API overview & contract", blurb: "Auth, the full request/response contract, the endpoint map, and every status/error code.", source: "docs/one-api-overview.md" },
     ],
   },
   {
-    title: "Developer API",
+    title: "Guides",
     docs: [
-      { slug: "api-overview", title: "API overview & contract", blurb: "One's intelligence over HTTP: auth, the full request/response contract, endpoints, and error codes.", source: "docs/one-api-overview.md" },
-      { slug: "api-streaming", title: "Streaming + preferences", blurb: "Submit a subject, stream live progress (SSE), get the dossier + preference & lifestyle profile.", source: "docs/one-api-streaming.md" },
-      { slug: "api-basics", title: "Scan API basics", blurb: "The two-call poll flow: start a scan, poll for the dossier.", source: "docs/one-api.md" },
-    ],
-  },
-  {
-    title: "How it works",
-    docs: [
-      { slug: "whitepaper", title: "White paper", blurb: "The architecture, security, and reliability model.", source: "docs/whitepaper-xtreme-compute-burst.md" },
-      { slug: "placement", title: "Placement & autoscale", blurb: "How One decides on-device vs cloud, and when to burst.", source: "docs/specs/placement-autoscale.md" },
-      { slug: "agent-registry", title: "Agent registry & A2A", blurb: "Publishing One to the Gemini Enterprise Agent Platform.", source: "docs/specs/agent-registry-and-card.md" },
-      { slug: "macos-agent", title: "macOS agent", blurb: "The native One Puppy on-device agent.", source: "docs/specs/one-puppy-macos-agent.md" },
-    ],
-  },
-  {
-    title: "Design & trust",
-    docs: [
-      { slug: "experience", title: "Product experience", blurb: "The bar for how a burst should feel.", source: "docs/specs/macos-experience.md" },
-      { slug: "security", title: "Security & privacy", blurb: "BYOC trust model: your keys and data stay yours.", source: "docs/specs/byoc-security-privacy.md" },
+      { slug: "api-streaming", title: "Streaming + preferences", blurb: "The live SSE flow and the preference & lifestyle payload in detail.", source: "docs/one-api-streaming.md" },
+      { slug: "api-basics", title: "Scan API basics", blurb: "The minimal two-call flow (start a scan, poll for the dossier) + per-platform data contracts.", source: "docs/one-api.md" },
     ],
   },
 ];
@@ -61,25 +42,15 @@ export function getDoc(slug: string): DocMeta | undefined {
   return ALL_DOCS.find((d) => d.slug === slug);
 }
 
-/* Ordered [needle, slug] map for rewriting in-doc links to site routes. First match
-   wins, so more specific needles (e.g. the test-plan / whitepaper) come before the
-   generic "xtreme-compute-burst". A link with no match falls back to the GitHub repo. */
+/* Ordered [needle, slug] map for rewriting in-doc links to site routes. First match wins, so more
+   specific needles come before generic substrings. A link with no match falls back to the GitHub repo
+   (so links to the unpublished Burst Compute docs still resolve, just to source). */
 const LINK_MAP: Array<[string, string]> = [
-  ["customer/getting-started", "getting-started"],
-  ["provisioning/README", "provisioning"],
-  ["provisioning/", "provisioning"],
-  // Developer API cross-links — specific needles first ("one-api" is a substring of the others).
+  // One intelligence API docs — specific needles first ("one-api" is a substring of the others).
   ["one-api-overview", "api-overview"],
   ["one-api-streaming", "api-streaming"],
   ["one-api", "api-basics"],
-  ["xtreme-compute-burst-test-plan", ""], // not published → GitHub
-  ["whitepaper-xtreme-compute-burst", "whitepaper"],
-  ["xtreme-compute-burst", "overview"],
-  ["placement-autoscale", "placement"],
-  ["byoc-security-privacy", "security"],
-  ["agent-registry-and-card", "agent-registry"],
-  ["one-puppy-macos-agent", "macos-agent"],
-  ["macos-experience", "experience"],
+  ["one-overview", "overview"],
 ];
 
 const GITHUB_BLOB = "https://github.com/hushh-labs/HusshOne/blob/main/";

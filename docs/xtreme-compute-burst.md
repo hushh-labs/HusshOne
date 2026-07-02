@@ -4,11 +4,6 @@
 > **Provision your cloud (script/Terraform):** [provisioning/README.md](../provisioning/README.md) ·
 > **Engineering docs (white paper, specs, OpenAPI, FDE runbook):** [docs/specs/README.md](./specs/README.md).
 
-> **Building on the API instead of running compute?** One's person‑intelligence pipeline is also a
-> **developer API** over HTTP — identity + public URLs → deep‑research dossier + preference/lifestyle
-> profile, with live SSE streaming. Start at the
-> [Developer API overview & contract](one-api-overview.md).
-
 The flagship **Xtreme Compute Burst** agent runs a heavy workload wherever it runs best:
 on the user's local Mac (**"One Puppy"** — a personal supercomputer) when it fits, or burst
 to the cloud (**GCP** in v1) when it doesn't. It is **BYOC** (bring-your-own-cloud): the burst

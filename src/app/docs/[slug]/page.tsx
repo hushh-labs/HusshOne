@@ -14,8 +14,8 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
   const doc = getDoc(slug);
-  if (!doc) return { title: "Docs — One Burst Compute" };
-  return { title: `${doc.title} — One Burst Compute`, description: doc.blurb };
+  if (!doc) return { title: "One Developer API — Docs" };
+  return { title: `${doc.title} — One Developer API`, description: doc.blurb };
 }
 
 export default async function DocPage({ params }: { params: Promise<{ slug: string }> }) {

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import DocsShell from "./DocsShell";
 
 export const metadata: Metadata = {
-  title: "Docs — One Burst Compute",
-  description: "Documentation for One Burst Compute: personal supercomputing for your Mac with bring-your-own-cloud burst.",
+  title: "One Developer API — Docs",
+  description: "Documentation for the One Developer API: run One's intelligence over HTTP — dossier + preference & lifestyle profile, with live SSE streaming.",
 };
 
 export default function DocsLayout({ children }: { children: React.ReactNode }) {
