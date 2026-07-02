@@ -30,6 +30,14 @@ export const DOC_SECTIONS: DocSection[] = [
     ],
   },
   {
+    title: "Developer API",
+    docs: [
+      { slug: "api-overview", title: "API overview & contract", blurb: "One's intelligence over HTTP: auth, the full request/response contract, endpoints, and error codes.", source: "docs/one-api-overview.md" },
+      { slug: "api-streaming", title: "Streaming + preferences", blurb: "Submit a subject, stream live progress (SSE), get the dossier + preference & lifestyle profile.", source: "docs/one-api-streaming.md" },
+      { slug: "api-basics", title: "Scan API basics", blurb: "The two-call poll flow: start a scan, poll for the dossier.", source: "docs/one-api.md" },
+    ],
+  },
+  {
     title: "How it works",
     docs: [
       { slug: "whitepaper", title: "White paper", blurb: "The architecture, security, and reliability model.", source: "docs/whitepaper-xtreme-compute-burst.md" },
@@ -43,13 +51,6 @@ export const DOC_SECTIONS: DocSection[] = [
     docs: [
       { slug: "experience", title: "Product experience", blurb: "The bar for how a burst should feel.", source: "docs/specs/macos-experience.md" },
       { slug: "security", title: "Security & privacy", blurb: "BYOC trust model: your keys and data stay yours.", source: "docs/specs/byoc-security-privacy.md" },
-    ],
-  },
-  {
-    title: "Developer API",
-    docs: [
-      { slug: "api-streaming", title: "Streaming + preferences", blurb: "Submit a subject, stream live progress (SSE), get the dossier + preference & lifestyle profile.", source: "docs/one-api-streaming.md" },
-      { slug: "api-basics", title: "Scan API basics", blurb: "The two-call poll flow: start a scan, poll for the dossier.", source: "docs/one-api.md" },
     ],
   },
 ];
@@ -67,6 +68,10 @@ const LINK_MAP: Array<[string, string]> = [
   ["customer/getting-started", "getting-started"],
   ["provisioning/README", "provisioning"],
   ["provisioning/", "provisioning"],
+  // Developer API cross-links — specific needles first ("one-api" is a substring of the others).
+  ["one-api-overview", "api-overview"],
+  ["one-api-streaming", "api-streaming"],
+  ["one-api", "api-basics"],
   ["xtreme-compute-burst-test-plan", ""], // not published → GitHub
   ["whitepaper-xtreme-compute-burst", "whitepaper"],
   ["xtreme-compute-burst", "overview"],
