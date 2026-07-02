@@ -59,8 +59,8 @@ curl -s https://one.hushh.ai/api/v1/scan/<scanId> -H "Authorization: Bearer $ONE
 **Edge cases**
 - No social URLs → dossier only; `preferences.status` = `skipped`.
 - A blocked/private/failed scrape → reported in `profiles`, omitted from the scan; the dossier still runs on the public web.
-- `consentAttestation: false` → `403 consent_required` (nothing is scanned).
-- On the stream, if it runs past the soft deadline (~27 min) it emits `pending` and the scan finishes in the background — re-attach the stream or poll.
+- `consentAttestation: false` → `403 consent_required`; the scan is **not started** (no deep research, no preference layer, nothing stored).
+- On the stream, if research is still running at the soft deadline (~27.5 min) it emits `pending` and finishes in the background — re-attach or poll. (If research already finished but the preference layer is still enriching at the deadline, it emits `done` with the best-available preferences instead.)
 
 ### Response — `202 Accepted`
 ```json
@@ -118,7 +118,7 @@ Poll every ~10 s until `status` is `completed` or `failed`.
 ## `GET /api/v1/scan/{id}/stream` — live progress (Server-Sent Events)
 
 `Content-Type: text/event-stream`. Two tracks run in parallel and are multiplexed onto one connection:
-**research** (deep-research phases → dossier) and **preferences** (fast profile → enriched v3 + lifestyle).
+**research** (deep-research phases → dossier) and **preferences** (fast profile → enriched v5 + lifestyle).
 Re-attachable — reconnect any time and it resumes from the current state.
 
 ```bash
@@ -147,7 +147,7 @@ data: {"scan":{ … },"preferences":{ "status":"completed","profile":{ … } }}
 | `start` | `{ scanId, status }` | Stream opened. |
 | `progress` | `{ phaseIndex, phase, elapsedMs }` | Research phase advancing (6 phases). |
 | `dossier` | `{ status, result }` | Deep-research result ready (`OneDashboardResult`). |
-| `preferences` | `{ status, profile }` | Preference profile — fast pass first, then enriched (v3 + lifestyle). |
+| `preferences` | `{ status, profile }` | Preference profile — fast pass first, then enriched (v5 + lifestyle). |
 | `ping` | `{ elapsedMs }` | Heartbeat (~7 s) — keeps the connection alive during long work. |
 | `done` | `{ scan, preferences }` | **Terminal** — everything ready. |
 | `error` | `{ code, error }` | **Terminal** — failed. |
@@ -170,7 +170,7 @@ es.addEventListener("done", () => es.close());
   "scanId": "285d9ef0-…",
   "status": "completed",
   "preferences": {
-    "version": "v3.1-…",
+    "version": "2026-06-24.social-preference-questions-v5",
     "generatedAt": "2026-07-01T…",
     "questionCoverage": { "total": 30, "answered": 17, "inferred": 13, "needsConfirmation": 0, "unknown": 0 },
     "sectionSummaries": [
@@ -227,16 +227,20 @@ schema — import it into Postman/Swagger/codegen.
 
 ## Errors
 
-Every error: `{ "ok": false, "error": "<human message>", "code": "<machine_code>" }`.
+Most errors: `{ "ok": false, "error": "<human message>", "code": "<machine_code>" }`.
 
 | Code | HTTP | When |
 |---|---|---|
 | `unauthorized` | 401 | Missing / invalid `Authorization: Bearer` key. |
 | `bad_input` | 400 | Missing `name` / `email` / location. |
 | `consent_required` | 403 | `consentAttestation` was `false`. |
-| `not_found` | 404 | Scan id not owned by this key. |
+| `not_found` | 404 | Scan id not owned by this key — **stream endpoint only** (returned as JSON before the stream opens). |
 | `scan_start_failed` | 502 | Upstream deep research could not start. |
 | `research_failed` | (SSE `error`) | Deep research failed mid-stream. |
+
+> The `404` on `GET /api/v1/scan/{id}` and `GET /api/v1/scan/{id}/preferences` is returned as
+> `{ "ok": false, "status": "unknown", … }` **without** a `code`/`error` — match on the HTTP `404` +
+> `status: "unknown"`.
 
 **Ownership:** a key only ever sees the scans it created.
 
