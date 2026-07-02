@@ -38,6 +38,7 @@ Machine‑readable spec: [`GET /api/v1/openapi.json`](https://one.hushh.ai/api/v
 ## Good to know
 
 - **Base URL:** `https://one.hushh.ai` · **Auth:** `Authorization: Bearer <YOUR_API_KEY>` on every request.
+- **Live status:** [/docs/status](/docs/status), or `GET /api/v1/health` (public, no key) — is the API up right now?
 - **Privacy:** only public/visible content is used; sensitive traits (health, religion, politics, skin
   tone) are never inferred, and other people in photos are never identified.
 - **Isolation:** each subject is scoped to its own tenant — two subjects scanned under one key never see
