@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DOC_SECTIONS } from "@/lib/docs/registry";
+import StatusBadge from "./StatusBadge";
 import styles from "./docs.module.css";
 
 interface DocsNavProps {
@@ -27,6 +28,7 @@ export default function DocsNav({ open, onNavigate, theme, onToggleTheme }: Docs
         ) : null}
       </div>
       <p className={styles.brandSub}>Documentation</p>
+      <StatusBadge />
       {DOC_SECTIONS.map((section) => (
         <div key={section.title}>
           <p className={styles.sectionTitle}>{section.title}</p>

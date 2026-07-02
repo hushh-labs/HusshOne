@@ -59,6 +59,27 @@ const SPEC = {
           profiles: { type: "object", description: "Per-platform scraped contracts (linkedin/instagram/threads/x)." },
         },
       },
+      Health: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          status: { type: "string", enum: ["operational", "degraded", "down"] },
+          checkedAt: { type: "string", format: "date-time" },
+          components: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "api | database | research | scrapers" },
+                name: { type: "string" },
+                status: { type: "string", enum: ["operational", "degraded", "down"] },
+                description: { type: "string" },
+                latencyMs: { type: "number" },
+              },
+            },
+          },
+        },
+      },
       ScanResult: {
         type: "object",
         properties: {
@@ -79,6 +100,18 @@ const SPEC = {
     },
   },
   paths: {
+    "/api/v1/health": {
+      get: {
+        summary: "Service status (public, no auth)",
+        description:
+          "Sanitized health of the Developer API and its dependencies — components: api, database, research, scrapers. 200 when operational/degraded, 503 when a critical component is down. Cached ~30s.",
+        security: [],
+        responses: {
+          "200": { description: "Operational or degraded", content: { "application/json": { schema: { $ref: "#/components/schemas/Health" } } } },
+          "503": { description: "A critical component is down", content: { "application/json": { schema: { $ref: "#/components/schemas/Health" } } } },
+        },
+      },
+    },
     "/api/v1/scan": {
       post: {
         summary: "Start a scan",

@@ -33,6 +33,7 @@ scrapes each profile, runs a deep‑research **dossier**, and builds a 6‑secti
 | `GET` | `/api/v1/scan/{id}` | Bearer | Poll status → dossier + preferences. |
 | `GET` | `/api/v1/scan/{id}/stream` | Bearer | Live progress over **SSE** (research + preferences multiplexed). Re‑attachable. |
 | `GET` | `/api/v1/scan/{id}/preferences` | Bearer | The 6‑section preference profile + lifestyle facts. |
+| `GET` | `/api/v1/health` | none | Service status — overall + per‑component (api / database / research / scrapers). |
 | `GET` | `/api/v1/openapi.json` | none | Machine‑readable OpenAPI 3.1 contract. |
 
 ---
@@ -169,6 +170,32 @@ together with `status: "unknown"`.
 
 ---
 
+## Health & status
+
+`GET /api/v1/health` is **public** (no key) — poll it for a live status of the API and its dependencies.
+Human dashboard: **[/docs/status](/docs/status)**.
+
+```json
+{
+  "ok": true,
+  "status": "operational",
+  "checkedAt": "2026-07-02T09:12:04.001Z",
+  "components": [
+    { "id": "api",      "name": "API",             "status": "operational", "description": "Developer API request handling",                 "latencyMs": 0 },
+    { "id": "database", "name": "Database",         "status": "operational", "description": "Scan storage & retrieval",                        "latencyMs": 12 },
+    { "id": "research", "name": "Research engine",  "status": "operational", "description": "Deep-research dossier (Vertex + Deep Research)",   "latencyMs": 210 },
+    { "id": "scrapers", "name": "Profile scrapers", "status": "degraded",    "description": "Public-profile scrapers — 4/5 sources operational","latencyMs": 180 }
+  ]
+}
+```
+
+- **`status`** (overall and per component): `operational` · `degraded` · `down`.
+- **HTTP:** `200` when operational/degraded, `503` when a **critical** component (`database` or `research`) is down.
+- Cached **~30s** server-side; no auth, CORS-open — safe to hit from a browser or an external monitor.
+- `scrapers` is non-critical: a degraded/down scraper only reduces scrape depth; scans still run on the public web.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -189,6 +216,34 @@ curl -sN https://one.hushh.ai/api/v1/scan/<scanId>/stream -H "Authorization: Bea
 
 # 2b) …or poll instead
 curl -s https://one.hushh.ai/api/v1/scan/<scanId> -H "Authorization: Bearer $ONE_API_KEY"
+```
+
+Same flow in JavaScript (`fetch`):
+
+```js
+const KEY = process.env.ONE_API_KEY;
+const auth = { Authorization: `Bearer ${KEY}` };
+
+// 1) start
+const started = await fetch("https://one.hushh.ai/api/v1/scan", {
+  method: "POST",
+  headers: { ...auth, "Content-Type": "application/json" },
+  body: JSON.stringify({
+    name: "Sundar Pichai",
+    email: "subject@example.com",
+    zipCode: "94040",
+    instagramUrl: "https://www.instagram.com/sundarpichai/",
+  }),
+}).then((r) => r.json());
+
+// 2) poll until completed (or stream the SSE endpoint instead)
+let scan;
+do {
+  await new Promise((r) => setTimeout(r, 10_000));
+  scan = await fetch(`https://one.hushh.ai${started.links.self}`, { headers: auth }).then((r) => r.json());
+} while (scan.status === "running");
+
+console.log(scan.result.summary, scan.preferences.status);
 ```
 
 ---

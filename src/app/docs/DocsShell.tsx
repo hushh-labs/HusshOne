@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import DocsNav from "./DocsNav";
+import DocToc from "./DocToc";
 import styles from "./docs.module.css";
 
 type Theme = "light" | "dark";
@@ -64,7 +65,12 @@ export default function DocsShell({ children }: { children: React.ReactNode }) {
       {navOpen ? <div className={styles.scrim} onClick={() => setNavOpen(false)} aria-hidden /> : null}
 
       <main className={styles.content}>
-        <div className={styles.article}>{children}</div>
+        <div className={styles.contentInner}>
+          <div className={styles.article} id="doc-article">
+            {children}
+          </div>
+          <DocToc />
+        </div>
       </main>
     </div>
   );
