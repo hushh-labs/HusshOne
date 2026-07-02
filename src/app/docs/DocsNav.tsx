@@ -18,7 +18,7 @@ export default function DocsNav({ open, onNavigate, theme, onToggleTheme }: Docs
     <nav className={`${styles.sidebar} ${open ? styles.sidebarOpen : ""}`} aria-label="Documentation">
       <div className={styles.sidebarHead}>
         <Link href="/docs" className={styles.brand} onClick={onNavigate}>
-          🤫 One — Burst Compute
+          🤫 One — Developer API
         </Link>
         {onToggleTheme ? (
           <button className={styles.themeToggle} aria-label="Toggle light/dark theme" onClick={onToggleTheme}>
@@ -27,13 +27,6 @@ export default function DocsNav({ open, onNavigate, theme, onToggleTheme }: Docs
         ) : null}
       </div>
       <p className={styles.brandSub}>Documentation</p>
-      <Link
-        href="/docs/onboarding-kit"
-        onClick={onNavigate}
-        className={`${styles.navLink} ${pathname === "/docs/onboarding-kit" ? styles.navLinkActive : ""}`}
-      >
-        ⬇ Onboarding kit
-      </Link>
       {DOC_SECTIONS.map((section) => (
         <div key={section.title}>
           <p className={styles.sectionTitle}>{section.title}</p>

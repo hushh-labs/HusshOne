@@ -8,20 +8,20 @@ export default function DocsIndex() {
   return (
     <div>
       <div className={styles.hero}>
-        <h1>One Burst Compute</h1>
+        <h1>One Developer API</h1>
         <p>
-          Personal supercomputing for your Mac. One runs your work on-device and, when it needs more power,
-          borrows a supercomputer from your own cloud — then brings the result home and cleans up. Your keys
-          and your data stay yours.
+          One&apos;s intelligence, over HTTP. Give the API a person&apos;s identity + public profile URLs and it
+          returns a deep, cited dossier and a structured preference &amp; lifestyle profile — the same engine
+          that powers one.hushh.ai. Stream it live over SSE, or poll. Key-gated; plain JSON.
         </p>
       </div>
 
-      <Link href="/docs/onboarding-kit" className={styles.featured}>
-        <p className={styles.featuredKicker}>⬇ Self-serve onboarding</p>
-        <p className={styles.cardTitle}>Download the onboarding kit</p>
+      <Link href="/docs/api-overview" className={styles.featured}>
+        <p className={styles.featuredKicker}>→ Start here</p>
+        <p className={styles.cardTitle}>API overview &amp; contract</p>
         <p className={styles.cardBlurb}>
-          A provisioning script, a Terraform module, and a machine-readable manifest — so a person or an automated
-          infrastructure system can stand up your cloud and get One bursting.
+          Auth, the full request/response contract, the endpoint map, the profiles legend, and every status
+          and error code — everything you need to make your first call.
         </p>
       </Link>
 
