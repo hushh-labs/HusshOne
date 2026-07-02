@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { DOC_SECTIONS } from "@/lib/docs/registry";
+import { NAV_SECTIONS, type NavItem } from "@/lib/docs/registry";
 import styles from "./docs.module.css";
+
+const itemHref = (item: NavItem): string => item.href ?? `/docs/${item.slug}`;
 
 export const dynamic = "force-static";
 
@@ -25,14 +27,14 @@ export default function DocsIndex() {
         </p>
       </Link>
 
-      {DOC_SECTIONS.map((section) => (
+      {NAV_SECTIONS.map((section) => (
         <section key={section.title} style={{ marginBottom: 32 }}>
           <p className={styles.sectionTitle}>{section.title}</p>
           <div className={styles.cardGrid}>
-            {section.docs.map((doc) => (
-              <Link key={doc.slug} href={`/docs/${doc.slug}`} className={styles.card}>
-                <p className={styles.cardTitle}>{doc.title}</p>
-                <p className={styles.cardBlurb}>{doc.blurb}</p>
+            {section.items.map((item) => (
+              <Link key={itemHref(item)} href={itemHref(item)} className={styles.card}>
+                <p className={styles.cardTitle}>{item.title}</p>
+                <p className={styles.cardBlurb}>{item.blurb}</p>
               </Link>
             ))}
           </div>

@@ -6,8 +6,7 @@ scrapes each profile, runs a deep‑research **dossier**, and builds a 6‑secti
 **stream the whole thing live** (SSE) or poll. No SDK — it's plain JSON + `curl`/`fetch`.
 
 > **New here?** This page is the contract. For the live stream + preference layer, see
-> [Streaming + preferences](one-api-streaming.md). For the minimal two‑call poll flow, see
-> [Scan API basics](one-api.md).
+> [Streaming (SSE)](/docs/api-streaming). New to the API? Start with the [Quickstart](/docs/quickstart).
 
 ---
 
@@ -133,7 +132,7 @@ Each key (`linkedin` · `instagram` · `threads` · `x`) is one of:
 
 | Value | Meaning |
 |---|---|
-| full profile object | Scraped OK (see the per‑platform contracts on [Scan API basics](one-api.md)). |
+| full profile object | Scraped OK (see the per‑platform contracts in [Profile data contracts](/docs/profile-contracts)). |
 | `null` | URL not provided. |
 | `{ "access": "<state>", "profileUrl": "…" }` | Private / gated (e.g. `private_not_following`, `login_required`). |
 | `{ "status": "failed", "error": "…" }` | Scrape errored. |
@@ -144,7 +143,7 @@ Each key (`linkedin` · `instagram` · `threads` · `x`) is one of:
 { "ok": true, "scanId": "285d9ef0-…", "status": "completed", "preferences": { "…": "profile + lifestyle" } }
 ```
 `status`: `skipped` (no consent / no feed) · `running` (fast pass ready, lifestyle filling in) · `completed`.
-Full shape on [Streaming + preferences](one-api-streaming.md).
+Full shape on [Preferences & lifestyle](/docs/preferences).
 
 ---
 
@@ -260,5 +259,5 @@ console.log(scan.result.summary, scan.preferences.status);
 
 ---
 
-**Next:** [Streaming + preferences](one-api-streaming.md) · [Scan API basics](one-api.md) ·
-[OpenAPI spec](https://one.hushh.ai/api/v1/openapi.json)
+**Next:** [Start a scan](/docs/start-a-scan) · [Streaming (SSE)](/docs/api-streaming) ·
+[Polling](/docs/polling) · [Preferences & lifestyle](/docs/preferences) · [OpenAPI spec](/docs/openapi)

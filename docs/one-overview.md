@@ -24,14 +24,15 @@ issued by hushh).
 
 ## Start here
 
-1. **[API overview & contract](one-api-overview.md)** — auth, the full request/response contract, the
-   endpoint map, and every status/error code. *Read this first.*
-2. **[Streaming + preferences](one-api-streaming.md)** — the live SSE flow and the preference/lifestyle
-   payload in detail.
-3. **[Scan API basics](one-api.md)** — the minimal two‑call flow (start a scan, poll for the dossier) and
-   the per‑platform data contracts.
+1. **[Quickstart](/docs/quickstart)** — from key to your first dossier in three calls.
+2. **[Authentication](/docs/authentication)** — API keys + the `Bearer` header.
+3. **[API overview & contract](/docs/api-overview)** — auth, the full request/response contract, the
+   endpoint map, and every status/error code.
+4. Run and read a scan: **[Start a scan](/docs/start-a-scan)** · **[Streaming (SSE)](/docs/api-streaming)** ·
+   **[Polling](/docs/polling)** · **[Preferences & lifestyle](/docs/preferences)**.
 
-Machine‑readable spec: [`GET /api/v1/openapi.json`](https://one.hushh.ai/api/v1/openapi.json) (OpenAPI 3.1).
+Reference: **[Profile data contracts](/docs/profile-contracts)** · **[Status & error codes](/docs/status-codes)** ·
+**[OpenAPI spec](/docs/openapi)**. Live **[API status](/docs/status)**.
 
 ---
 

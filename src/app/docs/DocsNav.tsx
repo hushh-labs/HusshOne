@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { DOC_SECTIONS } from "@/lib/docs/registry";
+import { NAV_SECTIONS, type NavItem } from "@/lib/docs/registry";
 import StatusBadge from "./StatusBadge";
 import styles from "./docs.module.css";
 
@@ -13,8 +14,21 @@ interface DocsNavProps {
   onToggleTheme?: () => void;
 }
 
+const itemHref = (item: NavItem): string => item.href ?? `/docs/${item.slug}`;
+
 export default function DocsNav({ open, onNavigate, theme, onToggleTheme }: DocsNavProps) {
   const pathname = usePathname();
+  const activeSection = NAV_SECTIONS.find((s) => s.items.some((i) => itemHref(i) === pathname))?.title;
+
+  // Collapsible sections: the first section is open by default; the section holding the current page
+  // auto-opens (and stays open) as you navigate. Manual toggles are preserved.
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => ({ [NAV_SECTIONS[0].title]: true }));
+  useEffect(() => {
+    if (activeSection) setOpenSections((prev) => (prev[activeSection] ? prev : { ...prev, [activeSection]: true }));
+  }, [activeSection]);
+
+  const toggle = (title: string) => setOpenSections((prev) => ({ ...prev, [title]: !prev[title] }));
+
   return (
     <nav className={`${styles.sidebar} ${open ? styles.sidebarOpen : ""}`} aria-label="Documentation">
       <div className={styles.sidebarHead}>
@@ -29,25 +43,43 @@ export default function DocsNav({ open, onNavigate, theme, onToggleTheme }: Docs
       </div>
       <p className={styles.brandSub}>Documentation</p>
       <StatusBadge />
-      {DOC_SECTIONS.map((section) => (
-        <div key={section.title}>
-          <p className={styles.sectionTitle}>{section.title}</p>
-          {section.docs.map((doc) => {
-            const href = `/docs/${doc.slug}`;
-            const active = pathname === href;
-            return (
-              <Link
-                key={doc.slug}
-                href={href}
-                onClick={onNavigate}
-                className={`${styles.navLink} ${active ? styles.navLinkActive : ""}`}
-              >
-                {doc.title}
-              </Link>
-            );
-          })}
-        </div>
-      ))}
+
+      {NAV_SECTIONS.map((section) => {
+        const isOpen = openSections[section.title] ?? false;
+        return (
+          <div key={section.title} className={styles.navSection}>
+            <button
+              className={styles.navSectionHeader}
+              onClick={() => toggle(section.title)}
+              aria-expanded={isOpen}
+              type="button"
+            >
+              <span>{section.title}</span>
+              <span className={`${styles.chevron} ${isOpen ? styles.chevronOpen : ""}`} aria-hidden>
+                ▸
+              </span>
+            </button>
+            {isOpen ? (
+              <div className={styles.navSectionItems}>
+                {section.items.map((item) => {
+                  const href = itemHref(item);
+                  const active = pathname === href;
+                  return (
+                    <Link
+                      key={href}
+                      href={href}
+                      onClick={onNavigate}
+                      className={`${styles.navLink} ${active ? styles.navLinkActive : ""}`}
+                    >
+                      {item.title}
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
     </nav>
   );
 }
