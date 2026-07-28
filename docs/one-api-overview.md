@@ -32,6 +32,7 @@ scrapes each profile, runs a deep‑research **dossier**, and builds a 6‑secti
 | `GET` | `/api/v1/scan/{id}` | Bearer | Poll status → dossier + preferences. |
 | `GET` | `/api/v1/scan/{id}/stream` | Bearer | Live progress over **SSE** (research + preferences multiplexed). Re‑attachable. |
 | `GET` | `/api/v1/scan/{id}/preferences` | Bearer | The 6‑section preference profile + lifestyle facts. |
+| `GET` | `/api/v1/directory` | Bearer | Coordinate‑driven proximity search across four verticals (hotels / healthcare / ria / insurance), merged and sorted by distance. |
 | `GET` | `/api/v1/health` | none | Service status — overall + per‑component (api / database / research / scrapers). |
 | `GET` | `/api/v1/openapi.json` | none | Machine‑readable OpenAPI 3.1 contract. |
 

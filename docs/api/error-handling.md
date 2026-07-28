@@ -85,6 +85,19 @@ Notes:
 - `consentAttestation` defaults to `true`; you only see `403 consent_required` if you send it as `false`.
 - `502 scan_start_failed` is the fallback for any non-input error while starting the scan. It is the one transient failure on this endpoint — retry with exponential backoff.
 
+### `GET /api/v1/directory`
+
+| HTTP | `code`                    | Meaning                                                       | Retryable                 |
+| ---- | ------------------------- | ------------------------------------------------------------ | ------------------------- |
+| 401  | `unauthorized`            | Missing or invalid Bearer key.                               | No — fix the key.         |
+| 400  | `bad_coordinates`         | `lat`/`lng` given singly, non-numeric, or out of range.      | No — fix the request.     |
+| 400  | `missing_coordinates`     | Neither coordinates nor a `zip` fallback were provided.      | No — fix the request.     |
+| 400  | `unknown_zip`             | The `zip` fallback could not be resolved to coordinates.     | No — fix the request.     |
+| 502  | `directory_query_failed`  | An unexpected error running the proximity query.             | Yes — retry with backoff. |
+| 503  | `directory_unavailable`   | The directory database is not configured.                    | No — server-side config.  |
+
+A per-vertical query failure does **not** fail the request: the other verticals still return `200`, and the failure is reported as a string in the response `warnings` array. See [Directory search](/docs/directory).
+
 ### `GET /api/v1/scan/{id}`
 
 | HTTP | Shape / `code`                   | Meaning                                     | Retryable                 |
@@ -162,7 +175,10 @@ Long scans are the common reason you will see `pending`; see [Long-running scans
 | Situation                                   | Action                                                              |
 | ------------------------------------------- | ------------------------------------------------------------------ |
 | `502 scan_start_failed`                     | Transient. Retry with exponential backoff.                         |
+| `502 directory_query_failed`                | Transient. Retry with backoff.                                     |
 | `500 scan_read_failed`                      | Transient. Retry with backoff.                                     |
+| `400 bad_coordinates` / `missing_coordinates` / `unknown_zip` | Not retryable. Fix the coordinates (or `zip`) and resend. |
+| `503 directory_unavailable`                 | Not retryable by the caller — the directory DB is unconfigured server-side. |
 | `400 bad_input` / `400 invalid_input`       | Not retryable. Fix the request and resend.                         |
 | `403 consent_required`                      | Not retryable. Set `consentAttestation` to `true`.                 |
 | `401 unauthorized`                          | Not retryable. Check the `Authorization: Bearer $ONE_API_KEY` header. |

@@ -16,13 +16,14 @@ Live document: https://one.hushh.ai/api/v1/openapi.json
 
 ## What it describes
 
-The document declares `openapi: "3.1.0"`, an `info` block (title `One by hushh — Developer API`, version `1.0.0`), a single server (`https://one.hushh.ai`), a global `bearerAuth` HTTP bearer security scheme, and reusable component schemas (`Error`, `ScanRequest`, `ScanAccepted`, `Health`, `ScanResult`).
+The document declares `openapi: "3.1.0"`, an `info` block (title `One by hushh — Developer API`, version `1.0.0`), a single server (`https://one.hushh.ai`), a global `bearerAuth` HTTP bearer security scheme, and reusable component schemas (`Error`, `ScanRequest`, `ScanAccepted`, `Health`, `DirectoryRow`, `DirectoryResult`, `ScanResult`).
 
 ## Paths documented
 
 | Path | Method | Summary |
 | --- | --- | --- |
 | `/api/v1/health` | `GET` | Service status (public, no auth) |
+| `/api/v1/directory` | `GET` | Proximity directory search |
 | `/api/v1/scan` | `POST` | Start a scan |
 | `/api/v1/scan/{id}` | `GET` | Poll scan status, result, and preferences |
 | `/api/v1/scan/{id}/stream` | `GET` | Live progress (Server-Sent Events) |

@@ -80,6 +80,41 @@ const SPEC = {
           },
         },
       },
+      DirectoryRow: {
+        type: "object",
+        properties: {
+          vertical: { type: "string", enum: ["hotels", "healthcare", "ria", "insurance"] },
+          id: { type: "string" },
+          name: { type: "string" },
+          subtitle: { type: "string", nullable: true },
+          distanceM: { type: "number", description: "Distance from the query point, in metres." },
+          geoPrecision: { type: "string", enum: ["rooftop", "zip_centroid"], description: "rooftop = exact coordinates; zip_centroid = ZIP-level until per-address geocoding lands." },
+          lat: { type: "number", nullable: true },
+          lng: { type: "number", nullable: true },
+          fields: { type: "object", description: "Vertical-specific columns (address, phone, and e.g. rating / aum / specialty / license types)." },
+        },
+      },
+      DirectoryResult: {
+        type: "object",
+        properties: {
+          ok: { const: true },
+          query: {
+            type: "object",
+            properties: {
+              lat: { type: "number" },
+              lng: { type: "number" },
+              radiusM: { type: "number" },
+              limit: { type: "number" },
+              verticals: { type: "array", items: { type: "string" } },
+              resolvedFrom: { type: "string", enum: ["coordinates", "zip"] },
+              zip: { type: "string", description: "Present only when resolvedFrom = zip." },
+            },
+          },
+          count: { type: "integer" },
+          results: { type: "array", items: { $ref: "#/components/schemas/DirectoryRow" } },
+          warnings: { type: "array", items: { type: "string" }, description: "Non-fatal notes (excluded/unknown verticals, per-vertical query failures)." },
+        },
+      },
       ScanResult: {
         type: "object",
         properties: {
@@ -109,6 +144,27 @@ const SPEC = {
         responses: {
           "200": { description: "Operational or degraded", content: { "application/json": { schema: { $ref: "#/components/schemas/Health" } } } },
           "503": { description: "A critical component is down", content: { "application/json": { schema: { $ref: "#/components/schemas/Health" } } } },
+        },
+      },
+    },
+    "/api/v1/directory": {
+      get: {
+        summary: "Proximity directory search",
+        description:
+          "Returns directory rows within `radius` metres of (`lat`,`lng`) across four verticals (hotels, healthcare, ria, insurance), merged and sorted by distance (nearest first), capped at `limit`. Each row carries a `geoPrecision` flag. `social` is excluded (no coordinates). If `lat`/`lng` are omitted, a `zip` is resolved to its centroid (backward-compat).",
+        parameters: [
+          { name: "lat", in: "query", required: false, schema: { type: "number", minimum: -90, maximum: 90 }, description: "Latitude. Required unless `zip` is given." },
+          { name: "lng", in: "query", required: false, schema: { type: "number", minimum: -180, maximum: 180 }, description: "Longitude. Required unless `zip` is given." },
+          { name: "radius", in: "query", required: false, schema: { type: "integer", default: 5000, minimum: 100, maximum: 50000 }, description: "Search radius in metres (clamped to [100, 50000])." },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", default: 50, minimum: 1, maximum: 200 }, description: "Max merged results (clamped to [1, 200])." },
+          { name: "verticals", in: "query", required: false, schema: { type: "string" }, description: "CSV subset of hotels,healthcare,ria,insurance. Default: all four." },
+          { name: "zip", in: "query", required: false, schema: { type: "string" }, description: "Backward-compat fallback used only when `lat`/`lng` are absent." },
+        ],
+        responses: {
+          "200": { description: "Merged, distance-sorted directory rows", content: { "application/json": { schema: { $ref: "#/components/schemas/DirectoryResult" } } } },
+          "400": { description: "Missing or invalid coordinates", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "401": { description: "Missing/invalid API key", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "503": { description: "Directory database not configured", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
     },

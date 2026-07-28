@@ -45,6 +45,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { title: "API overview & contract", slug: "api-overview", source: "docs/one-api-overview.md", blurb: "Auth, the full request/response contract, the endpoint map, and error codes." },
       { title: "Start a scan", slug: "start-a-scan", source: "docs/api/start-a-scan.md", blurb: "POST /api/v1/scan — inputs, live scraping, and the 202 response." },
+      { title: "Directory search", slug: "directory", source: "docs/api/directory.md", blurb: "GET /api/v1/directory — coordinate-driven proximity search across four verticals." },
       { title: "Streaming (SSE)", slug: "api-streaming", source: "docs/one-api-streaming.md", blurb: "Live progress → dossier → preferences over one SSE connection." },
       { title: "Polling", slug: "polling", source: "docs/api/polling.md", blurb: "GET /api/v1/scan/{id} — poll status, dossier, and preferences." },
       { title: "Preferences & lifestyle", slug: "preferences", source: "docs/api/preferences.md", blurb: "The 6-section preference profile + v5 lifestyle facts." },

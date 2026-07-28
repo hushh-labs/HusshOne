@@ -23,7 +23,7 @@ Two endpoints are public and require no key:
 | `GET` | `/api/v1/health` | Service health probe. See [Health](/docs/health). |
 | `GET` | `/api/v1/openapi.json` | The OpenAPI document. See [OpenAPI](/docs/openapi). |
 
-Every other endpoint is key-gated. Requests without a valid bearer key are rejected with `401`. This includes `POST /api/v1/scan` and all of its sub-resources (`GET /api/v1/scan/{id}`, `GET /api/v1/scan/{id}/stream`, `GET /api/v1/scan/{id}/preferences`).
+Every other endpoint is key-gated. Requests without a valid bearer key are rejected with `401`. This includes `GET /api/v1/directory` (see [Directory search](/docs/directory)), `POST /api/v1/scan`, and all of the scan sub-resources (`GET /api/v1/scan/{id}`, `GET /api/v1/scan/{id}/stream`, `GET /api/v1/scan/{id}/preferences`).
 
 ## Making an authenticated request
 

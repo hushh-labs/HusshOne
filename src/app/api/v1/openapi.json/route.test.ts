@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GET, OPTIONS } from "./route";
 
 describe("GET /api/v1/openapi.json", () => {
-  it("returns a valid OpenAPI 3.1 spec covering the four endpoints + bearer auth", async () => {
+  it("returns a valid OpenAPI 3.1 spec covering the documented endpoints + bearer auth", async () => {
     const res = await GET();
     expect(res.status).toBe(200);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
@@ -14,6 +14,7 @@ describe("GET /api/v1/openapi.json", () => {
     expect(spec.openapi).toBe("3.1.0");
     expect(Object.keys(spec.paths)).toEqual(
       expect.arrayContaining([
+        "/api/v1/directory",
         "/api/v1/scan",
         "/api/v1/scan/{id}",
         "/api/v1/scan/{id}/stream",

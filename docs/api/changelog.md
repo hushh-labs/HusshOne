@@ -2,6 +2,10 @@
 
 Notable changes to the One Developer API and its documentation, newest first.
 
+## 2026-07-29
+
+- New `GET /api/v1/directory` — coordinate-driven proximity search across four directory verticals (`hotels`, `healthcare`, `ria`, `insurance`). Pass `lat`+`lng` (or a `zip` fallback) and a `radius`; results from all requested verticals are merged and sorted by true geographic distance, nearest first. Each row carries a `geoPrecision` flag (`rooftop` for hotels, `zip_centroid` for the others until per-address geocoding lands). Bearer-key gated. See [Directory search](/docs/directory).
+
 ## 2026-07-02
 
 - Public `GET /api/v1/health` status endpoint — no key required, CORS-open, safe to hit from a browser or an external monitor. Returns an overall `status` (`operational` · `degraded` · `down`) plus per-component checks for `api`, `database`, `research`, and `scrapers`. Responds `200` when operational or degraded, `503` when a critical component (`database` or `research`) is down. Cached ~30s server-side.
