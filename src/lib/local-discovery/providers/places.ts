@@ -23,7 +23,7 @@ const PROVIDER_KEY = "google_places";
 
 /** Fields billed at (at most) the Enterprise SKU — rating/priceLevel/openingHours. Deliberately EXCLUDES
  *  Atmosphere-tier fields (reviews, editorialSummary): those are fetched at view time for a single entity. */
-const SEARCH_FIELD_MASK = [
+export const SEARCH_FIELD_MASK = [
   "places.id",
   "places.displayName",
   "places.formattedAddress",
@@ -43,7 +43,9 @@ const SEARCH_FIELD_MASK = [
   "places.regularOpeningHours",
   "places.currentOpeningHours",
   "places.photos",
-  "nextPageToken",
+  // NOTE: no `nextPageToken` — it is REJECTED by places:searchNearby (HTTP 400 INVALID_ARGUMENT),
+  // which is our default path, and we never paginate the search path anyway (see header comment).
+  // Only places:searchText accepts it; add a Text-only mask if pagination is ever introduced.
 ].join(",");
 
 export function placesApiKey(): string {
