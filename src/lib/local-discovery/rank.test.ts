@@ -78,12 +78,18 @@ describe("local-discovery/rank", () => {
     const list = [
       prof("hiRated", { rating: 4.6 }),
       prof("loRated", { rating: 3.1 }),
-      prof("openOnly", { rating: 4.6, openingHours: { openNow: true } }),
+      prof("openNowTrue", { rating: 4.6, openingHours: { openNow: true } }),
+      prof("closedNow", { rating: 4.6, openingHours: { openNow: false } }),
+      prof("unknownHours", { rating: 4.6 }), // no openingHours — must NOT be dropped by openNow
       prof("cardiology", { rating: 4.6, subcategory: "Cardiology" }),
       prof("sushi", { rating: 4.6, name: "Sushi Place", description: "great sushi" }),
     ];
     expect(rankProfiles(list, { radiusMeters: 5000, limit: 10, filters: { minRating: 4.5 } }).map((p) => p.id)).not.toContain("loRated");
-    expect(rankProfiles(list, { radiusMeters: 5000, limit: 10, filters: { openNow: true } }).map((p) => p.id)).toEqual(["openOnly"]);
+    // "Open now" drops only places KNOWN to be closed; open + unknown-hours are kept.
+    const openIds = rankProfiles(list, { radiusMeters: 5000, limit: 10, filters: { openNow: true } }).map((p) => p.id);
+    expect(openIds).toContain("openNowTrue");
+    expect(openIds).toContain("unknownHours");
+    expect(openIds).not.toContain("closedNow");
     expect(
       rankProfiles(list, { radiusMeters: 5000, limit: 10, filters: { subcategories: ["cardiology"] } }).map((p) => p.id),
     ).toEqual(["cardiology"]);

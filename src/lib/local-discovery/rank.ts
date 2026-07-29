@@ -18,7 +18,11 @@ function matchesFilters(p: UnifiedProfile, filters: DiscoveryFilters | undefined
   if (typeof filters.minRating === "number" && !(typeof p.rating === "number" && p.rating >= filters.minRating)) {
     return false;
   }
-  if (filters.openNow && p.openingHours?.openNow !== true) return false;
+  // "Open now" excludes only places KNOWN to be closed. Unknown-hours places are kept, not dropped:
+  // Google Places omits opening hours for most lodging and many clinics, so treating "unknown" as
+  // "closed" empties the feed (e.g. 0 hotels in a dense city). Matches the provider's lenient
+  // post-filter (`p.openNow !== false` in providers/places.ts).
+  if (filters.openNow && p.openingHours?.openNow === false) return false;
   if (filters.subcategories?.length) {
     const want = new Set(filters.subcategories.map((s) => s.toLowerCase()));
     const have = [p.subcategory, ...(p.services ?? [])].filter(Boolean).map((s) => s!.toLowerCase());

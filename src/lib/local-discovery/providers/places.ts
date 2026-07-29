@@ -189,7 +189,9 @@ function buildBody(input: PlacesSearchInput): { endpoint: string; body: Record<s
     };
     if (input.includedTypes.length === 1) body.includedType = input.includedTypes[0];
     if (input.regionCode) body.regionCode = input.regionCode;
-    if (input.openNow) body.openNow = true;
+    // NOTE: deliberately NOT setting server-side `openNow` — Google hard-drops places whose hours it
+    // doesn't publish (most lodging, many clinics), which empties the feed. We fetch all candidates and
+    // apply a lenient open-now filter below (keep open + unknown, drop only known-closed).
     if (typeof input.minRating === "number") body.minRating = input.minRating;
     return { endpoint: SEARCH_TEXT_ENDPOINT, body };
   }
