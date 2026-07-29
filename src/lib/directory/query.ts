@@ -41,6 +41,9 @@ export interface ProximityParams {
   lng: number;
   radiusM: number;
   limit: number;
+  /** Rows to skip before `limit` — for server-side paging. Defaults to 0 (backward-compatible: the
+   *  summary and v1 routes pass no offset). Paging is stable because the KNN ORDER BY is deterministic. */
+  offset?: number;
 }
 
 // --- small coercions (pg returns NUMERIC/BIGINT as strings; float8 already comes back as a number) ---
@@ -57,7 +60,8 @@ const dot = (...parts: (string | null | undefined)[]): string | null => {
   return s || null;
 };
 
-/** Build the shared SELECT. `cols` is a fixed literal list; params are bound as [$1=lng, $2=lat, $3=radiusM, $4=limit]. */
+/** Build the shared SELECT. `cols` is a fixed literal list; params are bound as
+ *  [$1=lng, $2=lat, $3=radiusM, $4=limit, $5=offset]. */
 function proximitySql(table: string, cols: string): string {
   return `SELECT ${cols},
        ST_Y(geog::geometry) AS _lat,
@@ -67,7 +71,7 @@ function proximitySql(table: string, cols: string): string {
      WHERE geog IS NOT NULL
        AND ST_DWithin(geog, ST_MakePoint($1, $2)::geography, $3)
      ORDER BY geog <-> ST_MakePoint($1, $2)::geography
-     LIMIT $4`;
+     LIMIT $4 OFFSET $5`;
 }
 
 type RawRow = Record<string, unknown>;
@@ -75,7 +79,7 @@ type RawRow = Record<string, unknown>;
 async function run(vertical: DirectoryVertical, sql: string, p: ProximityParams): Promise<RawRow[]> {
   const pool = getDirectoryPool(vertical);
   if (!pool) return []; // guarded by the route via hasDirectoryDb(); belt-and-braces
-  const { rows } = await pool.query(sql, [p.lng, p.lat, p.radiusM, p.limit]);
+  const { rows } = await pool.query(sql, [p.lng, p.lat, p.radiusM, p.limit, p.offset ?? 0]);
   return rows as RawRow[];
 }
 

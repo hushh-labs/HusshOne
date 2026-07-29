@@ -8,10 +8,17 @@
         GET /api/localfinder (summary shape).
      2. documentation for the real, Bearer-gated GET /api/v1/directory (full per-row firehose).
    Copy is deliberately terse — the panel and the tables carry the page, not prose. */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import styles from "./localfinder.module.css";
 
 type GeoPrecision = "rooftop" | "zip_centroid";
+type RowDetail = {
+  phone: string | null;
+  website: string | null;
+  address: string | null;
+  url: string | null;
+  urlLabel: string | null;
+};
 type SampleRow = {
   id: string;
   name: string;
@@ -19,6 +26,7 @@ type SampleRow = {
   location: string | null;
   distanceM: number;
   geoPrecision: GeoPrecision;
+  detail: RowDetail;
 };
 type VerticalSummary = { vertical: string; label: string; count: number; sample: SampleRow[]; error?: string };
 type SpecialtyBucket = { specialty: string; count: number };
@@ -30,7 +38,15 @@ type Summary = {
   healthcareSpecialties: SpecialtyBucket[];
   warnings: string[];
 };
+type RowsResponse = { ok: true; vertical: string; page: number; pageSize: number; rows: SampleRow[]; warnings: string[] };
 type ApiError = { ok: false; error: string; code: string };
+
+/** Per-vertical paging state. `cache[page]` holds already-fetched pages (page 0 is seeded from the
+ *  summary's sample), so Prev/Next between visited pages is instant. */
+type PageState = { page: number; cache: Record<number, SampleRow[]>; loading: boolean; error: string | null };
+type PagingByVertical = Record<string, PageState>;
+
+const PAGE_SIZE = 10;
 
 const RADII = [
   { label: "2 km", m: 2000 },
@@ -46,6 +62,18 @@ function fmtDist(m: number): string {
 function fmtInt(n: number): string {
   return n.toLocaleString("en-US");
 }
+/** Bare host for a display link (backend already normalized to an absolute http/https URL). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+/** Strip a phone down to a dialable tel: target while keeping a leading +. */
+function telHref(phone: string): string {
+  return `tel:${phone.replace(/[^\d+]/g, "")}`;
+}
 
 export default function LocalFinder() {
   const [zip, setZip] = useState("");
@@ -54,25 +82,117 @@ export default function LocalFinder() {
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<Summary | null>(null);
+  const [paging, setPaging] = useState<PagingByVertical>({});
+  const [openRows, setOpenRows] = useState<Set<string>>(new Set());
+  /* Monotonic search generation. Bumped at the start of every run(); each in-flight summary AND rows fetch
+     pins the value it started under and drops its result if a newer search has begun. Without this, a slow
+     rows fetch from a PREVIOUS location could resolve after a fresh search reseeded state and write stale,
+     wrong-location rows into the new card (under the new count/label). A ref (not state) so the guard reads
+     the live latest value inside async callbacks without re-creating them. */
+  const runSeq = useRef(0);
 
   const run = useCallback(async (qs: string) => {
+    const seq = (runSeq.current += 1); // this search supersedes any earlier in-flight summary/rows fetches
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(`/api/localfinder?${qs}`, { headers: { accept: "application/json" } });
       const json = (await res.json()) as Summary | ApiError;
+      if (runSeq.current !== seq) return; // a newer search started while this one was in flight — discard
       if (!res.ok || !json.ok) {
         setData(null);
         setError((json as ApiError).error || `Request failed (${res.status})`);
         return;
       }
       setData(json);
+      // Seed page 0 of every vertical from the summary sample; reset any open drawers.
+      const seed: PagingByVertical = {};
+      for (const v of json.verticals) {
+        seed[v.vertical] = { page: 0, cache: { 0: v.sample }, loading: false, error: null };
+      }
+      setPaging(seed);
+      setOpenRows(new Set());
     } catch (e) {
+      if (runSeq.current !== seq) return;
       setData(null);
       setError(e instanceof Error ? e.message : "Network error");
     } finally {
-      setLoading(false);
+      if (runSeq.current === seq) setLoading(false);
     }
+  }, []);
+
+  /** Move a single card to `page`, fetching from /api/localfinder/rows on a cache miss. Paging always
+   *  uses the resolved coordinates (stable — no ZIP re-resolution), and never throws to the caller. */
+  const goToPage = useCallback(
+    async (vertical: string, page: number) => {
+      if (!data || page < 0) return;
+      // Upper-bound no-op: the pager buttons stay focusable (aria-disabled, not native disabled) so a click
+      // past the last page still fires onClick — bail here instead of issuing an out-of-range fetch.
+      const count = data.verticals.find((x) => x.vertical === vertical)?.count ?? 0;
+      const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
+      if (page >= totalPages) return;
+      const st = paging[vertical];
+      if (!st || st.loading) return;
+      if (st.cache[page]) {
+        setPaging((prev) => (prev[vertical] ? { ...prev, [vertical]: { ...prev[vertical]!, page } } : prev));
+        return;
+      }
+      const seq = runSeq.current; // pin this rows fetch to the current search generation
+      setPaging((prev) =>
+        prev[vertical] ? { ...prev, [vertical]: { ...prev[vertical]!, loading: true, error: null } } : prev,
+      );
+      try {
+        const { lat, lng, radiusM } = data.query;
+        const qs =
+          `vertical=${encodeURIComponent(vertical)}&lat=${lat}&lng=${lng}` +
+          `&radius=${radiusM}&page=${page}&pageSize=${PAGE_SIZE}`;
+        const res = await fetch(`/api/localfinder/rows?${qs}`, { headers: { accept: "application/json" } });
+        const json = (await res.json()) as RowsResponse | ApiError;
+        // Drop the result if a newer search superseded this one — otherwise stale, wrong-location rows would
+        // be written into the freshly-reseeded card. The `prev[vertical]` guards also protect against the
+        // (post-reseed) case where the vertical key no longer exists in state.
+        if (runSeq.current !== seq) return;
+        if (!res.ok || !json.ok) {
+          const msg = (json as ApiError).error || `Failed (${res.status})`;
+          setPaging((prev) =>
+            prev[vertical] ? { ...prev, [vertical]: { ...prev[vertical]!, loading: false, error: msg } } : prev,
+          );
+          return;
+        }
+        setPaging((prev) =>
+          prev[vertical]
+            ? {
+                ...prev,
+                [vertical]: {
+                  ...prev[vertical]!,
+                  page,
+                  loading: false,
+                  error: null,
+                  cache: { ...prev[vertical]!.cache, [page]: json.rows },
+                },
+              }
+            : prev,
+        );
+      } catch (e) {
+        if (runSeq.current !== seq) return;
+        const msg = e instanceof Error ? e.message : "Network error";
+        setPaging((prev) =>
+          prev[vertical] ? { ...prev, [vertical]: { ...prev[vertical]!, loading: false, error: msg } } : prev,
+        );
+      }
+    },
+    [data, paging],
+  );
+
+  /** Toggle a row's expand-in-place detail drawer. Keyed by vertical+id (ids are unique per vertical). */
+  const toggleRow = useCallback((vertical: string, id: string) => {
+    const key = `${vertical}:${id}`;
+    setOpenRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }, []);
 
   const searchZip = useCallback(() => {
@@ -197,7 +317,7 @@ export default function LocalFinder() {
                 ))}
               </div>
 
-              {error ? <div className={styles.error}>⚠ {error}</div> : null}
+              {error ? <div className={styles.error} role="alert">⚠ {error}</div> : null}
               {!error && !data ? (
                 <p className={styles.hint}>
                   Try <b>98033</b> or <b>10001</b>.
@@ -218,29 +338,138 @@ export default function LocalFinder() {
                   </div>
 
                   <div className={styles.grid}>
-                    {data.verticals.map((v) => (
-                      <div className={styles.card} key={v.vertical}>
-                        <div className={styles.cardTop}>
-                          <span className={styles.cardLabel}>{v.label}</span>
-                          <span className={styles.cardCount}>{fmtInt(v.count)}</span>
-                        </div>
-                        {v.sample.length ? (
-                          <ul className={styles.sampleList}>
-                            {v.sample.map((s) => (
-                              <li className={styles.sampleItem} key={s.id}>
-                                <div className={styles.sampleName}>{s.name || "—"}</div>
-                                <div className={styles.sampleMeta}>
-                                  <span className={styles.dist}>{fmtDist(s.distanceM)}</span>
-                                  {s.location ? ` · ${s.location}` : ""}
+                    {data.verticals.map((v) => {
+                      const st = paging[v.vertical];
+                      const page = st?.page ?? 0;
+                      const rows = st?.cache[page] ?? v.sample;
+                      const cardLoading = st?.loading ?? false;
+                      const cardError = st?.error ?? null;
+                      const totalPages = Math.max(1, Math.ceil(v.count / PAGE_SIZE));
+                      const from = v.count ? page * PAGE_SIZE + 1 : 0;
+                      const to = page * PAGE_SIZE + rows.length;
+                      const prevDisabled = page === 0 || cardLoading;
+                      const nextDisabled = page + 1 >= totalPages || cardLoading;
+                      return (
+                        <div className={styles.card} key={v.vertical}>
+                          <div className={styles.cardTop}>
+                            <span className={styles.cardLabel}>{v.label}</span>
+                            <span className={styles.cardCount}>{fmtInt(v.count)}</span>
+                          </div>
+                          {v.error ? (
+                            <div className={styles.emptyCard}>Lookup failed.</div>
+                          ) : v.count === 0 ? (
+                            <div className={styles.emptyCard}>No rows in this radius.</div>
+                          ) : (
+                            <>
+                              <ul className={styles.sampleList}>
+                                {rows.map((s) => {
+                                  const key = `${v.vertical}:${s.id}`;
+                                  const open = openRows.has(key);
+                                  const d = s.detail;
+                                  const hasDetail = d.address || d.phone || d.website || d.url;
+                                  return (
+                                    <li className={styles.sampleItem} key={key}>
+                                      <button
+                                        type="button"
+                                        className={`${styles.rowBtn} ${open ? styles.rowBtnOpen : ""}`}
+                                        onClick={() => toggleRow(v.vertical, s.id)}
+                                        aria-expanded={open}
+                                      >
+                                        <span className={styles.rowMain}>
+                                          <span className={styles.sampleName}>{s.name || "—"}</span>
+                                          <span className={styles.sampleMeta}>
+                                            <span className={styles.dist}>{fmtDist(s.distanceM)}</span>
+                                            {s.location ? ` · ${s.location}` : ""}
+                                          </span>
+                                        </span>
+                                        <span className={styles.chevron} aria-hidden>{open ? "–" : "+"}</span>
+                                      </button>
+                                      {open ? (
+                                        <div className={styles.detail}>
+                                          {d.address ? <div className={styles.detailRow}>{d.address}</div> : null}
+                                          {d.phone ? (
+                                            <div className={styles.detailRow}>
+                                              <a className={styles.detailLink} href={telHref(d.phone)}>{d.phone}</a>
+                                            </div>
+                                          ) : null}
+                                          {d.website ? (
+                                            <div className={styles.detailRow}>
+                                              <a
+                                                className={styles.detailLink}
+                                                href={d.website}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                              >
+                                                {hostOf(d.website)} ↗
+                                              </a>
+                                            </div>
+                                          ) : null}
+                                          {d.url ? (
+                                            <div className={styles.detailRow}>
+                                              <a
+                                                className={styles.detailLink}
+                                                href={d.url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                              >
+                                                {d.urlLabel || "View"} ↗
+                                              </a>
+                                            </div>
+                                          ) : null}
+                                          {!hasDetail ? (
+                                            <div className={styles.detailEmpty}>No extra details.</div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              {rows.length ? null : (
+                                <div className={styles.emptyCard}>No rows on this page.</div>
+                              )}
+                              {cardError ? (
+                                <div className={styles.pagerError} role="alert">⚠ {cardError}</div>
+                              ) : null}
+                              {v.count > PAGE_SIZE ? (
+                                <div className={styles.pager}>
+                                  <button
+                                    type="button"
+                                    className={`${styles.pagerBtn} ${prevDisabled ? styles.pagerBtnOff : ""}`}
+                                    onClick={() => goToPage(v.vertical, page - 1)}
+                                    aria-disabled={prevDisabled}
+                                  >
+                                    ‹ Prev
+                                  </button>
+                                  <span className={styles.pagerLabel} role="status" aria-live="polite">
+                                    {cardLoading ? (
+                                      <>
+                                        <span className={styles.spinner} aria-hidden="true" />
+                                        <span className={styles.srOnly}>Loading results…</span>
+                                      </>
+                                    ) : rows.length ? (
+                                      `${fmtInt(from)}–${fmtInt(to)} of ${fmtInt(v.count)}`
+                                    ) : (
+                                      // Empty deep page (count says there's a page here but it came back empty —
+                                      // a rare count/rows race). Avoid a reversed "11–10 of 15" range.
+                                      `${fmtInt(v.count)} total`
+                                    )}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={`${styles.pagerBtn} ${nextDisabled ? styles.pagerBtnOff : ""}`}
+                                    onClick={() => goToPage(v.vertical, page + 1)}
+                                    aria-disabled={nextDisabled}
+                                  >
+                                    Next ›
+                                  </button>
                                 </div>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className={styles.emptyCard}>No rows in this radius.</div>
-                        )}
-                      </div>
-                    ))}
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {data.healthcareSpecialties.length ? (

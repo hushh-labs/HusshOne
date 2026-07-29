@@ -293,13 +293,105 @@
 .cardTop { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .cardLabel { font-family: var(--font-body); font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); }
 .cardCount { font-family: var(--font-heading); font-size: 30px; font-weight: 640; letter-spacing: -0.02em; line-height: 1; }
-.sampleList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.sampleItem { border-top: 1px solid var(--hair-soft); padding-top: 10px; min-width: 0; }
-.sampleItem:first-child { border-top: none; padding-top: 0; }
-.sampleName { font-size: 14px; font-weight: 560; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sampleMeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--gray-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sampleList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.sampleItem { border-top: 1px solid var(--hair-soft); min-width: 0; }
+.sampleItem:first-child { border-top: none; }
+.sampleName { display: block; font-size: 14px; font-weight: 560; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sampleMeta { display: block; font-family: var(--font-mono); font-size: 11.5px; color: var(--gray-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist { color: var(--ink); }
 .emptyCard { font-family: var(--font-body); font-size: 13px; color: var(--gray-2); padding: 8px 0; }
+
+/* clickable, expand-in-place rows */
+.rowBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  min-width: 0;
+}
+.rowMain { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.chevron {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 17px;
+  line-height: 1;
+  color: var(--gray-2);
+  width: 16px;
+  text-align: center;
+  transition: color 0.12s;
+}
+.rowBtn:hover .chevron { color: var(--ink); }
+.rowBtnOpen .chevron { color: var(--ink); }
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 0 12px;
+  animation: lfdetail 0.16s ease;
+}
+.detailRow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--gray);
+  word-break: break-word;
+}
+.detailLink { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--hair); }
+.detailLink:hover { border-bottom-color: var(--ink); }
+.detailEmpty { font-family: var(--font-body); font-size: 12px; color: var(--gray-2); }
+@keyframes lfdetail { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+
+/* per-card pager */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hair);
+}
+.pagerBtn {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--hair);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.pagerBtn:not(.pagerBtnOff):hover { background: var(--wash); }
+/* Boundary/loading state uses aria-disabled + this class (not the native `disabled`
+   attribute) so the button keeps DOM focus at the first/last page instead of dropping
+   it to <body>; goToPage() no-ops the click. */
+.pagerBtnOff { opacity: 0.4; cursor: default; }
+.pagerLabel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gray-2);
+  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pagerError {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--ink);
+  margin-top: 10px;
+}
 
 /* specialty histogram */
 .specWrap { margin-top: 22px; }
@@ -394,3 +486,18 @@
   margin-right: 8px;
 }
 @keyframes lfspin { to { transform: rotate(360deg); } }
+
+/* Visually-hidden, still read by screen readers. Used inside the pager's
+   role="status" live region so a page change/loading is announced without
+   showing text next to the spinner. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

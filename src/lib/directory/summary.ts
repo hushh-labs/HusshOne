@@ -29,6 +29,17 @@ export const VERTICAL_LABEL: Record<DirectoryVertical, string> = {
   insurance: "Insurance",
 };
 
+/** The contact/link details revealed when a panel row is expanded. Kept deliberately small — the full
+ *  field bag stays behind the Bearer API. `url`+`urlLabel` is the canonical public link for that vertical
+ *  (Google Maps for hotels, SEC IAPD for RIA, NPI Registry for healthcare; insurance has none). */
+export interface RowDetail {
+  phone: string | null;
+  website: string | null;
+  address: string | null;
+  url: string | null;
+  urlLabel: string | null;
+}
+
 /** A compact sample row for the panel (the full field bag lives behind the Bearer API). */
 export interface SampleRow {
   id: string;
@@ -37,6 +48,7 @@ export interface SampleRow {
   location: string | null;
   distanceM: number;
   geoPrecision: GeoPrecision;
+  detail: RowDetail;
 }
 
 export interface VerticalSummary {
@@ -74,6 +86,26 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const strOrNull = (v: unknown): string | null => {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s || null;
+};
+
+/** Allow only http/https through — guards scraped `website` values against `javascript:`/`data:` URIs.
+ *  Bare domains (no scheme) are treated as https. Returns a normalized absolute URL or null. */
+function safeUrl(v: unknown): string | null {
+  const raw = strOrNull(v);
+  if (!raw) return null;
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(candidate);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Compose a short human location from whatever geographic fields a vertical's row carries. */
 function locationOf(row: DirectoryRow): string | null {
   const f = row.fields;
@@ -86,7 +118,59 @@ function locationOf(row: DirectoryRow): string | null {
   return street.trim() || null;
 }
 
-function toSample(row: DirectoryRow): SampleRow {
+/** Full postal address. Hotels carry a pre-formatted `address` (already includes city/state); the other
+ *  three verticals store street/city/state/zip separately, so we assemble them. */
+function addressOf(row: DirectoryRow): string | null {
+  const f = row.fields;
+  if (strOrNull(f.address)) return strOrNull(f.address); // hotels: formatted_address
+  const street = strOrNull(f.addressLine1) ?? strOrNull(f.street1);
+  const cityState = [strOrNull(f.city), strOrNull(f.state)].filter(Boolean).join(", ");
+  const cityStateZip = [cityState, strOrNull(f.zip)].filter(Boolean).join(" ");
+  return [street, cityStateZip].filter(Boolean).join(", ") || null;
+}
+
+/** Build the expand-in-place detail bag for a row: phone, website (host-safe), full address, and the
+ *  canonical public link for that vertical (Google Maps / SEC IAPD / NPI Registry; insurance has none). */
+function detailOf(row: DirectoryRow): RowDetail {
+  const f = row.fields;
+  let url: string | null = null;
+  let urlLabel: string | null = null;
+  switch (row.vertical) {
+    case "hotels":
+      url = safeUrl(f.googleMapsUri);
+      urlLabel = url ? "Google Maps" : null;
+      break;
+    case "ria": {
+      const crd = strOrNull(f.crd);
+      if (crd) {
+        url = `https://adviserinfo.sec.gov/firm/summary/${encodeURIComponent(crd)}`;
+        urlLabel = "SEC IAPD";
+      }
+      break;
+    }
+    case "healthcare": {
+      const npi = strOrNull(f.npi);
+      if (npi) {
+        url = `https://npiregistry.cms.hhs.gov/provider-view/${encodeURIComponent(npi)}`;
+        urlLabel = "NPI Registry";
+      }
+      break;
+    }
+    case "insurance":
+      break; // no per-producer public registry URL
+  }
+  return {
+    phone: strOrNull(f.phone),
+    website: safeUrl(f.website),
+    address: addressOf(row),
+    url,
+    urlLabel,
+  };
+}
+
+/** Map a proximity query row to the panel's compact SampleRow (+ detail). Exported so the paging route
+ *  (/api/localfinder/rows) returns rows in the exact same shape as the initial summary. */
+export function toSampleRow(row: DirectoryRow): SampleRow {
   return {
     id: row.id,
     name: row.name,
@@ -94,6 +178,7 @@ function toSample(row: DirectoryRow): SampleRow {
     location: locationOf(row),
     distanceM: row.distanceM,
     geoPrecision: row.geoPrecision,
+    detail: detailOf(row),
   };
 }
 
@@ -159,7 +244,7 @@ export async function directorySummary(
         vertical,
         label: VERTICAL_LABEL[vertical],
         count: countRes.count,
-        sample: sampleRes.rows.map(toSample),
+        sample: sampleRes.rows.map(toSampleRow),
         error,
       };
     }),

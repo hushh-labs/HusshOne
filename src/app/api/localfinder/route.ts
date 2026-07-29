@@ -17,37 +17,10 @@ import { resolveZipCentroid } from "@/lib/directory/query";
 import { hasDirectoryDb } from "@/lib/directory/db";
 import { directorySummary } from "@/lib/directory/summary";
 import { apiError, apiJson, corsPreflight, statusCodeOf } from "@/lib/api/http";
+import { clientIp, rateLimited } from "@/lib/api/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
-
-// --- best-effort in-memory rate limit (per instance): N requests / window per client IP ---
-const RATE_LIMIT = 30;
-const RATE_WINDOW_MS = 60_000;
-const globalForRate = globalThis as unknown as { __localfinderHits?: Map<string, number[]> };
-const hits: Map<string, number[]> = (globalForRate.__localfinderHits ??= new Map());
-
-function clientIp(request: Request): string {
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim();
-  return request.headers.get("x-real-ip")?.trim() || "unknown";
-}
-
-/** Returns true when this IP is over budget. Uses Date.now() (route runtime, not a workflow script). */
-function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const recent = (hits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  recent.push(now);
-  hits.set(ip, recent);
-  if (hits.size > 5_000) {
-    // bound memory: drop the oldest-touched entries
-    for (const key of hits.keys()) {
-      if (hits.size <= 2_500) break;
-      hits.delete(key);
-    }
-  }
-  return recent.length > RATE_LIMIT;
-}
 
 export function OPTIONS() {
   return corsPreflight();
@@ -82,7 +55,7 @@ export async function GET(request: Request) {
     }
 
     const summary = await directorySummary(
-      { lat, lng, radiusM: q.radiusM, sampleLimit: 5, specialtyLimit: 8 },
+      { lat, lng, radiusM: q.radiusM, sampleLimit: 10, specialtyLimit: 8 },
       q.verticals,
     );
 
@@ -101,12 +74,17 @@ export async function GET(request: Request) {
       warnings: [...warnings, ...summary.warnings],
     });
   } catch (error) {
-    const status = error instanceof V1InputError ? error.statusCode : statusCodeOf(error, 502);
-    const code = error instanceof V1InputError ? error.code : "directory_query_failed";
-    const message = error instanceof Error ? error.message : "Directory lookup failed";
+    const isInput = error instanceof V1InputError;
+    const status = isInput ? error.statusCode : statusCodeOf(error, 502);
+    const code = isInput ? error.code : "directory_query_failed";
+    // Log the real error server-side; NEVER return a raw internal/DB message (e.g. a pg auth/connection
+    // failure from resolveZipCentroid) to an unauthenticated client. V1InputError messages are safe
+    // validation copy, so those alone pass through verbatim.
+    const logMessage = error instanceof Error ? error.message : "Directory lookup failed";
+    const clientMessage = isInput ? logMessage : "Directory lookup failed";
     console[status >= 500 ? "error" : "warn"](
-      JSON.stringify({ event: "one.localfinder_failed", severity: status >= 500 ? "ERROR" : "WARNING", status, code, message }),
+      JSON.stringify({ event: "one.localfinder_failed", severity: status >= 500 ? "ERROR" : "WARNING", status, code, message: logMessage }),
     );
-    return apiError(status, code, message);
+    return apiError(status, code, clientMessage);
   }
 }
