@@ -191,6 +191,75 @@ Recovery:
 - `GET /api/one/research/[id]` resumes polling/finalization using the stored `deepResearchJobId`.
 - `GET /api/one/scans/latest` lets the browser reattach to the most recent scan.
 
+## Local Discovery (Phase 1)
+
+Local Discovery is a real-time, location-aware discovery feed that streams nearby results as each category resolves. It is **additive**: it ships as a new `/discover` experience alongside — not replacing — the classic `/localfinder` directory-table view, which remains as the fallback. Phase 1 covers two categories: **hotels** and **healthcare**.
+
+Unlike the ZIP/coordinate directory API (`GET /api/v1/directory`), which returns a single stored-data snapshot, Local Discovery is a streaming API that fans out to our own PostGIS directory (seed) **and** live enrichment in parallel, merges/dedupes/ranks the two, and pushes results to the browser progressively over SSE.
+
+### Public surface
+
+Same-origin, unauthenticated but per-IP rate-limited (this is UI plumbing, not the Bearer-gated `/api/v1` developer API):
+
+| Concern | Endpoint |
+| --- | --- |
+| Start a search | `POST /api/local-discovery/search` → `202 { ok, searchId, query, warnings, links:{ self, events, stream }, spend }` |
+| Live event stream | `GET /api/local-discovery/search/{searchId}/events` (SSE) |
+
+The client POSTs `{ lat, lng }` **or** `{ postalCode, countryCode }` plus optional `radius` / `categories` / `sort` / `limit` / filters, then opens an `EventSource` on the returned `links.stream`. That stream link carries the **resolved** lat/lng as query params, so a different Cloud Run instance can rebuild an equivalent session (the ledger and session state live on `globalThis`, i.e. per-instance).
+
+Named SSE events (each frame's `data` is the full event object): `search_started`, `category_started`, `category_results` (per category, with a `status` of `done` / `degraded` / `error`), `category_error`, and `search_complete`. The stream also emits a `ping` heartbeat (~7s) and a `timeout` frame. The client **closes the `EventSource` on `search_complete`** to defeat the browser's auto-reconnect, and settles on the server's authoritative merged+ranked list from that final frame.
+
+### Category adapters (seed + live, failure-isolated)
+
+Every category runs the same `shared.ts` pipeline: **seed → enrich → merge/dedupe → rank**. The two data sources run under `Promise.allSettled`, so either can fail independently and the search degrades rather than throwing:
+
+- **Seed** — proximity query against our own PostGIS directory (`src/lib/directory`, `queryVertical`), guarded by `hasDirectoryDb()`. No DB wired → zero seed rows + a warning (live-only). Each adapter declares its `seedVertical`, or `null` when the registry doesn't cover the search country (e.g. US-only NPPES for a non-US search — never seed misleading data).
+- **Live** — Google Places, budget-gated (see guardrails). No key or over-budget → skipped, results marked `degraded` with a warning; the frontend surfaces a "showing saved results" indicator.
+
+### Unified profile contract
+
+Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discovery/types.ts`, client-safe): namespaced IDs, **per-field source attribution**, a `quality` tier (`rich` / `standard` / `basic` / `insufficient`) with a numeric `qualityScore`, and `distanceApproximate` / `approximateLocation` flags (true for ZIP-centroid or postal-resolved origins, so the UI shows `~` distances and never a misleading `0 m`).
+
+### Location resolution
+
+`src/lib/local-discovery/location.ts` accepts coordinates directly, or resolves `postalCode + countryCode` via the geocoding provider. With no geocoding key, postal input returns `422 postal_unresolved` with an actionable message (send lat/lng instead). The resolved query records `resolvedFrom: "coordinates" | "postal"` and `approximateOrigin`.
+
+### Cost + reliability guardrails (before any paid call)
+
+- **Spend ledger** (`spend.ts`): daily USD budget `LOCAL_DISCOVERY_DAILY_BUDGET_USD` (default **25**) and a per-request paid-call cap `LOCAL_DISCOVERY_MAX_PAID_CALLS_PER_REQUEST` (default **6**). Paid providers are gated behind `LOCAL_DISCOVERY_ALLOW_PAID`. The `spend` snapshot is echoed on every `POST` response.
+- **Reliability primitives** (`reliability.ts`): per-provider token-bucket rate limits, per-provider circuit breakers (open after 5 consecutive failures, 30s cooldown), per-call timeouts, bounded exponential backoff with jitter, and a concurrency gate. An open breaker or rate-limit skips that provider and degrades to seed/cache.
+- **Caching + ToS** (`cache.ts`): short-lived search + entity caches. Google Places fields respect the provider's no-cache posture and attribution requirement (the `/discover` UI renders Google attribution whenever a profile used Places).
+
+### Frontend
+
+`/discover` is a server page (`src/app/discover/page.tsx`) + a client island (`Discover.tsx`) mirroring the `/localfinder` pattern, styled monochrome + Lexend via a scoped CSS module. It offers GPS or postal input, radius / category / min-rating / open-now / free-text refine filters, and four sort orders. Each category renders in an independent loading lane (skeletons + a status strip) while in flight, then the grid settles on the authoritative list at `search_complete`. A `runSeq` ref discards superseded runs.
+
+### Code paths
+
+| Concern | Code |
+| --- | --- |
+| Types + contracts (client-safe) | `src/lib/local-discovery/types.ts` |
+| Search orchestration + SSE session | `src/lib/local-discovery/orchestrator.ts` |
+| Start route (202) | `src/app/api/local-discovery/search/route.ts` |
+| SSE events route | `src/app/api/local-discovery/search/[searchId]/events/route.ts` |
+| Category adapter pipeline | `src/lib/local-discovery/adapters/shared.ts` (+ `hotels.ts`, `healthcare.ts`) |
+| Directory seed | `src/lib/directory/query.ts`, `src/lib/directory/db.ts` |
+| Live providers | `src/lib/local-discovery/providers/places.ts`, `geocoding.ts` |
+| Location resolution | `src/lib/local-discovery/location.ts` |
+| Normalize / merge / quality / rank | `src/lib/local-discovery/{normalize,merge,quality,rank}.ts` |
+| Spend + reliability + cache | `src/lib/local-discovery/{spend,reliability,cache}.ts` |
+| Frontend | `src/app/discover/{page.tsx,Discover.tsx,discover.module.css}` |
+
+### Environment names
+
+- Live enrichment: `PLACES_API_KEY` (falls back to `GOOGLE_MAPS_API_KEY`).
+- Geocoding (postal → coords): `GEOCODING_API_KEY` (falls back to `GOOGLE_MAPS_API_KEY`, then `PLACES_API_KEY`).
+- Guardrails: `LOCAL_DISCOVERY_ALLOW_PAID`, `LOCAL_DISCOVERY_DAILY_BUDGET_USD`, `LOCAL_DISCOVERY_MAX_PAID_CALLS_PER_REQUEST`.
+- Directory seed reuses the directories DB wiring (`DIRECTORIES_DB_*`, secret `directories-ro-db-password`).
+
+With none of the paid keys set (e.g. the `one-mock` launch config), Local Discovery still runs end-to-end: it streams the full SSE lifecycle and returns seed-only or empty results tagged `degraded` with explanatory warnings, never a hard failure.
+
 ## Data Model
 
 Main Prisma models:
