@@ -1,0 +1,8 @@
+node_modules/
+outputs/
+secrets/
+inputs/US.txt
+inputs/*.zip
+inputs/*.gz
+inputs/*.csv
+*.log

@@ -1,0 +1,2 @@
+# GeoNames US ZIP export (US.txt) is fetched on the VM at deploy time — never committed.
+# SEC Form ADV compilation feeds are downloaded here by the worker at runtime.

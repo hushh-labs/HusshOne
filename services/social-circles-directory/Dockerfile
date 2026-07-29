@@ -1,0 +1,22 @@
+# Social-circles graph builder — no browser/login stack (it reads the other
+# directories' Cloud SQL databases, it does not scrape), so this image is a plain
+# slim Node runtime (like hotel-scraper, unlike the Instagram/Twitter scrapers).
+FROM node:20-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev || npm install --omit=dev
+
+COPY server.mjs worker.mjs schema.sql ./
+COPY scripts ./scripts
+COPY README.md ./README.md
+
+RUN mkdir -p secrets outputs logs
+
+# Default entrypoint is the API; the VM runs the worker via its own systemd unit.
+CMD ["npm", "start"]

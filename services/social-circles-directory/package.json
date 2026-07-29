@@ -1,0 +1,16 @@
+{
+  "name": "@husshone/social-circles-directory-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "worker": "node worker.mjs",
+    "report": "node scripts/report.mjs",
+    "apply-schema": "node scripts/apply-schema.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}
