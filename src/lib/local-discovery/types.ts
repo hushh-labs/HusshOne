@@ -10,6 +10,8 @@
    • Location honesty: `approximateLocation`/`distanceApproximate` mark postal-centroid-derived geo so the
      UI never renders a misleading exact "0 m". */
 
+import type { RequestBudget } from "./spend";
+
 // ---------------------------------------------------------------------------
 // Categories & geography
 // ---------------------------------------------------------------------------
@@ -190,6 +192,8 @@ export interface DiscoverySearchContext {
   filters: DiscoveryFilters;
   /** When false the adapter must stay on seed/cache data only (budget exhausted or paid APIs off). */
   allowPaid: boolean;
+  /** Shared per-request paid-call budget (one instance across all categories). Absent → no paid calls. */
+  budget?: RequestBudget;
   /** Epoch-ms wall-clock deadline the adapter must respect (soft — return what it has). */
   deadlineAt: number;
 }
