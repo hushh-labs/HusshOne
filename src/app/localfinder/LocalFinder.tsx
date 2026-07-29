@@ -1,13 +1,13 @@
 "use client";
 
 /* /localfinder — public developer page for the coordinate-driven directory API.
-   Monochrome (black/white/grey; no blue). Two things in one page:
+   Monochrome (black/white/grey; no blue), typeset in Lexend (scoped in localfinder.module.css).
+   Two things in one page:
      1. an interactive panel — enter a ZIP or share GPS, and see how many hotels / healthcare providers /
-        RIA firms / insurance producers hushh has near that point, with nearest samples + a healthcare
-        specialty histogram. It calls the PUBLIC, key-free GET /api/localfinder (summary shape).
+        RIA firms / insurance producers hushh has near that point. It calls the PUBLIC, key-free
+        GET /api/localfinder (summary shape).
      2. documentation for the real, Bearer-gated GET /api/v1/directory (full per-row firehose).
-   The panel and the documented API share the same query engine server-side; the key never reaches the
-   browser. */
+   Copy is deliberately terse — the panel and the tables carry the page, not prose. */
 import { useCallback, useMemo, useState } from "react";
 import styles from "./localfinder.module.css";
 
@@ -125,10 +125,9 @@ export default function LocalFinder() {
             <b>hushh</b> <span>/ localfinder</span>
           </a>
           <div className={styles.navLinks}>
-            <a className={styles.navLink} href="#try">try it</a>
-            <a className={styles.navLink} href="#api">api</a>
-            <a className={styles.navLink} href="#params">parameters</a>
-            <a className={styles.navLink} href="#errors">errors</a>
+            <a className={styles.navLink} href="#try">Try</a>
+            <a className={styles.navLink} href="#api">API</a>
+            <a className={styles.navLink} href="#params">Reference</a>
             <a className={styles.navCta} href="/docs">Docs →</a>
           </div>
         </div>
@@ -137,40 +136,29 @@ export default function LocalFinder() {
       {/* ---- hero ---- */}
       <header className={styles.hero}>
         <div className={styles.wrap}>
-          <p className={styles.eyebrow}>One · Directory API</p>
+          <p className={styles.eyebrow}>Directory API</p>
           <h1 className={styles.h1}>The local directory, by coordinates.</h1>
           <p className={styles.lede}>
-            One request, four verticals — hotels, healthcare providers, RIA firms and insurance producers —
-            returned by true geographic distance from any point. Give it a latitude and longitude (or a ZIP),
-            get everything hushh has nearby, nearest first.
+            Hotels, healthcare, RIA firms and insurance producers near any point — one request, nearest first.
           </p>
-          <div className={styles.heroRow}>
-            <span className={styles.endpointChip}>
-              <span className={styles.method}>GET</span> /api/v1/directory
-            </span>
-            <a className={styles.navCta} href="#try">Try it below ↓</a>
-          </div>
+          <span className={styles.endpointChip}>
+            <span className={styles.method}>GET</span> /api/v1/directory
+          </span>
         </div>
       </header>
 
       {/* ---- interactive panel ---- */}
       <section className={styles.section} id="try">
         <div className={styles.wrap}>
-          <p className={styles.kicker}>Interactive</p>
           <h2 className={styles.h2}>See what&apos;s near you</h2>
-          <p className={styles.sub}>
-            Enter a ZIP code or share your location. This panel calls the public{" "}
-            <code className={styles.inlineCode}>/api/localfinder</code> endpoint — no key required — and
-            returns per-vertical counts, the nearest sample rows and a healthcare specialty breakdown within
-            your chosen radius.
-          </p>
+          <p className={styles.sub}>Enter a ZIP or share your location — public endpoint, no key.</p>
 
           <div className={styles.panel}>
             <div className={styles.panelHead}>
               <span className={styles.dot} />
               <span className={styles.dot} />
               <span className={styles.dot} />
-              <span style={{ marginLeft: 6 }}>hushh directory · live lookup</span>
+              <span style={{ marginLeft: 6 }}>live lookup</span>
             </div>
             <div className={styles.panelBody}>
               <div className={styles.form}>
@@ -212,8 +200,7 @@ export default function LocalFinder() {
               {error ? <div className={styles.error}>⚠ {error}</div> : null}
               {!error && !data ? (
                 <p className={styles.hint}>
-                  Try <b>98033</b> (Kirkland, WA) or <b>10001</b> (Manhattan). Coordinates work too via the
-                  API: <code className={styles.inlineCode}>?lat=47.68&amp;lng=-122.21</code>.
+                  Try <b>98033</b> or <b>10001</b>.
                 </p>
               ) : null}
 
@@ -289,59 +276,47 @@ export default function LocalFinder() {
           <p className={styles.kicker}>Developer API</p>
           <h2 className={styles.h2}>GET /api/v1/directory</h2>
           <p className={styles.sub}>
-            The documented endpoint returns the full per-row result set, merged across verticals and sorted
-            by distance. It is authenticated with a Bearer key and CORS-open, so you can call it from a server
-            or a browser. Base URL <code className={styles.inlineCode}>https://one.hushh.ai</code>.
+            Full per-row results, Bearer-authed and CORS-open. Base{" "}
+            <code className={styles.inlineCode}>https://intelligence.hushh.ai</code>.
           </p>
 
           <div className={styles.grid2}>
             <div>
-              <p className={styles.codeLabel}>Request — curl</p>
-              <pre className={styles.code}>{`curl -s https://one.hushh.ai/api/v1/directory \\
+              <p className={styles.codeLabel}>Request</p>
+              <pre className={styles.code}>{`curl -s https://intelligence.hushh.ai/api/v1/directory \\
   -H "Authorization: Bearer $ONE_API_KEY" \\
   --get \\
   --data-urlencode "lat=47.68" \\
   --data-urlencode "lng=-122.21" \\
   --data-urlencode "radius=5000" \\
-  --data-urlencode "limit=20" \\
-  --data-urlencode "verticals=hotels,healthcare,ria,insurance"`}</pre>
+  --data-urlencode "limit=20"`}</pre>
             </div>
             <div>
-              <p className={styles.codeLabel}>Response — 200</p>
+              <p className={styles.codeLabel}>Response · 200</p>
               <pre className={styles.code}>{`{
   "ok": true,
-  "query": {
-    "lat": 47.68, "lng": -122.21,
-    "radiusM": 5000, "limit": 20,
-    "verticals": ["hotels","healthcare","ria","insurance"],
-    "resolvedFrom": "coordinates"
-  },
+  "query": { "lat": 47.68, "lng": -122.21,
+    "radiusM": 5000, "resolvedFrom": "coordinates" },
   "count": 20,
   "results": [
-    {
-      "vertical": "hotels",
-      "id": "…",
+    { "vertical": "hotels",
       "name": "The Heathman Hotel",
-      "subtitle": "220 Kirkland Ave · 4.5★",
       "distanceM": 214.7,
       "geoPrecision": "rooftop",
-      "lat": 47.676, "lng": -122.208,
-      "fields": { "rating": 4.5, "phone": "…", "website": "…" }
-    }
+      "lat": 47.676, "lng": -122.208 }
   ],
   "warnings": []
 }`}</pre>
             </div>
           </div>
 
-          <p className={styles.sub} style={{ marginTop: 24 }}>
-            No coordinates? Pass <code className={styles.inlineCode}>zip=98033</code> and the endpoint resolves
-            it to a centroid (<code className={styles.inlineCode}>resolvedFrom:&quot;zip&quot;</code>). Every
-            row carries a <code className={styles.inlineCode}>geoPrecision</code> flag —{" "}
+          <p className={styles.hint} style={{ marginTop: 18 }}>
+            No coordinates? Pass <code className={styles.inlineCode}>zip=98033</code>. Every row carries a{" "}
+            <code className={styles.inlineCode}>geoPrecision</code> flag —{" "}
             <code className={styles.inlineCode}>rooftop</code> for hotels,{" "}
-            <code className={styles.inlineCode}>zip_centroid</code> for the other three until per-address
-            geocoding upgrades them in place. <code className={styles.inlineCode}>social</code> has no
-            coordinates and is excluded (it&apos;s echoed in <code className={styles.inlineCode}>warnings</code>).
+            <code className={styles.inlineCode}>zip_centroid</code> otherwise.{" "}
+            <code className={styles.inlineCode}>social</code> has no coordinates and is echoed in{" "}
+            <code className={styles.inlineCode}>warnings</code>.
           </p>
         </div>
       </section>
@@ -349,8 +324,8 @@ export default function LocalFinder() {
       {/* ---- parameters ---- */}
       <section className={styles.section} id="params">
         <div className={styles.wrap}>
-          <p className={styles.kicker}>Reference</p>
-          <h2 className={styles.h2}>Query parameters</h2>
+          <p className={styles.kicker}>Parameters</p>
+          <h2 className={styles.h2}>Query</h2>
           <div className={styles.tableScroll}>
             <table className={styles.table}>
               <thead>
@@ -359,23 +334,23 @@ export default function LocalFinder() {
               <tbody>
                 <tr>
                   <td><code>lat</code>, <code>lng</code></td><td>number</td><td>—</td>
-                  <td className={styles.tdDesc}>Search point. <code className={styles.inlineCode}>lat∈[-90,90]</code>, <code className={styles.inlineCode}>lng∈[-180,180]</code>. Aliases: <code className={styles.inlineCode}>latitude</code>, <code className={styles.inlineCode}>longitude</code>, <code className={styles.inlineCode}>lon</code>.</td>
+                  <td className={styles.tdDesc}>Search point. <code className={styles.inlineCode}>lat∈[-90,90]</code>, <code className={styles.inlineCode}>lng∈[-180,180]</code>.</td>
                 </tr>
                 <tr>
                   <td><code>zip</code></td><td>string</td><td>—</td>
-                  <td className={styles.tdDesc}>Fallback when no coordinates are given — resolved to a centroid. Aliases: <code className={styles.inlineCode}>zipCode</code>, <code className={styles.inlineCode}>zipcode</code>.</td>
+                  <td className={styles.tdDesc}>Fallback when no coordinates — resolved to a centroid.</td>
                 </tr>
                 <tr>
                   <td><code>radius</code></td><td>number (m)</td><td><code>5000</code></td>
-                  <td className={styles.tdDesc}>Search radius in metres. Clamped to <code className={styles.inlineCode}>[100, 50000]</code>. Aliases: <code className={styles.inlineCode}>radiusM</code>, <code className={styles.inlineCode}>radius_m</code>.</td>
+                  <td className={styles.tdDesc}>Clamped to <code className={styles.inlineCode}>[100, 50000]</code>.</td>
                 </tr>
                 <tr>
                   <td><code>limit</code></td><td>integer</td><td><code>50</code></td>
-                  <td className={styles.tdDesc}>Global cap across all merged verticals. Clamped to <code className={styles.inlineCode}>[1, 200]</code>.</td>
+                  <td className={styles.tdDesc}>Global cap across verticals. Clamped to <code className={styles.inlineCode}>[1, 200]</code>.</td>
                 </tr>
                 <tr>
                   <td><code>verticals</code></td><td>CSV</td><td><code>all four</code></td>
-                  <td className={styles.tdDesc}>Any of <code className={styles.inlineCode}>hotels</code>, <code className={styles.inlineCode}>healthcare</code>, <code className={styles.inlineCode}>ria</code>, <code className={styles.inlineCode}>insurance</code>. Alias: <code className={styles.inlineCode}>vertical</code>.</td>
+                  <td className={styles.tdDesc}><code className={styles.inlineCode}>hotels</code>, <code className={styles.inlineCode}>healthcare</code>, <code className={styles.inlineCode}>ria</code>, <code className={styles.inlineCode}>insurance</code>.</td>
                 </tr>
               </tbody>
             </table>
@@ -386,13 +361,11 @@ export default function LocalFinder() {
       {/* ---- errors ---- */}
       <section className={styles.section} id="errors">
         <div className={styles.wrap}>
-          <p className={styles.kicker}>Reference</p>
+          <p className={styles.kicker}>Errors</p>
           <h2 className={styles.h2}>Errors</h2>
           <p className={styles.sub}>
-            Failures use a flat envelope: <code className={styles.inlineCode}>{`{ "ok": false, "error": "…", "code": "…" }`}</code>.
-            Branch on <code className={styles.inlineCode}>code</code>, not the message. A per-vertical query
-            failure is <em>not</em> fatal — the other verticals still return 200 and the failure is reported in{" "}
-            <code className={styles.inlineCode}>warnings</code>.
+            Flat envelope <code className={styles.inlineCode}>{`{ "ok": false, "error", "code" }`}</code> — branch on{" "}
+            <code className={styles.inlineCode}>code</code>. Per-vertical failures are non-fatal.
           </p>
           <div className={styles.tableScroll}>
             <table className={styles.table}>
@@ -402,10 +375,10 @@ export default function LocalFinder() {
               <tbody>
                 <tr><td><span className={styles.statusPill}>401</span></td><td><code>unauthorized</code></td><td className={styles.tdDesc}>Missing or invalid Bearer key.</td><td className={styles.tdDesc}>No</td></tr>
                 <tr><td><span className={styles.statusPill}>400</span></td><td><code>bad_coordinates</code></td><td className={styles.tdDesc}><code>lat</code>/<code>lng</code> singly, non-numeric, or out of range.</td><td className={styles.tdDesc}>No</td></tr>
-                <tr><td><span className={styles.statusPill}>400</span></td><td><code>missing_coordinates</code></td><td className={styles.tdDesc}>Neither coordinates nor a <code>zip</code> were provided.</td><td className={styles.tdDesc}>No</td></tr>
-                <tr><td><span className={styles.statusPill}>400</span></td><td><code>unknown_zip</code></td><td className={styles.tdDesc}>The <code>zip</code> could not be resolved to coordinates.</td><td className={styles.tdDesc}>No</td></tr>
-                <tr><td><span className={styles.statusPill}>502</span></td><td><code>directory_query_failed</code></td><td className={styles.tdDesc}>Unexpected error running the proximity query.</td><td className={styles.tdDesc}>Yes — backoff</td></tr>
-                <tr><td><span className={styles.statusPill}>503</span></td><td><code>directory_unavailable</code></td><td className={styles.tdDesc}>The directory database is not configured.</td><td className={styles.tdDesc}>No</td></tr>
+                <tr><td><span className={styles.statusPill}>400</span></td><td><code>missing_coordinates</code></td><td className={styles.tdDesc}>Neither coordinates nor a <code>zip</code>.</td><td className={styles.tdDesc}>No</td></tr>
+                <tr><td><span className={styles.statusPill}>400</span></td><td><code>unknown_zip</code></td><td className={styles.tdDesc}>The <code>zip</code> could not be resolved.</td><td className={styles.tdDesc}>No</td></tr>
+                <tr><td><span className={styles.statusPill}>502</span></td><td><code>directory_query_failed</code></td><td className={styles.tdDesc}>Proximity query failed unexpectedly.</td><td className={styles.tdDesc}>Yes — backoff</td></tr>
+                <tr><td><span className={styles.statusPill}>503</span></td><td><code>directory_unavailable</code></td><td className={styles.tdDesc}>Directory database not configured.</td><td className={styles.tdDesc}>No</td></tr>
               </tbody>
             </table>
           </div>
@@ -415,10 +388,9 @@ export default function LocalFinder() {
       {/* ---- footer ---- */}
       <footer className={styles.wrap}>
         <div className={styles.footer}>
-          <span className={styles.footNote}>One by hushh · directory API · monochrome by design</span>
+          <span className={styles.footNote}>One by hushh · directory API</span>
           <div className={styles.footLinks}>
             <a className={styles.footLink} href="/docs">Documentation</a>
-            <a className={styles.footLink} href="/docs/directory">Directory guide</a>
             <a className={styles.footLink} href="/api/v1/openapi.json">OpenAPI</a>
           </div>
         </div>

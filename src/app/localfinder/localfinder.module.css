@@ -4,6 +4,13 @@
    blue-free. The root .page owns its own scroll viewport because globals.css sets `body{overflow:hidden}`. */
 
 .page {
+  /* Lexend, scoped to this page only. globals.css binds --font-heading/--font-body to the
+     Apple system stack; we re-bind them to the Lexend next/font variable here so every heading
+     and body run on /localfinder is Lexend, without touching the rest of the site. Custom
+     properties inherit, so this cascades to all descendants of .page. */
+  --font-heading: var(--font-lexend), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: var(--font-lexend), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
   height: 100dvh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -54,8 +61,8 @@
   align-items: center;
 }
 .navLink {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-body);
+  font-size: 13px;
   color: var(--gray);
   text-decoration: none;
   padding: 6px 10px;
@@ -64,8 +71,8 @@
 }
 .navLink:hover { background: var(--wash); color: var(--ink); }
 .navCta {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-body);
+  font-size: 13px;
   color: var(--paper);
   background: var(--ink);
   text-decoration: none;
@@ -85,8 +92,9 @@
   border-bottom: 1px solid var(--hair);
 }
 .eyebrow {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--gray-2);
@@ -135,8 +143,9 @@
 .section { padding: 64px 0; border-bottom: 1px solid var(--hair); }
 .section:last-child { border-bottom: none; }
 .kicker {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--gray-2);
@@ -178,8 +187,9 @@
   position: absolute;
   top: 8px;
   left: 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 10px;
+  font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--gray-2);
@@ -223,10 +233,10 @@
 .btnGhost:hover:not(:disabled) { background: var(--wash); opacity: 1; }
 
 .radioRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; align-items: center; }
-.radioLabel { font-family: var(--font-mono); font-size: 11px; color: var(--gray-2); margin-right: 4px; }
+.radioLabel { font-family: var(--font-body); font-size: 11px; font-weight: 500; letter-spacing: 0.04em; color: var(--gray-2); margin-right: 4px; }
 .chip {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-family: var(--font-body);
+  font-size: 13px;
   padding: 6px 12px;
   border-radius: 20px;
   border: 1px solid var(--hair);
@@ -238,7 +248,7 @@
 .chip:hover { border-color: var(--gray-2); color: var(--ink); }
 .chipActive { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
-.hint { font-family: var(--font-mono); font-size: 12px; color: var(--gray-2); margin-top: 14px; }
+.hint { font-family: var(--font-body); font-size: 13px; line-height: 1.5; color: var(--gray-2); margin-top: 14px; }
 .error {
   margin-top: 16px;
   padding: 12px 14px;
@@ -246,8 +256,8 @@
   border-left: 3px solid var(--ink);
   border-radius: 9px;
   background: var(--wash);
-  font-family: var(--font-mono);
-  font-size: 13px;
+  font-family: var(--font-body);
+  font-size: 13.5px;
   color: var(--ink);
 }
 
@@ -281,7 +291,7 @@
   min-width: 0;
 }
 .cardTop { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-.cardLabel { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); }
+.cardLabel { font-family: var(--font-body); font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); }
 .cardCount { font-family: var(--font-heading); font-size: 30px; font-weight: 640; letter-spacing: -0.02em; line-height: 1; }
 .sampleList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .sampleItem { border-top: 1px solid var(--hair-soft); padding-top: 10px; min-width: 0; }
@@ -289,11 +299,11 @@
 .sampleName { font-size: 14px; font-weight: 560; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sampleMeta { font-family: var(--font-mono); font-size: 11.5px; color: var(--gray-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist { color: var(--ink); }
-.emptyCard { font-family: var(--font-mono); font-size: 12px; color: var(--gray-2); padding: 8px 0; }
+.emptyCard { font-family: var(--font-body); font-size: 13px; color: var(--gray-2); padding: 8px 0; }
 
 /* specialty histogram */
 .specWrap { margin-top: 22px; }
-.specTitle { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); margin-bottom: 14px; }
+.specTitle { font-family: var(--font-body); font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); margin-bottom: 14px; }
 .specRow { display: grid; grid-template-columns: minmax(120px, 220px) 1fr auto; align-items: center; gap: 12px; margin-bottom: 9px; }
 .specName { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .specTrack { height: 8px; border-radius: 5px; background: var(--wash); overflow: hidden; }
@@ -318,8 +328,9 @@
   margin: 0;
 }
 .codeLabel {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--gray-2);
@@ -333,7 +344,7 @@
   border-bottom: 1px solid var(--hair);
   vertical-align: top;
 }
-.table th { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); font-weight: 500; }
+.table th { font-family: var(--font-body); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-2); font-weight: 600; }
 .table td code, .inlineCode {
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -366,9 +377,9 @@
   align-items: center;
   justify-content: space-between;
 }
-.footNote { font-family: var(--font-mono); font-size: 12px; color: var(--gray-2); }
+.footNote { font-family: var(--font-body); font-size: 13px; color: var(--gray-2); }
 .footLinks { display: flex; gap: 16px; }
-.footLink { font-family: var(--font-mono); font-size: 12px; color: var(--gray); text-decoration: none; }
+.footLink { font-family: var(--font-body); font-size: 13px; color: var(--gray); text-decoration: none; }
 .footLink:hover { color: var(--ink); }
 
 /* spinner */

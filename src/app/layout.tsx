@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Inter, Fragment_Mono } from "next/font/google";
+import { Space_Grotesk, Inter, Fragment_Mono, Lexend } from "next/font/google";
 import "./globals.css";
 
 // Display / headings — Space Grotesk (the hellowstd.com display face).
@@ -18,6 +18,12 @@ const inter = Inter({
 const fragmentMono = Fragment_Mono({
   weight: "400",
   variable: "--font-fragment",
+  subsets: ["latin"],
+});
+
+// Lexend — used only on the /localfinder developer page (scoped in localfinder.module.css).
+const lexend = Lexend({
+  variable: "--font-lexend",
   subsets: ["latin"],
 });
 
@@ -42,7 +48,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable}`}>
+    <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable} ${fragmentMono.variable} ${lexend.variable}`}>
       <body>{children}</body>
     </html>
   );
