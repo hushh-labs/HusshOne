@@ -193,7 +193,7 @@ Recovery:
 
 ## Local Discovery (Phase 1)
 
-Local Discovery is a real-time, location-aware discovery feed that streams nearby results as each category resolves. It is **additive**: it ships as a new `/discover` experience alongside — not replacing — the classic `/localfinder` directory-table view, which remains as the fallback. Phase 1 covers two categories: **hotels** and **healthcare**.
+Local Discovery is a real-time, location-aware discovery feed that streams nearby results as each category resolves. It is **additive**: it ships as a new `/discovery` experience alongside — not replacing — the classic `/localfinder` directory-table view, which remains as the fallback. (The earlier `/discover` path permanently redirects (308) to `/discovery` via `next.config.ts`, so any pre-launch links keep working.) Phase 1 covers two categories: **hotels** and **healthcare**.
 
 Unlike the ZIP/coordinate directory API (`GET /api/v1/directory`), which returns a single stored-data snapshot, Local Discovery is a streaming API that fans out to our own PostGIS directory (seed) **and** live enrichment in parallel, merges/dedupes/ranks the two, and pushes results to the browser progressively over SSE.
 
@@ -229,11 +229,11 @@ Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discov
 
 - **Spend ledger** (`spend.ts`): daily USD budget `LOCAL_DISCOVERY_DAILY_BUDGET_USD` (default **25**) and a per-request paid-call cap `LOCAL_DISCOVERY_MAX_PAID_CALLS_PER_REQUEST` (default **6**). Paid providers are gated behind `LOCAL_DISCOVERY_ALLOW_PAID`. The `spend` snapshot is echoed on every `POST` response.
 - **Reliability primitives** (`reliability.ts`): per-provider token-bucket rate limits, per-provider circuit breakers (open after 5 consecutive failures, 30s cooldown), per-call timeouts, bounded exponential backoff with jitter, and a concurrency gate. An open breaker or rate-limit skips that provider and degrades to seed/cache.
-- **Caching + ToS** (`cache.ts`): short-lived search + entity caches. Google Places fields respect the provider's no-cache posture and attribution requirement (the `/discover` UI renders Google attribution whenever a profile used Places).
+- **Caching + ToS** (`cache.ts`): short-lived search + entity caches. Google Places fields respect the provider's no-cache posture and attribution requirement (the `/discovery` UI renders Google attribution whenever a profile used Places).
 
 ### Frontend
 
-`/discover` is a server page (`src/app/discover/page.tsx`) + a client island (`Discover.tsx`) mirroring the `/localfinder` pattern, styled monochrome + Lexend via a scoped CSS module. It offers GPS or postal input, radius / category / min-rating / open-now / free-text refine filters, and four sort orders. Each category renders in an independent loading lane (skeletons + a status strip) while in flight, then the grid settles on the authoritative list at `search_complete`. A `runSeq` ref discards superseded runs.
+`/discovery` is a server page (`src/app/discovery/page.tsx`) + a client island (`Discovery.tsx`) mirroring the `/localfinder` pattern, styled monochrome + Lexend via a scoped CSS module. It offers GPS or postal input, radius / category / min-rating / open-now / free-text refine filters, and four sort orders. Each category renders in an independent loading lane (skeletons + a status strip) while in flight, then the grid settles on the authoritative list at `search_complete`. A `runSeq` ref discards superseded runs.
 
 ### Code paths
 
@@ -249,7 +249,7 @@ Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discov
 | Location resolution | `src/lib/local-discovery/location.ts` |
 | Normalize / merge / quality / rank | `src/lib/local-discovery/{normalize,merge,quality,rank}.ts` |
 | Spend + reliability + cache | `src/lib/local-discovery/{spend,reliability,cache}.ts` |
-| Frontend | `src/app/discover/{page.tsx,Discover.tsx,discover.module.css}` |
+| Frontend | `src/app/discovery/{page.tsx,Discovery.tsx,discovery.module.css}` (route `/discovery`; `/discover` → `/discovery` 308 redirect in `next.config.ts`) |
 
 ### Environment names
 

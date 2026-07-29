@@ -10,6 +10,17 @@ const nextConfig: NextConfig = {
     "@google-cloud/opentelemetry-cloud-trace-exporter",
     "nodemailer",
   ],
+  async redirects() {
+    // Canonical product route is /discovery. /discover was the pre-launch path; keep any existing
+    // links working with a permanent (308) redirect that preserves method + query params.
+    return [
+      {
+        source: "/discover",
+        destination: "/discovery",
+        permanent: true,
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

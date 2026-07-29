@@ -1,6 +1,6 @@
 "use client";
 
-/* /discover — the real-time, location-aware discovery feed (Phase 1, deliverable #9).
+/* /discovery — the real-time, location-aware discovery feed (Phase 1, deliverable #9).
 
    This REPLACES the DB-table experience for everyday use: instead of one blocking request that returns a
    static snapshot, it POSTs a location to /api/local-discovery/search and then attaches to the returned
@@ -19,11 +19,11 @@
    location is a centroid (`distanceApproximate` / `approximateLocation`), distances render with a "~" and an
    "approximate" marker — never a misleading exact "0 m".
 
-   Monochrome (black/white/grey; no blue), typeset in Lexend (scoped in discover.module.css). */
+   Monochrome (black/white/grey; no blue), typeset in Lexend (scoped in discovery.module.css). */
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import styles from "./discover.module.css";
+import styles from "./discovery.module.css";
 import {
   DISCOVERY_CATEGORIES,
   SORT_ORDERS,
@@ -135,7 +135,7 @@ const STATUS_LABEL: Record<CategoryStatus, string> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function Discover() {
+export default function Discovery() {
   // Location input
   const [mode, setMode] = useState<"gps" | "postal">("gps");
   const [postal, setPostal] = useState("");
@@ -354,7 +354,7 @@ export default function Discover() {
       <nav className={styles.nav}>
         <div className={styles.navInner}>
           <Link className={styles.brand} href="/">
-            <b>hushh</b> <span>· discover</span>
+            <b>hushh</b> <span>· discovery</span>
           </Link>
           <div className={styles.navLinks}>
             <Link className={styles.navLink} href="/localfinder">Classic directory</Link>

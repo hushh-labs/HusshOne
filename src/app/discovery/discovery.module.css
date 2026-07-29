@@ -1,4 +1,4 @@
-/* /discover — real-time discovery feed. Monochrome (black/white/grey; no blue), typeset in Lexend.
+/* /discovery — real-time discovery feed. Monochrome (black/white/grey; no blue), typeset in Lexend.
    Mirrors the /localfinder design language: the .page re-binds the global --font-heading/--font-body to
    Lexend so every heading and control inherits it, and everything else reads from the globals.css tokens
    (--ink/--paper/--wash/--hair/--hair-soft/--gray/--gray-2/--accent-glow/--font-mono). */
