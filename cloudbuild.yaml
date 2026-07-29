@@ -1,10 +1,13 @@
 # GCP-native CD: on push to main, Cloud Build gates → builds the image → deploys to Cloud Run
-# (service `one` / project hushone-app / region us-central1 — the service one.hushh.ai maps to) →
+# (service `one` / project hushone-app / region us-central1 — served publicly at intelligence.hushh.ai) →
 # prod smoke. Runs as 53407187172-compute@developer (already has run.admin + iam.serviceAccountUser
 # + artifactregistry.writer). This is independent of GitHub Actions billing.
 #
-# DO NOT point this at one-hushh-ai / hushh-tech-prod — that deploy "succeeds" but the public site
-# never changes.
+# Deploy target is the `one` service in hushone-app ONLY. Do NOT point this at one-hushh-ai /
+# hushh-tech-prod — that deploy "succeeds" but this public site never changes.
+# Domain note: the canonical public domain for THIS service is intelligence.hushh.ai (verified via
+# `gcloud run domain-mappings list`). one.hushh.ai is a SEPARATE service (project hushh-pda) and
+# 404s for this app's routes — so the health gate below must probe intelligence.hushh.ai, never one.hushh.ai.
 
 substitutions:
   _SERVICE: one
@@ -54,7 +57,7 @@ steps:
       - --region=${_REGION}
       - --quiet
 
-  # 5) Health gate — full E2E probe (one.hushh.ai is direct/no-CDN, so the new revision is live now).
+  # 5) Health gate — full E2E probe (intelligence.hushh.ai is direct/no-CDN, so the new revision is live now).
   #    The harness checks the public shell + /api/internal/health (DB, Vertex, Deep Research API, scrapers)
   #    and exits non-zero only when a CRITICAL dep is down — so a deploy fails on a real outage, but a
   #    degraded scraper (e.g. Threads logged out) does NOT block the ship.
@@ -66,7 +69,7 @@ steps:
       - -c
       - |
         set -euo pipefail
-        BASE_URL=https://one.hushh.ai node scripts/health-e2e.mjs
+        BASE_URL=https://intelligence.hushh.ai node scripts/health-e2e.mjs
 
 availableSecrets:
   secretManager:

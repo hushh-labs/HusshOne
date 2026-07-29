@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/* End-to-end production health probe for one.hushh.ai. HTTP-only, zero deps (Node 20 fetch).
+/* End-to-end production health probe for the `one` service (public domain intelligence.hushh.ai).
+ * HTTP-only, zero deps (Node 20 fetch).
  *
  * Checks, in order:
  *   1. Public app shell    — GET / and /docs return 200, and the document revalidates (no stale deploy)
@@ -9,11 +10,14 @@
  *
  * Usage:
  *   ONE_INTERNAL_JOB_TOKEN=… node scripts/health-e2e.mjs
- *   BASE_URL=https://one.hushh.ai node scripts/health-e2e.mjs
+ *   BASE_URL=https://intelligence.hushh.ai node scripts/health-e2e.mjs
  * Exit code 0 = healthy, 1 = unhealthy (so it gates a deploy / CI).
+ *
+ * NOTE: default target is intelligence.hushh.ai — the canonical public domain that maps to the `one`
+ * service (hushone-app). one.hushh.ai is a DIFFERENT service (project hushh-pda) and 404s here.
  */
 
-const BASE_URL = (process.env.BASE_URL || "https://one.hushh.ai").replace(/\/+$/, "");
+const BASE_URL = (process.env.BASE_URL || "https://intelligence.hushh.ai").replace(/\/+$/, "");
 const TOKEN = (process.env.ONE_INTERNAL_JOB_TOKEN || "").trim();
 const TIMEOUT_MS = Number(process.env.HEALTH_TIMEOUT_MS || 30000);
 
