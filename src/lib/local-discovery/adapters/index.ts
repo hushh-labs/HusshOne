@@ -1,14 +1,16 @@
 /* Adapter registry (deliverable #3): category → adapter, plus country-aware selection so a category that
    cannot serve a country is skipped rather than returning misleading data.
 
-   Note: both Phase-1 adapters advertise `supportedCountries: "all"` because Google Places gives global live
-   coverage; the US-only *registry seed* is gated INSIDE the healthcare adapter, not at this selection layer.
-   `supportsCountry` still exists as the general primitive so a future registry-bound adapter can restrict
-   itself with an explicit allow-list. */
+   Note: every adapter advertises `supportedCountries: "all"` because Google Places gives global live
+   coverage; the US-only *registry seeds* (NPPES, SEC IAPD, state DOI) are gated INSIDE the healthcare, ria
+   and insurance adapters, not at this selection layer. `supportsCountry` still exists as the general
+   primitive so a future registry-bound adapter can restrict itself with an explicit allow-list. */
 
 import type { CountryCode, DiscoveryCategory, LocalDiscoveryAdapter } from "../types";
 import { hotelsAdapter } from "./hotels";
 import { healthcareAdapter } from "./healthcare";
+import { riaAdapter } from "./ria";
+import { insuranceAdapter } from "./insurance";
 
 export { runAdapter } from "./shared";
 export type { AdapterConfig } from "./shared";
@@ -16,6 +18,8 @@ export type { AdapterConfig } from "./shared";
 export const ADAPTERS: Record<DiscoveryCategory, LocalDiscoveryAdapter> = {
   hotels: hotelsAdapter,
   healthcare: healthcareAdapter,
+  ria: riaAdapter,
+  insurance: insuranceAdapter,
 };
 
 export function adapterFor(category: DiscoveryCategory): LocalDiscoveryAdapter {

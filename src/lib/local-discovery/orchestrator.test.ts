@@ -17,6 +17,7 @@ import { adaptersForCountry } from "./adapters";
 import { getCachedSearch, setCachedSearch } from "./cache";
 import { resolveLocation } from "./location";
 import { RequestBudget } from "./spend";
+import { DISCOVERY_CATEGORIES } from "./types";
 import type {
   DiscoveryAdapterResult,
   DiscoveryCategory,
@@ -111,8 +112,11 @@ describe("orchestrator — input parsing", () => {
     expect(p.categories).toEqual(["hotels"]);
     expect(p.warnings.some((w) => /spaceships/.test(w))).toBe(true);
 
+    // Asserted against the registry rather than a literal list, so adding a category doesn't fail here.
     const empty = parseDiscoverySearchInput({});
-    expect(empty.categories).toEqual(["hotels", "healthcare"]);
+    expect(empty.categories).toEqual([...DISCOVERY_CATEGORIES]);
+    expect(empty.categories).toContain("ria");
+    expect(empty.categories).toContain("insurance");
   });
 
   it("clamps limit and falls back to a valid sort", () => {

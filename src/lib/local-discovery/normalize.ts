@@ -1,10 +1,11 @@
 /* Normalization (deliverable #4): turn each raw source into the ONE `UnifiedProfile` shape.
 
-   Two entry points for Phase 1:
+   Two entry points:
    • placeToProfile     — Google Places (New) result → profile (rooftop location, view-time image).
-   • directoryRowToProfile — our seeded PostGIS directory row → profile (hotels rooftop; healthcare a
-     ZIP centroid, so `approximateLocation`/`distanceApproximate` are true and distance is floored so the
-     UI never shows a misleading "0 m").
+   • directoryRowToProfile — our seeded PostGIS directory row → profile. Only `hotels` is rooftop; the
+     three registry verticals (healthcare/NPPES, ria/SEC, insurance/state-DOI) are geo-tagged from a ZIP
+     CENTROID, so `approximateLocation`/`distanceApproximate` are true and distance is floored — the UI
+     shows `~` and never a misleading "0 m".
 
    Every profile carries namespaced ids, per-field `provenance`, `sources` attribution, and a quality score.
    Photo availability is recorded as `provenance.imageUrl` (a signal); the actual media URL is resolved at
@@ -128,6 +129,23 @@ function fieldNum(fields: Record<string, unknown>, key: string): number | undefi
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
 }
+/** Read a string[] column (insurance `licenseTypes` / `linesOfAuthority` arrive already split). */
+function fieldList(fields: Record<string, unknown>, key: string): string[] {
+  const v = fields[key];
+  if (!Array.isArray(v)) return [];
+  return v.map((x) => String(x).trim()).filter(Boolean);
+}
+
+/** Compact USD for adviser AUM — "$1.2B" reads on a card where "$1,234,567,890" does not. */
+function compactUsd(value: number): string {
+  return `$${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)}`;
+}
+
+/** Join the non-empty parts of a postal address into one line. */
+function addressLine(...parts: (string | undefined)[]): string | undefined {
+  const s = parts.filter(Boolean).join(", ");
+  return s || undefined;
+}
 
 /** Seeded PostGIS directory row → UnifiedProfile. Attribution reflects the row's real provenance:
  *  hotels come from our crawler (Places/OSM) → `directory`; healthcare mirrors NPPES → `registry`. */
@@ -191,6 +209,121 @@ export function directoryRowToProfile(
       quality: "insufficient",
       fetchedAt,
       expiresAt: expiresAtFor("directory", Date.parse(fetchedAt)),
+      approximateLocation,
+    });
+  }
+
+  if (category === "ria") {
+    // SEC IAPD Form ADV. NOTE: the seed queries the `firms` table only — individual advisers in the SEC
+    // feed almost never carry a mappable address (geog NULL), so "advisers near you" is honestly
+    // "adviser FIRMS near you". Keep that visible in the label rather than implying a person.
+    const crd = fieldStr(f, "crd") ?? row.id;
+    const source: SourceAttribution = { kind: "registry", label: "SEC IAPD", externalId: crd, fetchedAt };
+    const phone = fieldStr(f, "phone");
+    const website = fieldStr(f, "website");
+    const aum = fieldNum(f, "aum");
+    const employees = fieldNum(f, "totalEmployees");
+    const registrationStatus = fieldStr(f, "registrationStatus");
+    const address = addressLine(fieldStr(f, "street1"), fieldStr(f, "city"), fieldStr(f, "state"), fieldStr(f, "zip"));
+
+    const provenance: Record<string, SourceKind> = { name: "registry" };
+    if (address) provenance.address = "registry";
+    if (phone) provenance.phone = "registry";
+    if (website) provenance.website = "registry";
+    if (location) provenance.location = "registry";
+    if (registrationStatus) provenance.credentials = "registry";
+
+    return withQuality({
+      id: `${category}:crd_${crd}`,
+      category,
+      name: row.name,
+      headline:
+        [aum != null ? `AUM ${compactUsd(aum)}` : undefined, employees != null ? `${employees} staff` : undefined]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+      phone,
+      website,
+      address,
+      city: fieldStr(f, "city"),
+      state: fieldStr(f, "state"),
+      postalCode: fieldStr(f, "zip"),
+      countryCode: ctx.countryCode || "US",
+      location,
+      distanceMeters,
+      distanceApproximate,
+      credentials: registrationStatus ? [registrationStatus] : undefined,
+      externalIds: { crd },
+      sources: [source],
+      provenance,
+      qualityScore: 0,
+      quality: "insufficient",
+      fetchedAt,
+      expiresAt: expiresAtFor("registry", Date.parse(fetchedAt)),
+      approximateLocation,
+    });
+  }
+
+  if (category === "insurance") {
+    // Per-state Department of Insurance licensee files. Identity is `(source_state, license_no)`; the NPN
+    // is the cross-state identity when the source publishes it — so it is the better dedupe key and goes
+    // into `externalIds` first.
+    const sourceState = fieldStr(f, "sourceState");
+    const npn = fieldStr(f, "npn");
+    const licenseNo = fieldStr(f, "licenseNo");
+    const source: SourceAttribution = {
+      kind: "registry",
+      label: sourceState ? `${sourceState} Dept. of Insurance` : "State Dept. of Insurance",
+      externalId: npn ?? licenseNo ?? row.id,
+      fetchedAt,
+    };
+    const phone = fieldStr(f, "phone");
+    const entityType = fieldStr(f, "entityType");
+    const status = fieldStr(f, "status");
+    const licenseTypes = fieldList(f, "licenseTypes");
+    const linesOfAuthority = fieldList(f, "linesOfAuthority");
+    const address = addressLine(
+      fieldStr(f, "addressLine1"),
+      fieldStr(f, "city"),
+      fieldStr(f, "state"),
+      fieldStr(f, "zip"),
+    );
+
+    const provenance: Record<string, SourceKind> = { name: "registry" };
+    if (address) provenance.address = "registry";
+    if (phone) provenance.phone = "registry";
+    if (location) provenance.location = "registry";
+    if (licenseTypes.length) provenance.credentials = "registry";
+
+    const externalIds: Record<string, string> = {};
+    if (npn) externalIds.npn = npn;
+    if (licenseNo) externalIds.insurance_license = `${sourceState ?? "US"}:${licenseNo}`;
+
+    return withQuality({
+      id: `${category}:lic_${row.id}`,
+      category,
+      // First line of authority doubles as the subcategory so the `subcategories` filter works
+      // (e.g. "Life", "Health", "Property").
+      subcategory: linesOfAuthority[0],
+      name: row.name,
+      headline: [entityType, linesOfAuthority.join(", ") || undefined, status].filter(Boolean).join(" · ") || undefined,
+      phone,
+      address,
+      city: fieldStr(f, "city"),
+      state: fieldStr(f, "state"),
+      postalCode: fieldStr(f, "zip"),
+      countryCode: ctx.countryCode || "US",
+      location,
+      distanceMeters,
+      distanceApproximate,
+      services: linesOfAuthority.length ? linesOfAuthority : undefined,
+      credentials: licenseTypes.length ? licenseTypes : undefined,
+      externalIds,
+      sources: [source],
+      provenance,
+      qualityScore: 0,
+      quality: "insufficient",
+      fetchedAt,
+      expiresAt: expiresAtFor("registry", Date.parse(fetchedAt)),
       approximateLocation,
     });
   }

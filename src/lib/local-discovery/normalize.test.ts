@@ -131,5 +131,97 @@ describe("local-discovery/normalize", () => {
       // Never a misleading 0 m from a centroid — honestDistanceMeters floors it.
       expect(p.distanceMeters).toBeGreaterThan(0);
     });
+
+    it("maps an SEC adviser FIRM row with crd identity and compact AUM", () => {
+      const row: DirectoryRow = {
+        vertical: "ria",
+        id: "104567",
+        name: "Cascade Wealth Partners LLC",
+        subtitle: null,
+        distanceM: 0,
+        geoPrecision: "zip_centroid",
+        lat: 47.68,
+        lng: -122.2,
+        fields: {
+          crd: "104567",
+          street1: "500 Adviser Way",
+          city: "Kirkland",
+          state: "WA",
+          zip: "98033",
+          phone: "+1 425 555 0144",
+          website: "https://cascade.example",
+          aum: 1_240_000_000,
+          totalEmployees: 12,
+          registrationStatus: "SEC Registered",
+        },
+      };
+      const p = directoryRowToProfile(row, ctx(), "ria");
+      expect(p.id).toBe("ria:crd_104567");
+      expect(p.externalIds.crd).toBe("104567");
+      expect(p.sources[0].label).toBe("SEC IAPD");
+      expect(p.headline).toBe("AUM $1.2B · 12 staff");
+      expect(p.address).toBe("500 Adviser Way, Kirkland, WA, 98033");
+      expect(p.credentials).toEqual(["SEC Registered"]);
+      // ZIP-centroid geo — the firm is mapped to its main-office ZIP, not a rooftop.
+      expect(p.approximateLocation).toBe(true);
+      expect(p.distanceMeters).toBeGreaterThan(0);
+    });
+
+    it("maps a state-DOI producer row, preferring NPN as the cross-state identity", () => {
+      const row: DirectoryRow = {
+        vertical: "insurance",
+        id: "TX:1234567",
+        name: "Maria Gomez",
+        subtitle: null,
+        distanceM: 0,
+        geoPrecision: "zip_centroid",
+        lat: 47.68,
+        lng: -122.2,
+        fields: {
+          sourceState: "TX",
+          licenseNo: "1234567",
+          npn: "18889999",
+          entityType: "Individual",
+          licenseTypes: ["General Lines"],
+          linesOfAuthority: ["Life", "Health"],
+          status: "Active",
+          addressLine1: "77 Agent Rd",
+          city: "Austin",
+          state: "TX",
+          zip: "78701",
+          phone: "+1 512 555 0177",
+        },
+      };
+      const p = directoryRowToProfile(row, ctx(), "insurance");
+      expect(p.id).toBe("insurance:lic_TX:1234567");
+      expect(p.externalIds.npn).toBe("18889999");
+      expect(p.externalIds.insurance_license).toBe("TX:1234567");
+      expect(p.sources[0].label).toBe("TX Dept. of Insurance");
+      expect(p.sources[0].externalId).toBe("18889999"); // NPN wins over the state licence number
+      expect(p.subcategory).toBe("Life"); // first line of authority → subcategory filter works
+      expect(p.services).toEqual(["Life", "Health"]);
+      expect(p.credentials).toEqual(["General Lines"]);
+      expect(p.headline).toBe("Individual · Life, Health · Active");
+    });
+
+    it("omits insurance externalIds that the source did not publish", () => {
+      const row: DirectoryRow = {
+        vertical: "insurance",
+        id: "TX:9",
+        name: "No-NPN Agency",
+        subtitle: null,
+        distanceM: 10,
+        geoPrecision: "zip_centroid",
+        lat: 47.68,
+        lng: -122.21,
+        fields: { sourceState: "TX", licenseNo: "9", licenseTypes: [], linesOfAuthority: [] },
+      };
+      const p = directoryRowToProfile(row, ctx(), "insurance");
+      expect(p.externalIds.npn).toBeUndefined();
+      expect(p.externalIds.insurance_license).toBe("TX:9");
+      expect(p.services).toBeUndefined();
+      expect(p.credentials).toBeUndefined();
+      expect(p.subcategory).toBeUndefined();
+    });
   });
 });

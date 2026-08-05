@@ -16,10 +16,16 @@ import type { RequestBudget } from "./spend";
 // Categories & geography
 // ---------------------------------------------------------------------------
 
-/** Phase-1 real-time categories. Extend here as new adapters land. */
-export type DiscoveryCategory = "hotels" | "healthcare";
+/** Real-time categories. Extend here as new adapters land — each one needs an entry in `ADAPTERS`
+ *  (adapters/index.ts), a branch in `directoryRowToProfile` (normalize.ts), and a UI label. */
+export type DiscoveryCategory = "hotels" | "healthcare" | "ria" | "insurance";
 
-export const DISCOVERY_CATEGORIES: readonly DiscoveryCategory[] = ["hotels", "healthcare"] as const;
+export const DISCOVERY_CATEGORIES: readonly DiscoveryCategory[] = [
+  "hotels",
+  "healthcare",
+  "ria",
+  "insurance",
+] as const;
 
 /** ISO 3166-1 alpha-2, uppercased (e.g. "US", "IN"). Kept as a widened string for forward-compat. */
 export type CountryCode = string;
