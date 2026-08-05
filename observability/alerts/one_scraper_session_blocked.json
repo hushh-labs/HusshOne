@@ -1,0 +1,42 @@
+{
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "conditionThreshold": {
+        "aggregations": [
+          {
+            "alignmentPeriod": "900s",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "perSeriesAligner": "ALIGN_DELTA"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "duration": "0s",
+        "filter": "resource.type=\"cloud_run_revision\" metric.type=\"logging.googleapis.com/user/one_scraper_session_blocked\"",
+        "trigger": {
+          "count": 1
+        }
+      },
+      "displayName": "one_scraper_session_blocked >0 in 15m (a real scrape hit a logged-out VM)"
+    }
+  ],
+  "displayName": "[one.hushh.ai] scraper session needs human re-login",
+  "documentation": {
+    "content": "A REAL user scrape found a scraper VM's logged-in browser session unusable, and it needs a HUMAN to clear it (logged out / checkpoint / 2FA / CAPTCHA). This is not a liveness alert \u2014 the VM is almost certainly up. Until someone re-logs-in, every scan touching that platform will return shallow or empty results.\n\nWhich platform is in the log line (`jsonPayload.platform`).\n\n1. See the failures:\n   `gcloud logging read 'jsonPayload.event=\"one.scraper.session_blocked\"' --project hushone-app --freshness=1h --format='value(timestamp,jsonPayload.platform,jsonPayload.accessState)'`\n2. Confirm what the VM itself thinks (Instagram example \u2014 note the header is `Authorization: Bearer`, NOT `X-API-Key`):\n   `curl -sS -H \"Authorization: Bearer $(gcloud secrets versions access latest --secret=instagram-scraper-api-key --project=hushone-app)\" http://130.211.224.221:8080/session/status`\n   Look at `requiresHumanLogin` / `usableForDeepScrape`.\n3. Re-login: open the VM browser over an SSH tunnel and complete the login/2FA by hand, then leave the Chrome window open. See the `scraper-health` skill and `services/instagram-scraper/scripts/gcp-vm/open-login-browser.sh`.\n\nIf `accessState` is `rate_limited` or `blocked` this alert will NOT fire (those are WARNING-only and self-clear after the VM's 15-minute cooldown).\n\nRelated: the `[one.hushh.ai] dependency DOWN` policy covers DB / Vertex / Deep Research only \u2014 scraper VMs are deliberately excluded from it.",
+    "mimeType": "text/markdown"
+  },
+  "enabled": true,
+  "notificationChannels": [
+    "projects/hushone-app/notificationChannels/4619923041387238844",
+    "projects/hushone-app/notificationChannels/11410114364149650466",
+    "projects/hushone-app/notificationChannels/10732567292633470599",
+    "projects/hushone-app/notificationChannels/9767590832982798935",
+    "projects/hushone-app/notificationChannels/11410114364149650529",
+    "projects/hushone-app/notificationChannels/11410114364149650592",
+    "projects/hushone-app/notificationChannels/9767590832982798680",
+    "projects/hushone-app/notificationChannels/11410114364149650655"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "A One health probe reported a CRITICAL dependency DOWN (DB / Vertex / Deep Research). Non-critical scraper VMs are excluded on purpose: they degrade scrape depth but leave the product serving, and their real failure signal is one_scraper_session_blocked. The second OR clause reads the pre-`criticalDown` log shape so the metric keeps working across a rollback.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event=\"one.health.check\" (jsonPayload.criticalDown>0 OR (jsonPayload.summary.down>0 AND (jsonPayload.notUp:\"database\" OR jsonPayload.notUp:\"vertex\" OR jsonPayload.notUp:\"deep_research_api\")))",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

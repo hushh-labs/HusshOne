@@ -19,6 +19,28 @@ trace-context propagation, log-based metrics on its existing logs, and a
 | Error grouping | Error Reporting | auto, from `severity:ERROR` + `stack_trace` in logs. |
 | Ad-hoc SQL | Log Analytics | `_Default` bucket analytics + `one_logs` BigQuery link; `queries/*.sql`. |
 
+## Dependency health — what is allowed to page
+
+Two policies, split by whether a human can *do* anything about it.
+
+| Policy | Metric | Fires when | Producer |
+|---|---|---|---|
+| `[one.hushh.ai] dependency DOWN` | `one_health_dep_down` | a **critical** dep (DB / Vertex / Deep Research) is down ~20 min | `one-health-watchdog`, every 10 min, `?scope=critical` |
+| `[one.hushh.ai] scraper session needs human re-login` | `one_scraper_session_blocked` | a scraper VM's browser session is logged out / checkpointed | real scrapes (`source=real_scrape`); idle canary `one-scraper-readiness-sweep` every 6h (`source=readiness_probe`) |
+
+The rules that keep these honest:
+
+- **Scraper VMs never page the dependency alert.** They are `critical: false` — a down scraper reduces
+  scrape depth, it does not stop the product serving. `one_health_dep_down` keys on `criticalDown`, *not*
+  `summary.down`; `summary` counts scrapers too and is for dashboards only.
+- **Liveness and latency are not alertable for scrapers.** The VMs are non-preemptible and stay up for
+  months; "unreachable or slow" was ~100% false positives. Only `requiresHumanLogin` pages.
+- **The real signal comes from real traffic.** A session dies on the platform's schedule, silently. The
+  authoritative detector is the outcome of scrapes users actually waited for (`@/lib/health/session-signal`);
+  the 6-hourly canary exists only to cover idle periods with no real scrapes.
+- **Probes are rate-limited, not per-sweep.** Each `/session/status` drives a live browser inspection on the
+  VM (13–30s), so `@/lib/health/checks` re-probes a healthy scraper every 6h and an unhealthy one every 10 min.
+
 ## Reproduce / re-apply
 
 ```bash

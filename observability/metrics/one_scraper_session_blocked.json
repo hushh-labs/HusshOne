@@ -1,0 +1,17 @@
+{
+  "description": "A REAL scrape found a scraper VM's logged-in session unusable and a human must re-login (logged out / checkpoint / 2FA). Emitted by actual user traffic (source=real_scrape) or by the 6-hourly idle canary (source=readiness_probe) — never by per-sweep polling, so every occurrence is user-affecting and actionable. needsHuman=false events (rate_limited / blocked) self-clear and are deliberately excluded.",
+  "filter": "resource.type=\"cloud_run_revision\" resource.labels.service_name=\"one\" jsonPayload.event=\"one.scraper.session_blocked\" jsonPayload.needsHuman=true",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1",
+    "labels": [
+      { "key": "platform", "valueType": "STRING" },
+      { "key": "source", "valueType": "STRING" }
+    ]
+  },
+  "labelExtractors": {
+    "platform": "EXTRACT(jsonPayload.platform)",
+    "source": "EXTRACT(jsonPayload.source)"
+  }
+}

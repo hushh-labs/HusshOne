@@ -294,13 +294,35 @@ function recordSessionOutcome(result) {
   }
 }
 
+/* inspectInstagramSession() drives a live Chrome DevTools inspection — measured 13-30s on this e2-medium,
+   and concurrent callers make each other slower (three back-to-back calls degraded 13s → 26s → 30s+).
+   /session/status is a STATUS endpoint: callers want the last known truth, not a fresh browser round-trip
+   every time. So memoize briefly. Session state changes on Instagram's schedule (hours), never within the
+   TTL, so this costs no accuracy. In-flight de-duplication matters as much as the TTL: overlapping callers
+   share one inspection instead of queuing new ones behind each other. */
+const INSPECTION_TTL_MS = Number(process.env.INSTAGRAM_INSPECTION_TTL_MS || 60_000);
+let inspectionCache = null; // { at, value }
+let inspectionInFlight = null;
+
+async function inspectSessionCached() {
+  if (inspectionCache && Date.now() - inspectionCache.at < INSPECTION_TTL_MS) return inspectionCache.value;
+  if (inspectionInFlight) return inspectionInFlight;
+  inspectionInFlight = inspectInstagramSession()
+    .catch((error) => ({ inspected: false, error: error instanceof Error ? error.message : String(error) }))
+    .then((value) => {
+      inspectionCache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      inspectionInFlight = null;
+    });
+  return inspectionInFlight;
+}
+
 async function buildSessionStatus() {
   let inspection = null;
   if (liveBrowserEnabled) {
-    inspection = await inspectInstagramSession().catch((error) => ({
-      inspected: false,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    inspection = await inspectSessionCached();
   }
   return {
     ok: true,

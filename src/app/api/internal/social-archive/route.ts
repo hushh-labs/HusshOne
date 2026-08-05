@@ -17,6 +17,7 @@ import { scrapeThreadsProfileUrl } from "@/lib/threads/scraper-profile";
 import { scrapeXProfileUrl } from "@/lib/x/scraper-profile";
 import { scrapeLinkedInPostsUrl } from "@/lib/linkedin/scraper-posts";
 import { PROFILE_VERSION } from "@/lib/social-intelligence/preference-profile";
+import { reportScraperSession } from "@/lib/health/session-signal";
 import type { ArchiveSocialProfile } from "@/lib/ria/types";
 
 export const runtime = "nodejs";
@@ -156,6 +157,16 @@ export async function POST(request: Request) {
           scanRunId: meta.scanRunId ?? null,
         }),
       );
+
+      // Real-traffic session health: if this scrape proves the VM's logged-in session can't read pages
+      // (logged out / checkpoint / rate-limited), say so loudly here. This is what alerts on scraper
+      // sessions — a signal produced by a scrape a user actually waited for, never by a synthetic poll.
+      reportScraperSession({
+        platform: job.platform,
+        accessState: access?.state,
+        publicId: job.publicId,
+        scanRunId: meta.scanRunId ?? null,
+      });
 
       // Freshness refresh job: just pull the recent window to catch NEW posts (upsert adds them, eviction
       // drops the oldest beyond 512 → true rolling window), recompute, and COMPLETE — do NOT re-grow the

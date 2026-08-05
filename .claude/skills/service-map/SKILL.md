@@ -58,7 +58,7 @@ Each VM = persistent logged-in **Chromium** (CDP `127.0.0.1:9222`) + **Node API*
 | Service | Code | App route | VM name | One calls (env) | Secret (hushone-app) |
 |---|---|---|---|---|---|
 | LinkedIn | `services/linkedin-scraper` | `src/app/api/linkedin/enrich-url/route.ts` | `linkedin-scraper-vm` | `https://linkedin-scraper.136.114.82.27.sslip.io` (`LINKEDIN_SCRAPER_URL`) | `linkedin-scraper-api-key` |
-| Instagram | `services/instagram-scraper` | `src/app/api/instagram/enrich-url/route.ts` | `instagram-scraper-vm` | `http://35.192.178.122:8080` (`INSTAGRAM_SCRAPER_URL`) | `instagram-scraper-api-key` |
+| Instagram | `services/instagram-scraper` | `src/app/api/instagram/enrich-url/route.ts` | `instagram-scraper-vm` | `http://130.211.224.221:8080` (`INSTAGRAM_SCRAPER_URL`) ⚠️ ephemeral IP — trust the env var, not this table | `instagram-scraper-api-key` |
 | Threads | `services/threads-scraper` | `src/app/api/threads/enrich-url/route.ts` | `threads-scraper-vm` | `http://34.56.201.251:8080` (`THREADS_SCRAPER_URL`) | `threads-scraper-api-key` |
 | X / Twitter | `services/twitter-scraper` | `src/app/api/x/enrich-url/route.ts` | `twitter-scraper-vm` | `http://34.27.236.224:8080` (`TWITTER_SCRAPER_URL`) | `twitter-scraper-api-key` |
 
