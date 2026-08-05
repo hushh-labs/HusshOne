@@ -27,7 +27,7 @@ needs every guard in `safe-changes`.
 | **There is no UAT** | `uat.one.hushh.ai` is a **different app** (`hushh-webapp`, project `hushh-pda-uat`). This repo has **one** environment: production. Merging to `main` ships. |
 | Live domain | **`intelligence.hushh.ai`** (not `one.hushh.ai` — that's another app) |
 | CD | Cloud Build trigger `husshone-deploy-prod` → `cloudbuild.yaml` on push to `main` |
-| GitHub Actions | **dead** — no repo secrets, every run fails in ~4s. Don't debug them. |
+| GitHub Actions | **dead** — `deploy-prod` and `prod-smoke` are `state=disabled_manually` (last run 2026-06-22) *and* the repo has no Actions secrets. Editing the YAML changes nothing; don't debug them. |
 
 Because `main` → prod with no staging in between, **the PR review and the local
 gate are the only safety net.** Treat them that way.
