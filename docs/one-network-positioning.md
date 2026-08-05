@@ -1,10 +1,31 @@
 # The Xtreme Super Computing Burst Agent in the One Network of Agents
 
-**Positioning brief — messaging you can use directly.** Last updated 2026-06-21.
+**Positioning brief — messaging you can use directly.** Last updated 2026-08-05.
 
 ## The one-sentence position
 
 > The **Xtreme Super Computing Burst Agent** is the supercomputing specialist in the **🤫 One network of agents** — the one that hands you a supercomputer, running heavy work where it finishes best, in your own cloud.
+
+## The core differentiator: vertical integration + the compute continuum
+
+**This is why 🤫 Private Agent One is built to be the best supercomputing agent in the world.** Other tools rent you a cloud GPU. One is *vertically integrated with the machine itself* — and orchestrates the entire continuum:
+
+- **Deeply integrated with the OS + hardware.** A native macOS agent ("One Puppy") reads your Apple-Silicon Mac in real time — memory pressure, unified-memory headroom, thermal and hardware profile — and holds keys in the Secure Enclave / Keychain. It doesn't sit *beside* the OS; it's wired *into* it.
+- **Integrated with the software ecosystem.** Containerized workloads, the standard accelerator stacks, and open agent rails (A2A card, AP2 offers, MCP, Gemini/ADK function declarations) mean One speaks what the hardware and the agent ecosystem already speak.
+- **It tunnels work across the whole compute continuum** — placing each job where it finishes best and moving it only as far as it needs:
+
+  **on-device → edge → your cloud → supercomputing AI infrastructure.**
+
+  | Tier | What runs there | State |
+  |---|---|---|
+  | **On-device** | Apple Silicon via One Puppy — local, $0, private, instant | **Live** |
+  | **Edge** | Latency-sensitive steps, pipeline pre/post-processing | Expanding |
+  | **Your cloud (BYOC)** | Right-sized GPU/TPU in the user's own cloud; pay-per-second; keys never persisted; torn down after | **Live** |
+  | **Supercomputing AI infra** | Full-scale accelerator fleets for the biggest training, backtests, simulations | Expanding |
+
+- **Why it's a moat, not a feature.** Vertical integration is the hard, defensible part: reading the silicon, deciding placement, provisioning the right accelerator in *your* cloud, streaming the job, and bringing the result home — as one seamless act the user never has to think about. Renting a GPU is a commodity; *tunneling a workload across the continuum on your behalf* is the product.
+
+*Honesty bar: on-device and BYOC cloud bursting are live in the product today; the edge and full supercomputing-scale tiers are the expanding roadmap. Say it exactly that way.*
 
 ## The frame: One is a network, not a chatbot
 

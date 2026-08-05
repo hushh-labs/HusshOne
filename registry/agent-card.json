@@ -1,7 +1,7 @@
 {
   "protocolVersion": "0.3.0",
   "name": "Hushh One — Xtreme Super Computing Burst",
-  "description": "Xtreme Super Computing Burst is a capability of your 🤫 One agent — personal supercomputing for Apple Silicon. When your Mac (“One Puppy”) runs out of headroom, One transparently bursts the workload to your own GCP project (GPU today, TPU next) and brings the result home — no cloud expertise required, your keys never leave your control. Offered by Hushh (🤫).",
+  "description": "Xtreme Super Computing Burst is what makes 🤫 Private Agent One a supercomputing agent. It is vertically integrated with your device — a native macOS agent (“One Puppy”) reads live memory pressure, unified-memory headroom, and the hardware profile of your Apple-Silicon Mac — so One can place every workload where it finishes best and move it along the compute continuum: run on-device when it fits, and when a job outgrows the Mac, transparently burst it to the right-sized accelerator (GPU today, TPU next) in your OWN cloud, then bring the result home and tear the instance down. No cloud expertise required; your keys are used in-memory and never leave your control. Offered by Hushh (🤫).",
   "url": "https://one.hushh.ai/api/one/burst",
   "preferredTransport": "HTTP+JSON",
   "provider": {
