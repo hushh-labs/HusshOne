@@ -1,0 +1,12 @@
+{
+  "name": "@husshone/brokercheck-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone location-ranked financial adviser API over FINRA BrokerCheck",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test scripts/lib",
+    "smoke": "node scripts/smoke.mjs"
+  }
+}
