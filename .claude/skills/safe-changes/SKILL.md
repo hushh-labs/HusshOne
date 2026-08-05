@@ -25,7 +25,7 @@ Read this before any rule. Most incidents below are one of these facts being gue
 | ❌ NOT this app | `uat.one.hushh.ai` → `hushh-webapp` in **`hushh-pda-uat`** |
 | **UAT for this repo** | **None. There is no UAT/staging environment. `main` → prod.** |
 | Live CD | Cloud Build trigger **`husshone-deploy-prod`** (project `hushone-app`, region `us-central1`), file `cloudbuild.yaml`, on push to `^main$` |
-| Dead CD | `.github/workflows/deploy-prod.yml` + `prod-smoke.yml` — **no repo secrets exist**, every run fails in ~4s since 2026-06-22. Do not "fix a deploy" by editing these. |
+| Dead CD | `.github/workflows/deploy-prod.yml` + `prod-smoke.yml` — both **`state=disabled_manually`**; they have not fired since 2026-06-22, and the repo has **no Actions secrets** so they'd fail at auth anyway. Editing this YAML changes nothing. |
 | Manual deploy | `npm run deploy:prod` → `scripts/deploy-prod.sh` |
 | Secrets | Secret Manager, project **`hushone-app`** only. No Supabase, no Vercel, no `.env` secrets (`.env.production` is committed and holds **public** Firebase web config only). |
 | DBs | `hushone-app:us-central1:hushh-identity-pg` (app) · `hushh-tech-prod:us-central1:hushh-directories-db` (directories, read-only) |
@@ -330,6 +330,9 @@ returns the new marker. Never index `traffic[0]`; select the entry by `percent`.
 **Check.**
 
 ```bash
+# 0. is the pipeline you think ran even enabled? (both GH workflows here are disabled)
+gh api repos/hushh-labs/HusshOne/actions/workflows --jq '.workflows[] | "\(.name) state=\(.state)"'
+
 gcloud builds list --project hushone-app --region=us-central1 --limit 3 \
   --format='table(status, createTime, substitutions.SHORT_SHA)'   # SUCCESS, not QUEUED/WORKING
 
