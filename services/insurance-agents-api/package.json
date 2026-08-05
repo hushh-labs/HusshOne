@@ -1,0 +1,11 @@
+{
+  "name": "@husshone/insurance-agents-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone location-ranked insurance-agency API over the Nationwide (Yext) locator",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test scripts/lib"
+  }
+}
