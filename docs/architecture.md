@@ -191,9 +191,13 @@ Recovery:
 - `GET /api/one/research/[id]` resumes polling/finalization using the stored `deepResearchJobId`.
 - `GET /api/one/scans/latest` lets the browser reattach to the most recent scan.
 
-## Local Discovery (Phase 1)
+## Local Discovery
 
-Local Discovery is a real-time, location-aware discovery feed that streams nearby results as each category resolves. It is **additive**: it ships as a new `/discovery` experience alongside — not replacing — the classic `/localfinder` directory-table view, which remains as the fallback. (The earlier `/discover` path permanently redirects (308) to `/discovery` via `next.config.ts`, so any pre-launch links keep working.) Phase 1 covers two categories: **hotels** and **healthcare**.
+Local Discovery is a real-time, location-aware discovery feed that streams nearby results as each category resolves. It is **additive**: it ships as a new `/discovery` experience alongside — not replacing — the classic `/localfinder` directory-table view, which remains as the fallback. (The earlier `/discover` path permanently redirects (308) to `/discovery` via `next.config.ts`, so any pre-launch links keep working.)
+
+It covers four categories, one per coordinate vertical in the directory: **hotels**, **healthcare**, **ria** (SEC-registered investment adviser firms), and **insurance** (state-licensed producers). Every category streams over the same SSE contract, so "user drops a pin → advisers, insurance agents, clinics and hotels arrive progressively" is one request.
+
+> **Naming trap:** `src/lib/ria/` is **not** this. That directory is the RIA Shadow person-intelligence client (`RIA_INTELLIGENCE_API_BASE_URL`, see `docs/RIA_SHADOW_STREAMING_SPEC.md`) — an unrelated subsystem that happens to share the acronym. The registered-investment-adviser code is `src/lib/local-discovery/adapters/ria.ts` and the `ria` vertical in `src/lib/directory/`.
 
 Unlike the ZIP/coordinate directory API (`GET /api/v1/directory`), which returns a single stored-data snapshot, Local Discovery is a streaming API that fans out to our own PostGIS directory (seed) **and** live enrichment in parallel, merges/dedupes/ranks the two, and pushes results to the browser progressively over SSE.
 
@@ -217,6 +221,22 @@ Every category runs the same `shared.ts` pipeline: **seed → enrich → merge/d
 - **Seed** — proximity query against our own PostGIS directory (`src/lib/directory`, `queryVertical`), guarded by `hasDirectoryDb()`. No DB wired → zero seed rows + a warning (live-only). Each adapter declares its `seedVertical`, or `null` when the registry doesn't cover the search country (e.g. US-only NPPES for a non-US search — never seed misleading data).
 - **Live** — Google Places, budget-gated (see guardrails). No key or over-budget → skipped, results marked `degraded` with a warning; the frontend surfaces a "showing saved results" indicator.
 
+An adapter is ~20 lines because it only picks four knobs: `seedVertical`, `placeTypes`, an optional `textQuery`, and its honesty warnings.
+
+| Category | Registry seed | Live Places enrichment |
+| --- | --- | --- |
+| `hotels` | `hotels` (rooftop coords, crawler-sourced) | Nearby, `lodging` |
+| `healthcare` | `healthcare` — NPPES, **US only** | Nearby, `doctor` + `hospital` |
+| `ria` | `ria` — SEC IAPD Form ADV, **US only** | **Text Search** — no Table A type exists |
+| `insurance` | `insurance` — state DOI licences, **US only** | Nearby, `insurance_agency` |
+
+**Why RIA uses Text Search.** `includedTypes` accepts Google Places (New) **Table A** types only — an unlisted value is a hard `400 INVALID_ARGUMENT` from `places:searchNearby`. Table A's entire Finance category is `accounting`, `atm`, `bank`; none of them describe an investment adviser. So the RIA adapter leaves `placeTypes` empty and sets a baseline `textQuery`, which routes `providers/places.ts` to `places:searchText`. A user's free-text refine is **appended** to that baseline, never substituted for it. `insurance_agency` *is* a real Table A type (Services category), so insurance keeps the cheaper, distance-ranked Nearby path. `shared.ts` refuses to call Places at all when a config has neither `placeTypes` nor `textQuery` — otherwise an untyped Nearby search would return every business in the radius.
+
+**Registry honesty.** Three of the four verticals are US registries and are geo-tagged from a **ZIP centroid**, not a real address (see the `geoPrecision` contract below). Two category-specific caveats are surfaced as warnings rather than left implicit:
+
+- `ria` seeds the SEC **`firms`** table only. Individual advisers in the Form ADV feed almost never carry a mappable address (`geog` is NULL), so a proximity query cannot return them. The feed answers "adviser **firms** near you", and the UI label says `RIA firms` for that reason.
+- `insurance` coverage is **state-by-state**, because there is no free national producer file (NIPR's Producer Database is paid). A search in a state whose DOI publishes no free bulk export gets zero seed rows. `seedEmptyWarning` fires when the seed query *ran and returned nothing*, so an uncovered state reads as a coverage gap rather than "there are no agents here". It is driven by the empty result, **not** a hardcoded list of covered states, so it can't go stale as states are unblocked in `services/insurance-directory`.
+
 ### Unified profile contract
 
 Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discovery/types.ts`, client-safe): namespaced IDs, **per-field source attribution**, a `quality` tier (`rich` / `standard` / `basic` / `insufficient`) with a numeric `qualityScore`, and `distanceApproximate` / `approximateLocation` flags (true for ZIP-centroid or postal-resolved origins, so the UI shows `~` distances and never a misleading `0 m`).
@@ -227,7 +247,7 @@ Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discov
 
 ### Cost + reliability guardrails (before any paid call)
 
-- **Spend ledger** (`spend.ts`): daily USD budget `LOCAL_DISCOVERY_DAILY_BUDGET_USD` (default **25**) and a per-request paid-call cap `LOCAL_DISCOVERY_MAX_PAID_CALLS_PER_REQUEST` (default **6**). Paid providers are gated behind `LOCAL_DISCOVERY_ALLOW_PAID`. The `spend` snapshot is echoed on every `POST` response.
+- **Spend ledger** (`spend.ts`): daily USD budget `LOCAL_DISCOVERY_DAILY_BUDGET_USD` (default **25**) and a per-request paid-call cap `LOCAL_DISCOVERY_MAX_PAID_CALLS_PER_REQUEST` (default **6**). Paid providers are gated behind `LOCAL_DISCOVERY_ALLOW_PAID`. The `spend` snapshot is echoed on every `POST` response. **Headroom note:** an all-categories search now costs up to 4 Places calls + 1 geocode = **5 of 6**. Adding a fifth category, or a second paid call per adapter, exceeds the default cap — and because adapters race under `Promise.allSettled`, *which* category loses live enrichment would be nondeterministic. Raise the cap in the same change that adds the category.
 - **Reliability primitives** (`reliability.ts`): per-provider token-bucket rate limits, per-provider circuit breakers (open after 5 consecutive failures, 30s cooldown), per-call timeouts, bounded exponential backoff with jitter, and a concurrency gate. An open breaker or rate-limit skips that provider and degrades to seed/cache.
 - **Caching + ToS** (`cache.ts`): short-lived search + entity caches. Google Places fields respect the provider's no-cache posture and attribution requirement (the `/discovery` UI renders Google attribution whenever a profile used Places).
 
@@ -243,7 +263,7 @@ Adapters normalize both sources into one `UnifiedProfile` (`src/lib/local-discov
 | Search orchestration + SSE session | `src/lib/local-discovery/orchestrator.ts` |
 | Start route (202) | `src/app/api/local-discovery/search/route.ts` |
 | SSE events route | `src/app/api/local-discovery/search/[searchId]/events/route.ts` |
-| Category adapter pipeline | `src/lib/local-discovery/adapters/shared.ts` (+ `hotels.ts`, `healthcare.ts`) |
+| Category adapter pipeline | `src/lib/local-discovery/adapters/shared.ts` (+ `hotels.ts`, `healthcare.ts`, `ria.ts`, `insurance.ts`) |
 | Directory seed | `src/lib/directory/query.ts`, `src/lib/directory/db.ts` |
 | Live providers | `src/lib/local-discovery/providers/places.ts`, `geocoding.ts` |
 | Location resolution | `src/lib/local-discovery/location.ts` |

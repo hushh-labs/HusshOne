@@ -54,9 +54,13 @@ const MIN_RATINGS = [
   { label: "4.5+", v: 4.5 },
 ];
 
+// "RIA firms" (not "advisers") is deliberate: the SEC seed maps firms, because individual advisers in the
+// Form ADV feed have no mappable address. Matches VERTICAL_LABEL in @/lib/directory/summary.
 const CATEGORY_LABEL: Record<DiscoveryCategory, string> = {
   hotels: "Hotels",
   healthcare: "Healthcare",
+  ria: "RIA firms",
+  insurance: "Insurance",
 };
 
 const SORT_LABEL: Record<SortOrder, string> = {

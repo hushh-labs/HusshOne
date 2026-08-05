@@ -36,6 +36,8 @@ function seedLimit(ctx: DiscoverySearchContext): number {
 interface SeedOutcome {
   profiles: UnifiedProfile[];
   warning?: string;
+  /** True when the query actually ran and succeeded — so "0 rows" can be told apart from "never asked". */
+  queried: boolean;
 }
 
 /** Proximity seed from our own PostGIS directory. Never throws (queryVertical already isolates failures);
@@ -45,7 +47,7 @@ async function seed(
   vertical: DirectoryVertical,
   category: DiscoveryCategory,
 ): Promise<SeedOutcome> {
-  if (!hasDirectoryDb()) return { profiles: [] }; // no seed DB wired → live-only (expected in some envs)
+  if (!hasDirectoryDb()) return { profiles: [], queried: false }; // no seed DB wired → live-only
   const res = await queryVertical(vertical, {
     lat: ctx.lat,
     lng: ctx.lng,
@@ -53,9 +55,9 @@ async function seed(
     limit: seedLimit(ctx),
   });
   if (res.error) {
-    return { profiles: [], warning: `directory seed unavailable (${vertical}): ${res.error}` };
+    return { profiles: [], warning: `directory seed unavailable (${vertical}): ${res.error}`, queried: false };
   }
-  return { profiles: res.rows.map((r) => directoryRowToProfile(r, ctx, category)) };
+  return { profiles: res.rows.map((r) => directoryRowToProfile(r, ctx, category)), queried: true };
 }
 
 interface EnrichOutcome {
@@ -65,23 +67,35 @@ interface EnrichOutcome {
   live: boolean;
 }
 
+/** Compose the Places free-text query. `cfg.textQuery` is the category's own baseline (set only when no
+ *  Table A type describes the category); the user's refine is APPENDED to it, never replaces it — dropping
+ *  the baseline would silently turn "investment adviser" into an untyped search for whatever they typed. */
+function composeTextQuery(cfg: AdapterConfig, ctx: DiscoverySearchContext): string | undefined {
+  const refine = ctx.filters.query?.trim();
+  if (!cfg.textQuery) return refine || undefined;
+  return [cfg.textQuery, refine].filter(Boolean).join(" ");
+}
+
 /** Budget-gated live enrichment via Google Places (New). Returns `live:false` (with a reason warning) when
  *  paid calls are off, no key is configured, or the provider was skipped/failed — the caller then degrades. */
-async function enrich(
-  ctx: DiscoverySearchContext,
-  category: DiscoveryCategory,
-  placeTypes: string[],
-): Promise<EnrichOutcome> {
+async function enrich(ctx: DiscoverySearchContext, cfg: AdapterConfig): Promise<EnrichOutcome> {
   if (!ctx.allowPaid) return { profiles: [], warning: "live enrichment off (paid calls disabled)", live: false };
   if (!hasPlacesProvider()) return { profiles: [], warning: "live enrichment off (no Places API key)", live: false };
+
+  const textQuery = composeTextQuery(cfg, ctx);
+  // A category with neither a Table A type nor a baseline text query would issue an untyped Nearby search
+  // and return every business in the radius. Refuse instead of returning junk.
+  if (!cfg.placeTypes.length && !textQuery) {
+    return { profiles: [], warning: "live enrichment off (no place types or text query configured)", live: false };
+  }
 
   const out = await searchPlaces(
     {
       lat: ctx.lat,
       lng: ctx.lng,
       radiusMeters: ctx.radiusMeters,
-      includedTypes: placeTypes,
-      textQuery: ctx.filters.query?.trim() || undefined,
+      includedTypes: cfg.placeTypes,
+      textQuery,
       regionCode: ctx.countryCode || undefined,
       maxResults: Math.min(ctx.limit, 20),
       openNow: ctx.filters.openNow,
@@ -92,7 +106,7 @@ async function enrich(
   );
 
   if (out.skipped) return { profiles: [], warning: `live enrichment skipped (${out.skipped})`, live: false };
-  return { profiles: out.results.map((r) => placeToProfile(r, ctx, category)), live: true };
+  return { profiles: out.results.map((r) => placeToProfile(r, ctx, cfg.category)), live: true };
 }
 
 export interface AdapterConfig {
@@ -100,10 +114,19 @@ export interface AdapterConfig {
   /** Directory vertical to seed from, or `null` when this category has no valid seed for the search country
    *  (e.g. a US-only registry for a non-US search — never seed misleading/irrelevant data). */
   seedVertical: DirectoryVertical | null;
-  /** Google Places (New) types to enrich with (e.g. ["lodging"] or ["doctor","hospital"]). */
+  /** Google Places (New) **Table A** types to enrich with (e.g. ["lodging"], ["insurance_agency"]). Only
+   *  Table A is accepted by `includedTypes`; an invalid type is a hard 400 from searchNearby. Leave empty
+   *  when no Table A type describes the category — then `textQuery` is mandatory. */
   placeTypes: string[];
+  /** Baseline free-text query, for categories Table A does not cover (there is no investment-adviser type).
+   *  Setting it routes enrichment through Text Search instead of Nearby Search. */
+  textQuery?: string;
   /** Adapter-computed warnings prepended to the result (e.g. registry-country-mismatch notes). */
   extraWarnings?: string[];
+  /** Note appended when the seed query RAN and returned zero rows — for registries whose coverage is
+   *  partial (state-by-state insurance licensing), so "no results here" reads as a coverage gap rather
+   *  than as "there are none". Not emitted when the seed was skipped or errored (those warn already). */
+  seedEmptyWarning?: string;
 }
 
 /** Run one category's full search: seed + live in parallel, merge/dedupe, rank, and report attribution. */
@@ -114,13 +137,18 @@ export async function runAdapter(ctx: DiscoverySearchContext, cfg: AdapterConfig
   let liveRan = false;
 
   const [seedRes, liveRes] = await Promise.allSettled([
-    cfg.seedVertical ? seed(ctx, cfg.seedVertical, cfg.category) : Promise.resolve<SeedOutcome>({ profiles: [] }),
-    enrich(ctx, cfg.category, cfg.placeTypes),
+    cfg.seedVertical
+      ? seed(ctx, cfg.seedVertical, cfg.category)
+      : Promise.resolve<SeedOutcome>({ profiles: [], queried: false }),
+    enrich(ctx, cfg),
   ]);
 
   if (seedRes.status === "fulfilled") {
     all.push(...seedRes.value.profiles);
     if (seedRes.value.warning) warnings.push(seedRes.value.warning);
+    if (cfg.seedEmptyWarning && seedRes.value.queried && !seedRes.value.profiles.length) {
+      warnings.push(cfg.seedEmptyWarning);
+    }
     for (const p of seedRes.value.profiles) sources.add(p.sources[0]?.kind ?? "directory");
   } else {
     warnings.push(`directory seed failed: ${errMsg(seedRes.reason)}`);

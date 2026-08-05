@@ -21,7 +21,9 @@ import { RequestBudget } from "../spend";
 import type { DiscoverySearchContext, LocalDiscoveryAdapter } from "../types";
 import { hotelsAdapter } from "./hotels";
 import { healthcareAdapter } from "./healthcare";
-import { adaptersForCountry, adapterFor, supportsCountry } from "./index";
+import { riaAdapter } from "./ria";
+import { insuranceAdapter } from "./insurance";
+import { adaptersForCountry, adapterFor, runAdapter, supportsCountry } from "./index";
 
 const mockQueryVertical = vi.mocked(queryVertical);
 const mockSearchPlaces = vi.mocked(searchPlaces);
@@ -93,6 +95,60 @@ function healthcareRow(overrides: Partial<DirectoryRow> = {}): DirectoryRow {
   };
 }
 
+function riaRow(overrides: Partial<DirectoryRow> = {}): DirectoryRow {
+  return {
+    vertical: "ria",
+    id: "104567",
+    name: "Cascade Wealth Partners LLC",
+    subtitle: "AUM $1,240,000,000",
+    distanceM: 0,
+    geoPrecision: "zip_centroid",
+    lat: 47.68,
+    lng: -122.2,
+    fields: {
+      crd: "104567",
+      street1: "500 Adviser Way",
+      city: "Kirkland",
+      state: "WA",
+      zip: "98033",
+      phone: "+1 425 555 0144",
+      website: "https://cascade.example",
+      aum: 1_240_000_000,
+      totalEmployees: 12,
+      registrationStatus: "SEC Registered",
+    },
+    ...overrides,
+  };
+}
+
+function insuranceRow(overrides: Partial<DirectoryRow> = {}): DirectoryRow {
+  return {
+    vertical: "insurance",
+    id: "TX:1234567",
+    name: "Maria Gomez",
+    subtitle: "Individual · General Lines",
+    distanceM: 0,
+    geoPrecision: "zip_centroid",
+    lat: 47.68,
+    lng: -122.2,
+    fields: {
+      sourceState: "TX",
+      licenseNo: "1234567",
+      npn: "18889999",
+      entityType: "Individual",
+      licenseTypes: ["General Lines"],
+      linesOfAuthority: ["Life", "Health"],
+      status: "Active",
+      addressLine1: "77 Agent Rd",
+      city: "Austin",
+      state: "TX",
+      zip: "78701",
+      phone: "+1 512 555 0177",
+    },
+    ...overrides,
+  };
+}
+
 function place(overrides: Partial<PlaceResult> = {}): PlaceResult {
   return {
     id: "ChIJlive",
@@ -133,6 +189,8 @@ describe("local-discovery/adapters — registry", () => {
   it("maps categories to their adapters", () => {
     expect(adapterFor("hotels")).toBe(hotelsAdapter);
     expect(adapterFor("healthcare")).toBe(healthcareAdapter);
+    expect(adapterFor("ria")).toBe(riaAdapter);
+    expect(adapterFor("insurance")).toBe(insuranceAdapter);
   });
 
   it("supportsCountry: 'all' always matches; explicit list is case-insensitive", () => {
@@ -242,5 +300,123 @@ describe("local-discovery/adapters — healthcare", () => {
     expect(res.sourcesUsed).toEqual(["google_places"]);
     expect(res.warnings.some((w) => /NPPES covers the US only/.test(w))).toBe(true);
     expect(res.degraded).toBe(false);
+  });
+});
+
+describe("local-discovery/adapters — ria", () => {
+  it("seeds SEC firms and enriches via TEXT search (Table A has no adviser type)", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([riaRow()]));
+    mockSearchPlaces.mockResolvedValue(pResult([place({ id: "ChIJria", name: "Lakeside Advisors" })]));
+
+    const res = await riaAdapter.search(ctx({ countryCode: "US" }));
+
+    expect(mockQueryVertical).toHaveBeenCalledWith("ria", expect.objectContaining({ radiusM: 5000 }));
+    // Empty includedTypes + a textQuery is what routes providers/places to places:searchText. Passing a
+    // Table A finance type here (accounting/bank) would return the wrong businesses entirely.
+    expect(mockSearchPlaces).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includedTypes: [],
+        textQuery: "registered investment adviser financial advisor firm",
+      }),
+      expect.any(RequestBudget),
+    );
+    expect(res.category).toBe("ria");
+    expect(res.sourcesUsed.sort()).toEqual(["google_places", "registry"]);
+    expect(res.degraded).toBe(false);
+  });
+
+  it("appends the user's refine to the baseline query instead of replacing it", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([riaRow()]));
+    mockSearchPlaces.mockResolvedValue(pResult([]));
+
+    await riaAdapter.search(ctx({ filters: { query: "retirement planning" } }));
+
+    expect(mockSearchPlaces).toHaveBeenCalledWith(
+      expect.objectContaining({
+        textQuery: "registered investment adviser financial advisor firm retirement planning",
+      }),
+      expect.any(RequestBudget),
+    );
+  });
+
+  it("never seeds SEC data for a non-US search and says the results are not RIAs", async () => {
+    mockSearchPlaces.mockResolvedValue(pResult([place({ countryCode: "IN", name: "Mumbai Wealth" })]));
+
+    const res = await riaAdapter.search(ctx({ countryCode: "IN" }));
+
+    expect(mockQueryVertical).not.toHaveBeenCalled();
+    expect(res.warnings.some((w) => /not SEC-registered RIAs/.test(w))).toBe(true);
+  });
+
+  it("explains an empty US seed rather than implying there are no adviser firms", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([]));
+    mockSearchPlaces.mockResolvedValue(pResult([]));
+
+    const res = await riaAdapter.search(ctx({ countryCode: "US" }));
+
+    expect(res.profiles).toEqual([]);
+    expect(res.warnings.some((w) => /main-office ZIP/.test(w))).toBe(true);
+  });
+
+  it("stays silent about coverage when the seed was never queried", async () => {
+    mockHasDirectoryDb.mockReturnValue(false); // no DB wired → seed skipped, not "empty"
+    mockSearchPlaces.mockResolvedValue(pResult([]));
+
+    const res = await riaAdapter.search(ctx({ countryCode: "US" }));
+
+    expect(res.warnings.some((w) => /main-office ZIP/.test(w))).toBe(false);
+  });
+});
+
+describe("local-discovery/adapters — insurance", () => {
+  it("seeds DOI licences and enriches via NEARBY search on the insurance_agency type", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([insuranceRow()]));
+    mockSearchPlaces.mockResolvedValue(pResult([place({ id: "ChIJins", name: "Gomez Insurance" })]));
+
+    const res = await insuranceAdapter.search(ctx({ countryCode: "US" }));
+
+    expect(mockQueryVertical).toHaveBeenCalledWith("insurance", expect.objectContaining({ radiusM: 5000 }));
+    // `insurance_agency` IS in Places (New) Table A (Services) — so this category keeps the cheaper,
+    // distance-ranked Nearby path and sends no baseline textQuery.
+    expect(mockSearchPlaces).toHaveBeenCalledWith(
+      expect.objectContaining({ includedTypes: ["insurance_agency"], textQuery: undefined }),
+      expect.any(RequestBudget),
+    );
+    expect(res.category).toBe("insurance");
+    expect(res.sourcesUsed.sort()).toEqual(["google_places", "registry"]);
+    expect(res.degraded).toBe(false);
+  });
+
+  it("flags an empty US seed as a registry coverage gap, not an empty market", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([]));
+    mockSearchPlaces.mockResolvedValue(pResult([place({ id: "ChIJins2", name: "Seattle Insurance" })]));
+
+    const res = await insuranceAdapter.search(ctx({ countryCode: "US" }));
+
+    expect(res.warnings.some((w) => /coverage gap rather than an empty market/.test(w))).toBe(true);
+    expect(res.profiles).toHaveLength(1); // live results still stream
+  });
+
+  it("never seeds US licence data for a non-US search", async () => {
+    mockSearchPlaces.mockResolvedValue(pResult([place({ countryCode: "IN", name: "Mumbai Insurance" })]));
+
+    const res = await insuranceAdapter.search(ctx({ countryCode: "IN" }));
+
+    expect(mockQueryVertical).not.toHaveBeenCalled();
+    expect(res.warnings.some((w) => /US state insurance departments/.test(w))).toBe(true);
+  });
+});
+
+describe("local-discovery/adapters — shared enrichment guard", () => {
+  it("refuses an untyped Places search when a config has neither placeTypes nor textQuery", async () => {
+    mockQueryVertical.mockResolvedValue(qResult([]));
+
+    // Without this guard the request would go to Nearby Search with empty includedTypes and return every
+    // business in the radius — a plausible mistake when adding the next category.
+    const res = await runAdapter(ctx(), { category: "ria", seedVertical: null, placeTypes: [] });
+
+    expect(mockSearchPlaces).not.toHaveBeenCalled();
+    expect(res.degraded).toBe(true);
+    expect(res.warnings.some((w) => /no place types or text query/.test(w))).toBe(true);
   });
 });
