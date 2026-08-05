@@ -385,6 +385,46 @@ for k in ('allow','deny'):
 
 ---
 
+### R10 — In a shared checkout, never trust `HEAD`
+
+**Incident (2026-08-06, shipping this ledger).** A second Claude session was
+working in the **same working directory** and, mid-task, merged PR #99 and
+switched the checkout to its own branch. Two things then went quietly wrong:
+
+- `git rebase origin/main` failed with *"cannot rebase: You have unstaged
+  changes"* — the honest, loud failure.
+- `git log origin/main..HEAD` and `git diff --stat origin/main...HEAD` both
+  returned **empty**. Read normally that means *"my branch is clean and has
+  nothing to merge."* It actually meant *"`HEAD` is on somebody else's
+  already-merged branch."* The dangerous one is the silent one.
+
+Every local-state assertion — "my branch is up to date", "the diff is clean",
+"nothing to push" — silently assumes you own the checkout. With parallel agents
+on one clone, you don't.
+
+**Rule.** Print the branch name next to every git conclusion, and prefer
+**server-side** operations that don't depend on the working tree:
+`gh pr update-branch`, `gh pr merge --match-head-commit`, and
+`git show origin/<branch>:<path>` to inspect content. When you must have a
+checkout of your own, use `git worktree add` in a scratch directory — never
+`git switch` a directory another session is using. And check `git log
+origin/main` again immediately before merging: `main` may have moved since you
+opened the PR.
+
+**Check.** Assert the branch, don't assume it — and verify PR content from the
+remote ref:
+
+```bash
+echo "HEAD is on: $(git rev-parse --abbrev-ref HEAD)"      # is this even your branch?
+git fetch origin --quiet
+BR=chore/your-branch                                        # the branch you actually own
+git diff --stat "origin/main...origin/$BR"                  # true diff, tree-independent
+git show "origin/$BR:.claude/skills/safe-changes/SKILL.md" | grep -oE '^### R[0-9]+' | tr '\n' ' '
+# every rule that exists on main must still be listed — a missing R<n> is a revert
+```
+
+---
+
 ## Pre-flight checklist
 
 Run before editing deploy config, secrets, IAM, or shared credentials — and again
@@ -400,6 +440,7 @@ before deploying.
 - [ ] **R8** — after deploy: build `SUCCESS`, serving revision == latest ready, live domain returns the new marker.
 - [ ] **R5** — if this was a revert/rollback: diffed against the commit **before** the work; empty output.
 - [ ] **R9** — hitting a denial? retried once, named the layer, and checked the allow-list before telling the user they're blocking you.
+- [ ] **R10** — printed the branch name; true diff taken from `origin/main...origin/<branch>`, not the local tree; re-fetched `main` immediately before merging.
 
 ---
 
