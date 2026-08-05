@@ -20,7 +20,7 @@ checks all four **safely** (read-only — no scrape, so it never consumes rate-l
 - **VMs live in project `hushh-tech-prod`**, zone `us-central1-c`:
   | Service | VM name | Endpoint |
   |---|---|---|
-  | Instagram | `instagram-scraper-vm` | `http://35.192.178.122:8080` ⚠️ EPHEMERAL — drifts on VM restart |
+  | Instagram | `instagram-scraper-vm` | `http://130.211.224.221:8080` ⚠️ EPHEMERAL — drifts on VM restart (verified 2026-08-05) |
   | X / Twitter | `twitter-scraper-vm` | `http://34.27.236.224:8080` |
   | Threads | `threads-scraper-vm` | `http://34.56.201.251:8080` |
   | LinkedIn | `linkedin-scraper-vm` | `https://linkedin-scraper.136.114.82.27.sslip.io` |
@@ -53,7 +53,7 @@ Canonical test profiles: `linkedin.com/in/sundarpichai`, `x.com/sundarpichai`,
 
 ```bash
 declare -a SVC=(
-  "instagram|http://35.192.178.122:8080|instagram-scraper-api-key"
+  "instagram|http://130.211.224.221:8080|instagram-scraper-api-key"
   "twitter|http://34.27.236.224:8080|twitter-scraper-api-key"
   "threads|http://34.56.201.251:8080|threads-scraper-api-key"
   "linkedin|https://linkedin-scraper.136.114.82.27.sslip.io|linkedin-scraper-api-key"
