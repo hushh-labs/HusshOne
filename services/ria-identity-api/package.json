@@ -1,0 +1,14 @@
+{
+  "name": "@husshone/ria-identity-api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone phone -> RIA firm -> adviser disambiguation API over live SEC Form ADV (Cloud SQL), Google Places and SEC IAPD. No offline index.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test scripts/lib"
+  },
+  "dependencies": {
+    "pg": "^8.11.0"
+  }
+}
