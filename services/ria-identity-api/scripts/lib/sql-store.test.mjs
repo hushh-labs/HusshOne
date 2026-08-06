@@ -723,3 +723,66 @@ test("two firms one transposition away resolve to nobody, not to a guess", async
   assert.equal(out.firms.length, 0, "ambiguous typo evidence is no evidence");
   assert.equal(out.matchedVia, null);
 });
+
+// ── A failed freshness read must not be cached ───────────────────────────────────────────────
+// The store is warmed at boot with a fire-and-forget health(); the pool is still connecting, so
+// that first read fails. Caching it meant /health reported "age unknown, assume stale" for the
+// whole TTL about data that was hours old — and freshness() on a fresh store always looked fine,
+// which is what made the bug look environment-specific when it was not.
+
+test("a failed freshness read is remembered only briefly, then retried for the real answer", async () => {
+  // Two failure modes were both wrong. Caching a boot-time blip for the full five minutes served
+  // "age unknown, assume stale" as fact about data that was hours old. Not caching it at all made
+  // every /health pay the full deadline against a dead database. It is cached for 10s.
+  let call = 0;
+  let clock = 1_000_000;
+  const store = createStore({
+    db: { enabled: true, timeoutMs: 800, freshnessErrorTtlMs: 10_000 },
+    now: () => clock,
+    query: async () => {
+      call += 1;
+      if (call === 1) throw new Error("pool not ready");        // the boot warm-up
+      return { rows: [{ source_file: "IA_FIRM_SEC_Feed.xml.gz", finished_at: new Date(clock), rows_upserted: 23640, ledger_backed: true }] };
+    },
+  });
+
+  const first = await store.freshness();
+  assert.equal(first.ageDays, null, "a failed read reports unknown age");
+  assert.equal(first.stale, true, "unknown age counts as stale");
+  assert.ok(first.error, "and says why");
+
+  // Immediately after: served from the short error cache, database untouched.
+  await store.freshness();
+  assert.equal(call, 1, "a hammering health check must not re-pay the deadline against a dead DB");
+
+  // Past the error TTL: it asks again and gets the truth.
+  clock += 11_000;
+  const later = await store.freshness();
+  assert.equal(call, 2, "the retry must actually reach the database");
+  assert.notEqual(later.ageDays, null);
+  assert.equal(later.stale, false);
+  assert.equal(later.error, undefined);
+});
+
+test("freshness gets a longer deadline than a lookup, derived from it", async () => {
+  // A cold pg pool needs ~800ms just to connect, so the lookup budget timed out every cold start.
+  const store = createStore({ db: { enabled: true, timeoutMs: 800 } });
+  assert.equal(store.describe.timeoutMs, 800, "the lookup budget is unchanged");
+  // 6x, and derived: tightening timeoutMs tightens this too.
+  const tight = createStore({ db: { enabled: true, timeoutMs: 25 } });
+  assert.equal(tight.describe.timeoutMs, 25);
+});
+
+test("a successful freshness read IS cached", async () => {
+  let calls = 0;
+  const store = createStore({
+    db: { enabled: true, timeoutMs: 800 },
+    query: async () => {
+      calls += 1;
+      return { rows: [{ source_file: "f.gz", finished_at: new Date(), rows_upserted: 1, ledger_backed: true }] };
+    },
+  });
+  await store.freshness();
+  await store.freshness();
+  assert.equal(calls, 1, "the happy path still pays one query, not two");
+});
