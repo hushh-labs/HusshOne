@@ -5,7 +5,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
-    exclude: [...configDefaults.exclude, "services/**"],
+    // .next excluded so the standalone build output's copied test files never run as duplicates.
+    exclude: [...configDefaults.exclude, "services/**", "**/.next/**"],
   },
   resolve: {
     alias: {

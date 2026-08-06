@@ -30,6 +30,15 @@ const AGENTS = [
     highlight: true,
   },
   {
+    label: "Communication & commerce",
+    name: "Reserve",
+    summary:
+      "Booking and payment as one act. Pick who you need; One already knows the fair fee (a band, never a blank price box); reserve the slot and an AP2-style payment mandate rides along — captured on confirmation, refunded in full if they can't make it.",
+    href: "/reserve",
+    cta: "Book someone →",
+    highlight: false,
+  },
+  {
     label: "Finance & investing",
     name: "Kai",
     summary:
