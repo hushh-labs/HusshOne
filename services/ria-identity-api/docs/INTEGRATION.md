@@ -1,11 +1,23 @@
 # RIA Identity API — integration guide
 
+**Live:** `https://ria-identity-api-fro3hygenq-uc.a.run.app` (Cloud Run, us-central1, scale-to-zero)
+
 Build the "claim your profile" screen against this. An adviser types their office phone number;
 you get back the firm and the advisers the SEC currently lists there, and they pick which one
 they are.
 
-Everything here was measured against the running service on **2026-08-06**. Numbers in the test
+Everything here was measured against the deployed service on **2026-08-06**. Numbers in the test
 appendix are real firm main-office lines from public Form ADV filings and are reproducible.
+
+### Known issues
+
+- **`/health` reports `ageDays: null, stale: true`** even though the Form ADV data is current
+  (23,647 rows, written today). The age read is failing silently on Cloud Run; a fallback to the
+  rows' own write time is in the code but not taking effect there. Cosmetic — resolution is
+  unaffected. Do not wire an alert to `stale` yet.
+- **`adv_officer` never fires.** The Form ADV table carries no Schedule A, so firm claims rest on
+  `domain_email` + roster membership. Reported as `no_schedule_a_available` — missing data, not a
+  finding that someone is not an officer.
 
 ---
 
