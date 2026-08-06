@@ -111,7 +111,7 @@ export const SIGNALS = Object.freeze({
     proves: PROVES.AUTHORITY,
     assertable: false,
     label: "named on the firm's own Form ADV Schedule A as a direct owner or executive officer",
-    note: "Derived by matching an IDENTITY-BOUND name against Schedule A. A tapped name is not enough.",
+    note: "Derived by matching an IDENTITY-BOUND person against Schedule A — on the individual CRD the filing carries, falling back to the name only for a line with no CRD. A tapped name is not enough.",
   }),
   on_live_roster: Object.freeze({
     proves: PROVES.FIRM_AFFILIATION,
@@ -708,7 +708,71 @@ export async function evaluateClaim({
         detail: `No Form ADV Schedule A is available for ${firm?.name || "this firm"} from the source that answered, so we cannot say whether ${identityBound.name} is a disclosed owner or officer. This is missing data, not a finding that they are not one.`,
       });
     } else {
-      const hits = scheduleA.filter((person) => namesMatch(stripHonorifics(person?.name), stripHonorifics(identityBound.name)));
+      // CRD FIRST, NAMES ONLY AS A FALLBACK.
+      //
+      // Every individual line of a filed Schedule A carries that person's own CRD, so when we
+      // have an identity-bound person WITH a CRD the question "is this row them?" is an exact
+      // integer comparison and no name is read at all. That matters more here than anywhere
+      // else in this file: this is the arm that hands someone authority over a legal entity,
+      // and a name matcher — however careful — decides on spelling. Two officers at a family
+      // firm, a maiden name, a "JR" the SEC recorded on one side only: each is a way for
+      // spelling to grant or deny control of a company. The CRD is the SEC's own identifier
+      // for the person and it is on both sides of the comparison.
+      //
+      // The fallback is deliberately NARROW. Only rows the filing did not identify by CRD are
+      // eligible for name matching, because a row that carries SOMEONE ELSE'S CRD is not this
+      // claimant no matter how the names read — the filing already told us who that row is.
+      // (Entity rows, and any Schedule A a source hands us without CRDs, fall here — which is
+      // exactly the pre-CRD behaviour, so a source that cannot supply CRDs loses nothing.)
+/** Collapse rows that carry the same CRD. The filing can list one person twice when the
+ *  renderer breaks the table across a page; that is one officer, not an ambiguity. Order is
+ *  preserved and the FIRST occurrence wins, so the row the filing states first is the one
+ *  reported. */
+function dedupeByCrd(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const crd = crdOf(row);
+    const key = crd == null ? Symbol() : crd;
+    if (crd != null) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+      const crdOf = (person) => {
+        const n = Number(person?.individualCrd);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      };
+      const boundCrdRaw = Number(identityBound.individualCrd);
+      const boundCrd = Number.isFinite(boundCrdRaw) && boundCrdRaw > 0 ? boundCrdRaw : null;
+
+      // ONE row per CRD, however many times the filing draws it.
+      //
+      // The SEC's PDF renderer repeats a row when the table breaks across a page: J.P. MORGAN
+      // SECURITIES (CRD 79) emits its Chief Financial Officer's line twice on consecutive lines,
+      // which is visible in the filing's own text layer. Counting those as two hits made the arm
+      // fall through to `ambiguous_schedule_a_match` and REFUSE the firm's actual CFO — over a
+      // rendering artefact. Two lines carrying the same CRD are by definition the same person;
+      // the whole reason to match on the CRD is that the integer identifies them. Ambiguity that
+      // matters is two DIFFERENT people, and that is still caught below.
+      const crdHits =
+        boundCrd == null
+          ? []
+          : dedupeByCrd(scheduleA.filter((person) => crdOf(person) === boundCrd));
+      // With no CRD for the claimant there is nothing to contradict, so every row stays
+      // name-eligible; with one, only the unidentified rows do.
+      const nameable = boundCrd == null ? scheduleA : scheduleA.filter((person) => crdOf(person) == null);
+      const nameHits = crdHits.length
+        ? []
+        : nameable.filter((person) => namesMatch(stripHonorifics(person?.name), stripHonorifics(identityBound.name)));
+
+      const hits = crdHits.length ? crdHits : nameHits;
+      const matchedByCrd = crdHits.length > 0;
+
       if (hits.length === 1) {
         adv_officer = true;
         record({
@@ -716,7 +780,11 @@ export async function evaluateClaim({
           source: "derived",
           accepted: true,
           identityBound: identityBound.via,
-          detail: `${identityBound.name} is named on ${firm?.name || "the firm"}'s Form ADV Schedule A${hits[0]?.title ? ` as ${hits[0].title}` : ""}, which is the firm's own disclosure of who may act for it.`,
+          detail: `${identityBound.name} is named on ${firm?.name || "the firm"}'s Form ADV Schedule A${hits[0]?.title ? ` as ${hits[0].title}` : ""}, which is the firm's own disclosure of who may act for it.${
+            matchedByCrd
+              ? ` Matched on the individual CRD (${boundCrd}) the filing itself lists against that line, not on the spelling of a name.`
+              : " Matched by name: that Schedule A line carries no individual CRD."
+          }`,
         });
       } else {
         record({
@@ -725,7 +793,9 @@ export async function evaluateClaim({
           accepted: false,
           rejectionCode: hits.length ? "ambiguous_schedule_a_match" : "not_on_schedule_a",
           detail: hits.length
-            ? `${identityBound.name} matches ${hits.length} Schedule A entries, so no single one can be attributed to them.`
+            ? matchedByCrd
+              ? `CRD ${boundCrd} appears on ${hits.length} Schedule A lines of ${firm?.name || "the firm"}'s filing, so no single one can be attributed to them.`
+              : `${identityBound.name} matches ${hits.length} Schedule A entries, so no single one can be attributed to them.`
             : `${identityBound.name} is not among the ${scheduleA.length} owners and officers ${firm?.name || "the firm"} discloses on Schedule A.`,
         });
       }

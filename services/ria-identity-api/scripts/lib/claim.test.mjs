@@ -19,6 +19,9 @@ import {
   emailNameCandidates,
   emailLocalPartMatches,
 } from "./claim.mjs";
+// The same matcher claim.mjs uses, imported so a fixture can PROVE that a pair of names really
+// does (or does not) collide, instead of a comment asserting it.
+import { namesMatch as namesMatchProbe } from "./resolve.mjs";
 
 // ---------------------------------------------------------------------------
 // fixtures — live SEC data, 2026-08-06
@@ -530,6 +533,242 @@ test("FIRM: missing Schedule A is reported as missing data, not as 'not an offic
   });
   const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
   assert.match(row.detail, /missing data, not a finding/i);
+});
+
+// ---------------------------------------------------------------------------
+// adv_officer, matched on the CRD the filing itself carries
+//
+// SYNTHETIC on purpose. These fixtures reproduce the LAYOUT of a parsed Form ADV Schedule A —
+// surname-first names in inconsistent case, a wrapped title, an ownership code, a control-person
+// flag, an entity row with no CRD — with invented people, because what is under test is the
+// matching rule and not anyone's record.
+// ---------------------------------------------------------------------------
+
+/** A firm whose Schedule A came from the PDF reader, so every INDIVIDUAL line carries its own
+ *  CRD and the entity line carries none. */
+const CRD_FIRM = {
+  crd: 9990001,
+  name: "MERIDIAN HOLLOW ADVISORS LLC",
+  phone: "206-555-0142",
+  phone10: "2065550142",
+  website: "https://meridianhollow.example",
+  scheduleAPersons: [
+    {
+      name: "DOE, JANE, Q",
+      nameNormalized: "JANE Q DOE",
+      individualCrd: 9999001,
+      isIndividual: true,
+      title: "MANAGING MEMBER/CHIEF COMPLIANCE OFFICER",
+      ownershipCode: "E",
+      isControlPerson: true,
+    },
+    {
+      name: "Roe, Samuel, T",
+      nameNormalized: "SAMUEL T ROE",
+      individualCrd: 9999002,
+      isIndividual: true,
+      title: "CO-COMPLIANCE OFFICER",
+      ownershipCode: "NA",
+      isControlPerson: false,
+    },
+    {
+      name: "MERIDIAN HOLLOW HOLDINGS LLC",
+      nameNormalized: "MERIDIAN HOLLOW HOLDINGS LLC",
+      individualCrd: null,
+      isIndividual: false,
+      title: "MEMBER",
+      ownershipCode: "D",
+      isControlPerson: true,
+    },
+  ],
+};
+
+const CRD_ROSTER = [
+  // The SEC roster spells her married name; the filing was made under her maiden name. A name
+  // matcher REFUSES this pair (different surname), and it is right to — the CRD is what says
+  // they are one person.
+  { individualCrd: 9999001, name: "Jane Quinn Doe-Ashford" },
+  { individualCrd: 9999002, name: "Samuel T Roe" },
+  { individualCrd: 9999004, name: "Priya N Vasquez" },
+];
+
+test("FIRM: adv_officer fires on the individual CRD even when the names do not match", async () => {
+  // The whole point of reading the filing rather than a name list. namesMatch("DOE, JANE, Q",
+  // "Jane Quinn Doe-Ashford") is FALSE and must stay false; the CRD on that Schedule A line is
+  // the SEC's own identifier for the person, and it is the same integer on both sides.
+  assert.equal(
+    CRD_FIRM.scheduleAPersons[0].individualCrd,
+    CRD_ROSTER[0].individualCrd,
+    "fixture: the officer and the roster entry must be the same CRD",
+  );
+
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm: CRD_FIRM,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999001,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Jane Quinn Doe-Ashford" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, true);
+  assert.equal(row.proves, PROVES.AUTHORITY);
+  assert.match(row.detail, /Matched on the individual CRD \(9999001\)/);
+  assert.match(row.detail, /MANAGING MEMBER\/CHIEF COMPLIANCE OFFICER/);
+  assert.equal(result.allowed, true);
+  assert.equal(result.grants.firm, 9990001);
+  assert.ok(result.satisfied.includes("adv_officer"));
+});
+
+test("FIRM: a Schedule A line carrying SOMEONE ELSE'S CRD is never matched by name", async () => {
+  // Two people whose names a matcher cannot separate: "Roe, Samuel, T" on Schedule A (CRD
+  // 9999002) and "Samuel Tobias Roe" on the roster (CRD 9999003). namesMatch says these are
+  // the same person. The filing says otherwise, and the filing wins — otherwise spelling
+  // hands the junior Samuel control of the company.
+  assert.equal(namesMatchProbe("Roe, Samuel, T", "Samuel Tobias Roe"), true, "fixture: the names DO collide");
+
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm: CRD_FIRM,
+    roster: [{ individualCrd: 9999003, name: "Samuel Tobias Roe" }, CRD_ROSTER[0]],
+    selectedIndividualCrd: 9999003,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Samuel Tobias Roe" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, false);
+  assert.equal(row.rejectionCode, "not_on_schedule_a");
+  assert.equal(result.allowed, false);
+  assert.equal(result.grants.firm, null);
+});
+
+test("FIRM: an officer with a NON-controlling ownership code still carries entity authority", async () => {
+  // Schedule A is "direct owners AND EXECUTIVE OFFICERS". A chief compliance officer with a
+  // sub-5% stake (code NA) and no control-person flag is exactly who the firm filed as able to
+  // act for it. Ownership size is a RANKING signal (resolve.mjs scores D/E/F higher); it is not
+  // the authority test, and making it one would lock out most compliance officers.
+  const officer = CRD_FIRM.scheduleAPersons[1];
+  assert.equal(officer.ownershipCode, "NA");
+  assert.equal(officer.isControlPerson, false);
+
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm: CRD_FIRM,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999002,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Samuel T Roe" }],
+  });
+
+  assert.equal(result.evidenceLedger.find((r) => r.signal === "adv_officer").accepted, true);
+  assert.equal(result.allowed, true);
+});
+
+test("FIRM: a line with NO CRD is still matched by name — the pre-CRD behaviour is intact", async () => {
+  // A Schedule A from any source that cannot supply CRDs (and every entity line) falls here.
+  const firm = {
+    ...CRD_FIRM,
+    scheduleAPersons: [{ name: "VASQUEZ, PRIYA, N", title: "CHIEF OPERATING OFFICER", ownershipCode: "B" }],
+  };
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999004,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Priya N Vasquez" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, true);
+  assert.match(row.detail, /Matched by name: that Schedule A line carries no individual CRD/);
+  assert.equal(result.allowed, true);
+});
+
+test("FIRM: on the live roster but not on Schedule A is still refused the entity", async () => {
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm: CRD_FIRM,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999004, // Priya: registered there, not an owner or officer
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Priya N Vasquez" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, false);
+  assert.equal(row.rejectionCode, "not_on_schedule_a");
+  assert.match(row.detail, /is not among the 3 owners and officers/);
+  assert.equal(result.evidenceLedger.find((r) => r.signal === "on_live_roster").accepted, true);
+  assert.equal(result.allowed, false, "roster membership alone is affiliation, never authority");
+});
+
+test("FIRM: the SAME CRD drawn twice is one officer, not an ambiguity", async () => {
+  // The SEC's PDF renderer repeats a row when the table breaks across a page — J.P. MORGAN
+  // SECURITIES emits its Chief Financial Officer's line twice on consecutive lines, and it is
+  // there in the filing's own text layer. Reading that as two candidates refused the firm's
+  // actual CFO over a rendering artefact. Two lines carrying the same CRD are the same person;
+  // that is the entire reason authority is matched on the CRD and not on a name.
+  const firm = {
+    ...CRD_FIRM,
+    scheduleAPersons: [
+      CRD_FIRM.scheduleAPersons[0],
+      { ...CRD_FIRM.scheduleAPersons[0], title: "MEMBER", ownershipCode: "A" },
+    ],
+  };
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999001,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Jane Quinn Doe-Ashford" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, true, "a duplicated row must not cost a real officer their claim");
+  assert.equal(result.allowed, true);
+  assert.equal(result.grants.firm, firm.crd);
+});
+
+test("FIRM: two indistinguishable Schedule A lines with no CRD is still ambiguity, and still refuses", async () => {
+  // The dedupe collapses one person the renderer drew twice. It must not paper over the case the
+  // ambiguity check exists for: lines with NO CRD, where the name is all we have and it fits more
+  // than one of them. Without an identifier there is no honest way to pick, so it denies.
+  // Samuel is the pair whose roster name and filed name DO match, so the name path is reachable.
+  const firm = {
+    ...CRD_FIRM,
+    scheduleAPersons: [
+      { ...CRD_FIRM.scheduleAPersons[1], individualCrd: null },
+      { ...CRD_FIRM.scheduleAPersons[1], individualCrd: null, title: "MEMBER", ownershipCode: "A" },
+    ],
+  };
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm,
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999002,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Samuel T Roe" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, false);
+  assert.equal(row.rejectionCode, "ambiguous_schedule_a_match");
+  assert.equal(result.allowed, false);
+});
+
+test("FIRM: a Schedule A we could not fetch is missing data, even with CRDs available", async () => {
+  // The degrade path. getScheduleA returns null on any failure and resolve.mjs passes that
+  // through as null — which must NEVER read as "she is not an officer".
+  const result = await evaluateClaim({
+    claimType: "firm",
+    firm: { ...CRD_FIRM, scheduleAPersons: null },
+    roster: CRD_ROSTER,
+    selectedIndividualCrd: 9999001,
+    evidence: [otp("2065550142"), { type: "oidc_verified_name", name: "Jane Quinn Doe-Ashford" }],
+  });
+
+  const row = result.evidenceLedger.find((r) => r.signal === "adv_officer");
+  assert.equal(row.accepted, false);
+  assert.equal(row.rejectionCode, "no_schedule_a_available");
+  assert.match(row.detail, /missing data, not a finding/i);
+  assert.equal(result.allowed, false);
 });
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@
 
 import { normalizePhone, formatNational10 } from "./phone.mjs";
 import { ATTRIBUTION } from "./config.mjs";
+import { getScheduleA } from "./adv-schedule-a.mjs";
 
 // ---------------------------------------------------------------------------
 // name matching — the highest-risk code in the service
@@ -1877,10 +1878,44 @@ export async function resolveByPhone(phone, deps = {}) {
  * the evidence engine's job is to say what is PROVEN, and "we could not read the roster" has to
  * reach the caller as a reason rather than as an empty roster that looks like a firm with no
  * advisers — which would make everyone at it a sole adviser by elimination.
+ *
+ * @param {number|string} firmCrd
+ * @param {object} [deps]
+ * @param {object} [options]
+ * @param {"individual"|"firm"|null} [options.claimType]  which claim is being scored. THE GATE
+ *        on the Schedule A read below — see the block comment there. Absent means individual,
+ *        i.e. no PDF, which is the safe default for any future caller that does not know.
  */
-export async function loadClaimContext(firmCrd, deps = {}) {
+export async function loadClaimContext(firmCrd, deps = {}, options = {}) {
   const crd = Number(firmCrd);
-  const [filed, live, roster] = await Promise.all([
+
+  // ── SCHEDULE A, ON DEMAND, FIRM CLAIMS ONLY ────────────────────────────────────────────────
+  //
+  // The Cloud SQL Form ADV feed carries no Schedule A at all (sql-store.mjs says so, and says
+  // ABSENT rather than empty on purpose). So `adv_officer` — the one signal that proves
+  // AUTHORITY over the entity — could never fire, and every firm claim in production rested on
+  // domain_email plus roster membership. The firm's own Form ADV Part 1 PDF contains its filed
+  // Schedule A, so we read it, here, for ONE firm, and only when someone is claiming that firm.
+  //
+  // WHY THE GATE IS THIS TIGHT. It is a ~1-3.5MB PDF and a ~0.4-2.5s round trip to the SEC.
+  //   - never on the anonymous lookup path: nobody there has said a firm is theirs, and paying
+  //     seconds per candidate firm to name officers we then withhold would be the worst of
+  //     both worlds — slow AND disclosing.
+  //   - never for a LIST of firms, never batched: this is one firm, the one the claimant just
+  //     named, after they got here.
+  //   - not on an INDIVIDUAL claim: Schedule A answers "may this person act for the entity",
+  //     which is not a question the individual arm asks, so it would be latency for nothing.
+  //
+  // Cached in the PERSISTED firm cache (30 days, survives restarts) under adv-schedule-a.mjs's
+  // own `advScheduleA:v1:` key prefix, which cannot collide with `iapd:firm:`. Persisting it is
+  // allowed BECAUSE IT IS SEC PUBLIC RECORD — nothing Google-derived may ever be written there
+  // (see the ToS block in places.mjs). getScheduleA does not cache a failure, so a bad minute
+  // at the SEC does not pin "unavailable" to a firm for a month.
+  const wantScheduleA = String(options.claimType ?? "").trim().toLowerCase() === "firm";
+  const advWarnings = [];
+  const readScheduleA = typeof deps.getScheduleA === "function" ? deps.getScheduleA : getScheduleA;
+
+  const [filed, live, roster, advScheduleA] = await Promise.all([
     typeof deps.store?.getFirm === "function"
       ? deps.store.getFirm(crd).catch((error) => ({ __error: errorMessage(error) }))
       : Promise.resolve(null),
@@ -1890,6 +1925,24 @@ export async function loadClaimContext(firmCrd, deps = {}) {
     typeof deps.iapd?.listFirmIndividuals === "function"
       ? fetchRoster(crd, deps).catch((error) => ({ __error: errorMessage(error) }))
       : Promise.resolve({ __error: "IAPD client unavailable" }),
+    // In parallel with the roster, so the PDF costs the request its own latency and not the
+    // sum. getScheduleA NEVER throws: null is "we could not look", [] is "the firm lists
+    // nobody", and claim.mjs treats both as no_schedule_a_available rather than as a finding
+    // that the claimant is not an officer.
+    wantScheduleA && Number.isFinite(crd) && crd > 0
+      ? Promise.resolve(
+          readScheduleA(crd, {
+            ...(deps.advOpts || {}),
+            cache: deps.advOpts?.cache ?? deps.cache?.firm ?? null,
+            onWarn: (message) => advWarnings.push(String(message)),
+          }),
+        ).catch((error) => {
+          // Belt and braces: a doubled getScheduleA in a test could reject where the real one
+          // does not. Degrade to "could not look", never to "not an officer".
+          advWarnings.push(errorMessage(error));
+          return null;
+        })
+      : Promise.resolve(undefined),
   ]);
 
   const filedError = filed?.__error ?? null;
@@ -1913,7 +1966,15 @@ export async function loadClaimContext(firmCrd, deps = {}) {
     state: filedFirm?.state ?? liveFirm?.officeAddress?.state ?? null,
     advisoryEmployees: filedFirm?.advisoryEmployees ?? null,
     effectiveAdviserCount: filedFirm?.effectiveAdviserCount ?? null,
-    scheduleAPersons: Array.isArray(filedFirm?.scheduleAPersons) ? filedFirm.scheduleAPersons : null,
+    // The database first, purely so that a day when it DOES carry Schedule A needs no change
+    // here; today it never does, and the PDF read above is the only source that answers.
+    // `null` — not `[]` — when nothing could look, because [] would mean "this firm discloses
+    // nobody", which is a claim about the world we have not earned.
+    scheduleAPersons: Array.isArray(filedFirm?.scheduleAPersons)
+      ? filedFirm.scheduleAPersons
+      : Array.isArray(advScheduleA)
+        ? advScheduleA
+        : null,
   } : null;
 
   return {
@@ -1929,6 +1990,18 @@ export async function loadClaimContext(firmCrd, deps = {}) {
       formAdvDb: { present: Boolean(filedFirm), error: filedError, hasPhone: Boolean(filedFirm?.phone10), hasWebsite: Boolean(filedFirm?.website), hasScheduleA: Array.isArray(filedFirm?.scheduleAPersons) },
       iapdFirm: { present: Boolean(liveFirm), error: liveError },
       iapdRoster: { present: !rosterError, error: rosterError, live: true },
+      // A COUNT, never the people. This block is echoed to the caller, and the disclosure rule
+      // for naming a person is the same here as everywhere else in this file.
+      // `consulted:false` (individual claims, and the anonymous paths that never call this
+      // with a firm claimType) is materially different from `present:false`, which means we
+      // tried and the SEC did not answer.
+      advScheduleA: {
+        consulted: wantScheduleA,
+        present: Array.isArray(advScheduleA),
+        count: Array.isArray(advScheduleA) ? advScheduleA.length : null,
+        error: wantScheduleA && !Array.isArray(advScheduleA) ? advWarnings[advWarnings.length - 1] ?? "unavailable" : null,
+        source: wantScheduleA ? "sec_form_adv_part1_pdf" : null,
+      },
     },
     errors: [filedError, liveError, rosterError].filter(Boolean),
   };
