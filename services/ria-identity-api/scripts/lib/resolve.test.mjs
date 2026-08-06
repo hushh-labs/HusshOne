@@ -21,6 +21,7 @@ import {
   FIRM_SUMMARY_KEYS,
   scheduleAFallback,
   buildFirmDetail,
+  loadClaimContext,
 } from "./resolve.mjs";
 import { UpstreamBudget } from "./http.mjs";
 
@@ -1766,4 +1767,152 @@ test("explain() has a sentence for mode=firm — the generic fallback was wrong 
   const sentence = explain(result);
   assert.match(sentence, /is that your firm\?$/);
   assert.doesNotMatch(sentence, /tell us your name/i);
+});
+
+// ---------------------------------------------------------------------------
+// loadClaimContext — the Schedule A read that makes adv_officer possible
+//
+// The Cloud SQL firm table carries no Schedule A at all, so `adv_officer` — the only signal
+// that proves AUTHORITY over the entity — could never fire. The firm's own Form ADV Part 1 PDF
+// carries it, and these tests pin WHEN we are allowed to go and read it.
+//
+// Fixtures are synthetic: what is under test is the plumbing, not anyone's filing.
+// ---------------------------------------------------------------------------
+
+const SCHEDULE_A_ROWS = [
+  {
+    name: "DOE, JANE, Q",
+    nameNormalized: "JANE Q DOE",
+    individualCrd: 9999001,
+    isIndividual: true,
+    title: "MANAGING MEMBER/CHIEF COMPLIANCE OFFICER",
+    dateAcquired: "02/2007",
+    ownershipCode: "E",
+    isControlPerson: true,
+    isPublicReporting: false,
+  },
+  {
+    name: "Roe, Samuel, T",
+    nameNormalized: "SAMUEL T ROE",
+    individualCrd: 9999002,
+    isIndividual: true,
+    title: "CO-COMPLIANCE OFFICER",
+    dateAcquired: "06/2025",
+    ownershipCode: "NA",
+    isControlPerson: false,
+    isPublicReporting: false,
+  },
+];
+
+/** A getScheduleA double. Records every call, so "was the PDF fetched at all?" is assertable —
+ *  which is the whole point: this is a multi-megabyte download on a latency-sensitive path. */
+function fakeScheduleA(result = SCHEDULE_A_ROWS) {
+  const fn = async (crd, opts) => {
+    fn.calls.push([Number(crd), opts]);
+    if (result instanceof Error) throw result;
+    return result;
+  };
+  fn.calls = [];
+  return fn;
+}
+
+const claimDeps = (getScheduleA, extra = {}) => ({
+  ...depsFor(makeStore([firmRecord({ crd: 9990001, phone10: "2065550142", scheduleAPersons: undefined })]),
+    fakeIapdWithFirm({ individuals: FOUR })),
+  getScheduleA,
+  cache: { firm: { name: "firm", persisted: true, wrap: async (_k, produce) => produce() } },
+  ...extra,
+});
+
+test("loadClaimContext: a FIRM claim reads Schedule A and populates it for the evidence engine", async () => {
+  const getScheduleA = fakeScheduleA();
+  const context = await loadClaimContext(9990001, claimDeps(getScheduleA), { claimType: "firm" });
+
+  assert.equal(getScheduleA.calls.length, 1, "exactly one PDF read, for exactly one firm");
+  assert.equal(getScheduleA.calls[0][0], 9990001);
+  assert.deepEqual(context.firm.scheduleAPersons, SCHEDULE_A_ROWS);
+  assert.equal(context.sources.advScheduleA.consulted, true);
+  assert.equal(context.sources.advScheduleA.present, true);
+  assert.equal(context.sources.advScheduleA.count, 2);
+  assert.equal(context.sources.advScheduleA.error, null);
+  // A COUNT reaches the wire, never the people.
+  assert.equal(context.firmSummary.scheduleAPersonCount, 2);
+  assert.equal("scheduleAPersons" in context.firmSummary, false);
+});
+
+test("loadClaimContext: the read is cached in the PERSISTED firm cache — it is SEC public record", async () => {
+  const getScheduleA = fakeScheduleA();
+  const deps = claimDeps(getScheduleA);
+  await loadClaimContext(9990001, deps, { claimType: "firm" });
+  assert.equal(getScheduleA.calls[0][1].cache, deps.cache.firm, "must reuse the 30-day persisted firm cache");
+});
+
+test("loadClaimContext: an INDIVIDUAL claim never pays for the PDF", async () => {
+  // Schedule A answers "may this person act for the entity". The individual arm never asks it,
+  // so fetching would be seconds of latency bought for nothing.
+  const getScheduleA = fakeScheduleA();
+  const context = await loadClaimContext(9990001, claimDeps(getScheduleA), { claimType: "individual" });
+
+  assert.equal(getScheduleA.calls.length, 0);
+  assert.equal(context.firm.scheduleAPersons, null);
+  assert.equal(context.sources.advScheduleA.consulted, false);
+  assert.equal(context.sources.advScheduleA.count, null);
+});
+
+test("loadClaimContext: a caller that says nothing gets NO PDF read — the default is the cheap path", async () => {
+  const getScheduleA = fakeScheduleA();
+  const context = await loadClaimContext(9990001, claimDeps(getScheduleA));
+  assert.equal(getScheduleA.calls.length, 0);
+  assert.equal(context.sources.advScheduleA.consulted, false);
+  assert.equal(context.firm.scheduleAPersons, null);
+});
+
+test("loadClaimContext: a Schedule A we could not read stays NULL, never []", async () => {
+  // null is "we could not look" and claim.mjs reports it as no_schedule_a_available. An empty
+  // array would mean "this firm discloses nobody", which is a finding we have not earned.
+  const getScheduleA = fakeScheduleA(null);
+  const context = await loadClaimContext(9990001, claimDeps(getScheduleA), { claimType: "firm" });
+
+  assert.equal(context.firm.scheduleAPersons, null);
+  assert.equal(context.sources.advScheduleA.consulted, true);
+  assert.equal(context.sources.advScheduleA.present, false);
+  assert.ok(context.sources.advScheduleA.error, "the caller must be told we tried and failed");
+});
+
+test("loadClaimContext: a firm that filed a Schedule A listing NOBODY is [] and is not an error", async () => {
+  const context = await loadClaimContext(9990001, claimDeps(fakeScheduleA([])), { claimType: "firm" });
+  assert.deepEqual(context.firm.scheduleAPersons, []);
+  assert.equal(context.sources.advScheduleA.present, true);
+  assert.equal(context.sources.advScheduleA.count, 0);
+});
+
+test("loadClaimContext: a THROWING Schedule A reader degrades to null and never breaks the claim", async () => {
+  const getScheduleA = fakeScheduleA(new Error("SEC on fire"));
+  const context = await loadClaimContext(9990001, claimDeps(getScheduleA), { claimType: "firm" });
+  assert.equal(context.firm.scheduleAPersons, null);
+  assert.equal(context.firm.crd, 9990001, "the rest of the context still loaded");
+  assert.match(context.sources.advScheduleA.error, /SEC on fire/);
+});
+
+test("loadClaimContext: the database keeps precedence if it ever starts carrying Schedule A", async () => {
+  const fromDb = [{ name: "OTHER, PERSON", title: "MEMBER", ownershipCode: "A" }];
+  const getScheduleA = fakeScheduleA();
+  const deps = claimDeps(getScheduleA, {
+    store: makeStore([firmRecord({ crd: 9990001, phone10: "2065550142", scheduleAPersons: fromDb })]),
+  });
+  const context = await loadClaimContext(9990001, deps, { claimType: "firm" });
+  assert.deepEqual(context.firm.scheduleAPersons, fromDb);
+});
+
+test("the ANONYMOUS lookup path never reads a Form ADV PDF", async () => {
+  // The gate that keeps a ~1-3.5MB SEC download off the path anyone can reach by typing a
+  // phone number. If this ever fails, every candidate firm on an ambiguous lookup costs a
+  // multi-second download to name officers the disclosure rules then withhold.
+  const getScheduleA = fakeScheduleA();
+  const firm = firmRecord();
+  const deps = depsFor(makeStore([firm]), fakeIapdWithFirm({ individuals: FOUR }), { mode: "auto", getScheduleA });
+  const result = await resolveByPhone("415-492-9240", deps);
+
+  assert.equal(getScheduleA.calls.length, 0);
+  assert.equal(result.claimTargets.firm, 10603, "the lookup still answered");
 });

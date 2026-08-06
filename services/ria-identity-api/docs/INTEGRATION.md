@@ -234,7 +234,7 @@ as a barrier at the door.
 | `email_name_match` | *derived* | identity binding (`rmacrae` ↔ Robert MacRae) |
 | `oidc_name_match` | *derived* | identity binding |
 | `on_live_roster` | *derived* | membership |
-| `adv_officer` | *derived* | authority over the entity |
+| `adv_officer` | *derived* | authority over the entity — matched on the **individual CRD** the firm's own Schedule A carries, name only as a fallback for a line with no CRD |
 
 Derived signals **cannot be asserted** — sending one is rejected as `derived_only`. Tapping your own
 name is **intent, never identity**.
@@ -245,6 +245,12 @@ name is **intent, never identity**.
 
 - **Individual:** `phone_otp` + one of `sole_adviser`, `email_name_match`, `oidc_name_match`
 - **Firm:** `phone_otp` + (`adv_officer`, or `domain_email` while on the live roster)
+
+**A firm claim costs one extra SEC round trip, the first time.** `claimType: "firm"` reads that
+firm's Form ADV Part 1 PDF to get its Schedule A — measured live: **+0.7–0.9s cold, ~0ms warm**,
+cached 30 days and across restarts. `claimType: "individual"` never pays it, and neither does
+`/v1/claim/lookup` or `/v1/firms/{crd}` — Schedule A only answers "may this person act for the
+entity", which is a question only the firm claim asks.
 
 **The zero-friction path:** at a one-adviser firm, affiliation plus elimination *is* identity. The
 passcode alone reaches `verified` — nothing else to do. That covers most small RIAs; 54% of
@@ -352,22 +358,52 @@ Attribution: SEC Investment Adviser Public Disclosure (IAPD) and Form ADV public
 
 ---
 
-## Known issues
+## Authority: how `adv_officer` works
 
-- **`/health` reports `ageDays: null, stale: true`** although the Form ADV data is current (23,647
-  rows, written today). The age read fails silently on Cloud Run; the fallback to the rows' own
-  write time works locally but not there. Cosmetic — resolution is unaffected. **Don't alert on
-  `stale` yet.**
-- **`adv_officer` never fires.** The Form ADV table carries no Schedule A, so firm claims rest on
-  `domain_email` + roster membership. Reported as `no_schedule_a_available` — missing data, not a
-  finding that someone isn't an officer.
+A **firm** claim reads that one firm's own Form ADV Part 1 PDF from `reports.adviserinfo.sec.gov`,
+on demand, and matches the claimant against the Schedule A the firm itself filed — its declared
+list of direct owners and executive officers.
+
+**Matched on the CRD, not the name.** Every individual's Schedule A line carries their CRD, so
+when the claimant has selected one this is an exact integer comparison. Nothing in the path that
+grants authority over a legal entity depends on how a name is spelled. A line carrying *someone
+else's* CRD is never name-matched against the claimant — the filing already said who that line is.
+Name matching survives only for lines with no CRD (entities, older filings).
+
+Ownership size is **not** a threshold. Schedule A is "direct owners *and executive officers*"; the
+ownership code answers how much of the firm someone owns, which is a different question from
+whether they may act for it. Gating on it would lock out most CCOs, most non-founder presidents,
+and every officer at a firm held through a holding company. The gate that matters is already
+there: you must be on the firm's own filing, and your name must be identity-bound by a channel
+that binds identity — not tapped.
+
+| Situation | `adv_officer` |
+|---|---|
+| On Schedule A, identity-bound | accepted → authority |
+| On the live roster but not on Schedule A | `not_on_schedule_a` |
+| Filing unreachable or unparseable | `no_schedule_a_available` — **missing data, never a finding that someone isn't an officer** |
+| Asserted by a caller rather than derived | `derived_only` |
+
+`sources.advScheduleA` on the response tells you which happened.
+
+**Cost.** The PDF is fetched only on a firm claim — never on the anonymous lookup, never on an
+individual claim, never in a batch — and is cached 30 days per firm.
+
+| Filing | Cold firm claim | Warm |
+|---|---|---|
+| ~0.6–1 MB (typical RIA) | ~1.7–2.2 s | ~0.25 s |
+| ~5 MB | ~3.0 s | ~0.25 s |
+| ~13 MB (a wirehouse) | **~8 s** | ~0.25 s |
+
+Size your client timeout for the worst case, not the typical one. The download has a 20 s ceiling
+and is not charged against the per-request upstream budget.
 
 ---
 
 ## Running it
 
 ```bash
-npm install && npm test                            # 487 tests
+npm install && npm test                            # 564 tests
 PLACES_API_KEY=… RIA_DB_PASSWORD=… node server.mjs # local
 
 ./scripts/cloudrun/deploy-cloudrun.sh              # deploy, scale-to-zero, ~$0 idle

@@ -589,7 +589,10 @@ async function handleSearch(response, query) {
  */
 async function handleEvaluate(response, started, query) {
   const budget = new UpstreamBudget(config.lookup.maxUpstreamCallsPerRequest);
-  const context = await loadClaimContext(query.firmCrd, { ...deps, budget });
+  // claimType is passed THROUGH, not just used after the fact: it is what decides whether this
+  // request pays for the firm's Form ADV PDF (the only source of Schedule A, and therefore the
+  // only way adv_officer can ever fire). Firm claims only — see loadClaimContext.
+  const context = await loadClaimContext(query.firmCrd, { ...deps, budget }, { claimType: query.claimType });
 
   if (!context.firm) {
     return sendJson(response, 404, {
