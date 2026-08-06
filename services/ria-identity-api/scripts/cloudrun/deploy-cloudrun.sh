@@ -348,6 +348,12 @@ ENV_VARS="NODE_ENV=production"
 ENV_VARS="${ENV_VARS},TRUSTED_PROXY_COUNT=${TRUSTED_PROXY_COUNT}"
 ENV_VARS="${ENV_VARS},DAILY_LOOKUP_CAP=${DAILY_LOOKUP_CAP}"
 ENV_VARS="${ENV_VARS},CACHE_SNAPSHOT_PATH=/tmp/ria-identity-cache-snapshot.json"
+# Vertex adjudicates fuzzy name matches (oidc_name_match) via the runtime service account's ADC.
+# Without a project it is "not configured" and that arm fails CLOSED — nothing breaks, the
+# claimant just falls back to verifying a work email instead. Set it so the low-friction path
+# actually exists. The location is deliberately `global`: every regional gemini endpoint 404s.
+ENV_VARS="${ENV_VARS},VERTEX_PROJECT=${PROJECT}"
+ENV_VARS="${ENV_VARS},VERTEX_LOCATION=global"
 if [[ "$ATTACH_CLOUD_SQL" == "1" ]]; then
   ENV_VARS="${ENV_VARS},RIA_DB_ENABLED=${DB_ENABLED}"
   ENV_VARS="${ENV_VARS},RIA_DB_HOST=/cloudsql/${INSTANCE_CONNECTION_NAME}"
