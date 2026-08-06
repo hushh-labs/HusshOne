@@ -1,6 +1,26 @@
 # RIA Identity API
 
-**`https://ria-identity-api-fro3hygenq-uc.a.run.app`** · Cloud Run us-central1 · revision `00003-rf9`
+## Base URL
+
+```
+https://ria-identity-api-fro3hygenq-uc.a.run.app
+```
+
+Cloud Run, `us-central1`, project `hushh-tech-prod`, scale-to-zero. `/health` is open and needs no
+key; everything under `/v1/*` needs `Authorization: Bearer <key>` (Secret Manager:
+`ria-identity-api-key`).
+
+```bash
+curl https://ria-identity-api-fro3hygenq-uc.a.run.app/health
+```
+
+The URL is stable across deploys. To see which revision is actually serving:
+
+```bash
+gcloud run services describe ria-identity-api \
+  --project hushh-tech-prod --region us-central1 \
+  --format='value(status.url, status.latestReadyRevisionName)'
+```
 
 An adviser types their office phone number. You get back their firm and everyone the SEC currently
 lists there, and they tap which one they are.
