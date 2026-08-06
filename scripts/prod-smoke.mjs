@@ -85,5 +85,99 @@ console.log(`\nProd smoke test → ${BASE}\n`);
   ok("scan API rejects GET (405)", r.status === 405, `got ${r.status}`);
 }
 
+// ── The One family: Adam, Reserve, network, stories ────────────────────────────
+
+// 8. Adam serves and carries the promise
+{
+  const r = await req("/adam");
+  ok("/adam 200", r.status === 200, `got ${r.status}`);
+  ok("/adam renders the promise", /Your phone is a supercomputer/i.test(r.body), "hero missing");
+}
+
+// 9. Adam's planning API — presets list, and a real plan both ways
+{
+  const list = await req("/api/adam/plan");
+  let presets = [];
+  try { presets = JSON.parse(list.body).presets; } catch {}
+  ok("adam plan GET lists presets", list.status === 200 && presets.length >= 6, `got ${list.status}, ${presets.length} presets`);
+
+  const burst = await req("/api/adam/plan", json({ presetId: "finetune-70b", deviceId: "iphone-17-pro" }));
+  let plan = null;
+  try { plan = JSON.parse(burst.body); } catch {}
+  ok("iPhone 70B ask bursts to GCP", burst.status === 200 && plan?.placement?.target === "gcp" && plan?.recommendation?.fits === true,
+    `got ${burst.status}, target=${plan?.placement?.target}`);
+
+  const local = await req("/api/adam/plan", json({ presetId: "clip-edit", deviceId: "iphone-17-pro" }));
+  let lp = null;
+  try { lp = JSON.parse(local.body); } catch {}
+  ok("small ask stays on-device at $0", local.status === 200 && lp?.placement?.target === "puppy" && lp?.estimatedCostUsd === 0,
+    `got ${local.status}, target=${lp?.placement?.target}, cost=${lp?.estimatedCostUsd}`);
+}
+
+// 10. Reserve serves, and books with a preview mandate attached
+{
+  const page = await req("/reserve");
+  ok("/reserve 200", page.status === 200, `got ${page.status}`);
+
+  const cat = await req("/api/reserve");
+  let catalog = [];
+  try { catalog = JSON.parse(cat.body).catalog; } catch {}
+  ok("reserve GET lists services with slots", cat.status === 200 && catalog.length >= 6 && catalog[0]?.slots?.length > 0,
+    `got ${cat.status}, ${catalog.length} services`);
+
+  const slot = catalog[0]?.slots?.[0];
+  if (slot) {
+    const book = await req("/api/reserve", json({
+      categoryId: catalog[0].id, seniority: "established",
+      startsAt: slot.startsAt, minutes: slot.minutes,
+      feeUsd: catalog[0].bands.established.feeSuggestedUsd,
+    }));
+    let resv = null;
+    try { resv = JSON.parse(book.body).reservation; } catch {}
+    ok("reserve POST books with ap2 mandate (preview)", book.status === 201
+      && resv?.mandate?.kind === "ap2.payment-mandate" && resv?.mandate?.mode === "preview",
+      `got ${book.status}, mandate=${resv?.mandate?.kind}/${resv?.mandate?.mode}`);
+  } else {
+    ok("reserve POST books with ap2 mandate (preview)", false, "no slot available to book");
+  }
+}
+
+// 11. Network + stories pages
+{
+  const net = await req("/network");
+  ok("/network 200 + names Adam", net.status === 200 && /Adam/.test(net.body), `got ${net.status}`);
+  const cust = await req("/customers");
+  ok("/customers 200", cust.status === 200, `got ${cust.status}`);
+}
+
+// 12. Agent-discoverable surfaces: A2A card + AP2 offers
+{
+  const card = await req("/.well-known/agent.json");
+  let c = null;
+  try { c = JSON.parse(card.body); } catch {}
+  ok("A2A card serves with 3 skills", card.status === 200 && c?.skills?.length >= 3, `got ${card.status}, skills=${c?.skills?.length}`);
+  ok("A2A card carries the continuum positioning", /compute continuum/i.test(c?.description ?? ""), "old description still live");
+
+  const offers = await req("/.well-known/ap2/offers.json");
+  ok("AP2 offers serve", offers.status === 200, `got ${offers.status}`);
+}
+
+// 13. Installability: manifest + icon
+{
+  const man = await req("/manifest.webmanifest");
+  let m = null;
+  try { m = JSON.parse(man.body); } catch {}
+  ok("manifest serves, starts at /adam", man.status === 200 && m?.start_url === "/adam", `got ${man.status}, start=${m?.start_url}`);
+  const icon = await req("/icon.png");
+  ok("icon.png serves", icon.status === 200, `got ${icon.status}`);
+}
+
+// 14. Sitemap lists the family
+{
+  const sm = await req("/sitemap.xml");
+  ok("sitemap lists /adam and /reserve", sm.status === 200 && sm.body.includes("/adam") && sm.body.includes("/reserve"),
+    `got ${sm.status}`);
+}
+
 console.log(`\n${fail === 0 ? "✅ ALL PASS" : "❌ FAILURES"} — ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
