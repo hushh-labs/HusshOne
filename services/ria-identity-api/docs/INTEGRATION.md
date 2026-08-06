@@ -1,366 +1,382 @@
-# RIA Identity API — integration guide
+# RIA Identity API
 
-**Live:** `https://ria-identity-api-fro3hygenq-uc.a.run.app` (Cloud Run, us-central1, scale-to-zero)
+**`https://ria-identity-api-fro3hygenq-uc.a.run.app`** · Cloud Run us-central1 · revision `00003-rf9`
 
-Build the "claim your profile" screen against this. An adviser types their office phone number;
-you get back the firm and the advisers the SEC currently lists there, and they pick which one
-they are.
+An adviser types their office phone number. You get back their firm and everyone the SEC currently
+lists there, and they tap which one they are.
 
-Everything here was measured against the deployed service on **2026-08-06**. Numbers in the test
-appendix are real firm main-office lines from public Form ADV filings and are reproducible.
-
-### Known issues
-
-- **`/health` reports `ageDays: null, stale: true`** even though the Form ADV data is current
-  (23,647 rows, written today). The age read is failing silently on Cloud Run; a fallback to the
-  rows' own write time is in the code but not taking effect there. Cosmetic — resolution is
-  unaffected. Do not wire an alert to `stale` yet.
-- **`adv_officer` never fires.** The Form ADV table carries no Schedule A, so firm claims rest on
-  `domain_email` + roster membership. Reported as `no_schedule_a_available` — missing data, not a
-  finding that someone is not an officer.
+Everything below was measured against the deployed service on **2026-08-06**. All test numbers are
+real firm main-office lines from public Form ADV filings, and reproduce.
 
 ---
 
-## 1. The journey
+## Quickstart
 
-```
-  phone number
-      │
-      ▼
-  GET /v1/claim/lookup?phone=…            ~0.5s, streams
-      │
-      ├── firmClaim          → "Claim ROBINSWOOD FINANCIAL"      (the entity)
-      └── individualClaims[] → "Claim your adviser profile"      (a person)
-      │
-      ▼
-  your BFF sends an OTP to that number, then
-  POST /v1/claim/evaluate                 ~250ms
-      │
-      ├── rosterUnlocked: true, roster[]   → the pick-list, ANY firm size
-      │
-      ▼
-  user picks one identity
-      │
-      ▼
-  provisional: true, profileVerified: false   → let them into the app
-  upgradePlan[]                                → verification, later, in the profile section
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  "$BASE/v1/claim/lookup?phone=941-388-7249&stream=off"
 ```
 
-The OTP does two jobs: it proves the claimant can answer the firm's filed number, and that
-possession is what unlocks the roster for firms too large to list anonymously.
+```jsonc
+{
+  "firmClaim":        { "crd": 144946, "name": "CAIM LLC", "claimType": "firm", … },
+  "individualClaims": [ { "individualCrd": 1427402, "name": "…", "claimType": "individual" } ],
+  "meta": { "outcome": "single_person", "nextStep": "choose_identity", "currentAdviserCount": 1 }
+}
+```
 
-One number belongs to **both** a firm and the people registered at it. `425-296-1611` is
-Robinswood Financial's main line and also the working number of all seven advisers there. The
-service returns both claim targets and never guesses between them.
+That's the whole product in one call: **a firm to claim, and the people to claim.**
 
 ---
 
-## 2. Endpoints
+## How it works
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | liveness + source status. Open, no key. |
-| GET | `/v1/stats` | caches, uptime, and the live `claimPolicy` vocabulary. Open. |
-| GET | `/v1/claim/lookup` | **the main one.** phone → firm + advisers. Streams. |
-| GET/POST | `/v1/claim/evaluate` | score a claim, return provisional/verified + upgrade plan. |
-| GET | `/v1/advisors/{crd}` | one adviser's full public record. |
-| GET | `/v1/firms/{crd}` | firm facts. **Names nobody, by design.** |
-| GET | `/v1/claim/search` | name fallback when the phone misses. |
+```
+   phone
+     │
+     ├─────────────┬──────────────────┐         run concurrently
+     ▼             ▼                  ▼
+ Cloud SQL     Google Places      (fused)
+ Form ADV   →  business → IAPD  →  firm CRD
+ phone→CRD     name+address
+     │
+     ▼
+ SEC IAPD  ──►  the roster, live, every request
+     │
+     ▼
+ firmClaim + individualClaims[]
+```
 
-`/v1/*` requires `Authorization: Bearer <key>`. **The key stays on your server.** The response
-carries `access-control-allow-origin: *` for streaming convenience — that is not an invitation to
+Two independent paths resolve the phone to a firm and cross-check each other. Agreement →
+`confidence: high`. Only one answered → `medium`. **They disagree → both firms returned, you ask
+the user.** Never a silent guess.
+
+The roster and every person profile always come **live from SEC IAPD**. They are never read from a
+local table — for one test firm the local table held 1 of 4 current advisers, so three real people
+would have been told they aren't registered.
+
+### Why one number gives you two things to claim
+
+`425-296-1611` is Robinswood Financial's main line **and** the working number of all seven advisers
+there. There is no way to tell from the number alone whether the caller is the firm or a person, so
+the service returns both and lets them say. That's the `firmClaim` / `individualClaims` split.
+
+---
+
+## The three calls
+
+| | |
+|---|---|
+| `GET /v1/claim/lookup?phone=…` | phone → firm + advisers. **Streams.** |
+| `POST /v1/claim/evaluate` | after your OTP: unlock the roster, score the claim |
+| `GET /v1/advisors/{crd}` | the full public record for the profile they claimed |
+
+Plus `GET /health` and `GET /v1/stats` (open, no key), `GET /v1/firms/{crd}` (firm facts, names
+nobody by design), and `GET /v1/claim/search?name=…` when the phone misses.
+
+`/v1/*` needs `Authorization: Bearer <key>`. **Keep the key on your server.** The
+`access-control-allow-origin: *` header is for streaming from your backend, not an invitation to
 call this from a browser.
 
-### `/v1/claim/lookup`
+### `/v1/claim/lookup` parameters
 
 | Param | Default | Notes |
 |---|---|---|
-| `phone` | required | any format: `(801) 566-3510`, `801-566-3510`, `8015663510`, `+1 801 566 3510`, `866.766.8332`, extensions stripped |
-| `mode` | `auto` | `auto` \| `firm` \| `individual`. Unknown value → 400. |
+| `phone` | *required* | any format — `(801) 566-3510`, `8015663510`, `+1 801 566 3510`, `866.766.8332`; extensions stripped |
+| `mode` | `auto` | `auto` · `firm` · `individual`. Unknown → `400` |
 | `detail` | `false` | hydrate each candidate's full profile |
 | `limit` | `10` | 1–50 |
-| `stream` | `ndjson` | `ndjson` \| `sse` \| `off` |
+| `stream` | `ndjson` | `ndjson` · `sse` · `off` |
 
-`mode=firm` skips person hydration. It **cannot** be used to see names that `mode=individual`
-would withhold — the disclosure rules are identical in all three modes.
-
----
-
-## 3. Streaming
-
-`stream=ndjson` (default) emits one JSON object per line. `stream=sse` emits
-`event: <type>\ndata: <json>\n\n`. `stream=off` buffers into a single document.
-
-Frame order:
-
-```
-meta        request echo, resolved sources, timings
-firm        the firm claim target                       ← render immediately
-candidate   one per adviser, repeated                   ← render as they arrive
-done        totals, upstream budget spent
-```
-
-`error` is terminal and can arrive **mid-stream on an HTTP 200**. Check frame types, not
-`response.ok`. A truncated stream without `done` means the connection dropped — retry.
-
-In practice a 7-adviser firm completes in **~485 ms**, so all frames usually land together. The
-frame protocol matters for slow upstreams and large firms, not for the common case.
+`mode=firm` skips person hydration. It **cannot** reveal names that `mode=individual` withholds —
+disclosure rules are identical in all three modes.
 
 ---
 
-## 4. Outcomes → what to render
+## Streaming
 
-| `outcome` | `nextStep` | UI |
+Default is NDJSON: one JSON object per line.
+
+```js
+const res = await fetch(`${BASE}/v1/claim/lookup?phone=${phone}`, {
+  headers: { Authorization: `Bearer ${KEY}` },
+});
+
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+let buf = "";
+
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += value;
+
+  const lines = buf.split("\n");
+  buf = lines.pop();                         // keep the partial line
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const frame = JSON.parse(line);
+
+    switch (frame.type) {
+      case "meta":      setSources(frame);              break;
+      case "firm":      renderFirmCard(frame);          break;  // render immediately
+      case "candidate": appendPersonRow(frame);         break;  // as they arrive
+      case "done":      finish(frame);                  break;
+      case "error":     showError(frame.error);         break;  // terminal, see below
+    }
+  }
+}
+```
+
+**Two things that will bite you:**
+
+1. **`error` arrives mid-stream on an HTTP 200.** Headers are already sent when a fault happens, so
+   the status can't change. Check frame types, never `response.ok`.
+2. **A stream that ends without `done` was truncated** — the connection dropped. Retry.
+
+Use `stream=sse` for `event: <type>\ndata: <json>\n\n`, or `stream=off` to buffer the whole thing
+into one document (handy in tests).
+
+**Timing:** a 7-adviser firm completes in **~485 ms** end to end, so in practice every frame lands
+at once. The frame protocol earns its keep on slow upstreams and large firms, not the common case.
+
+---
+
+## Outcomes → what to render
+
+Measured `nextStep` values, from the deployed service:
+
+| `outcome` | `nextStep` | Render |
 |---|---|---|
 | `single_person` | `choose_identity` | "Is this you?" — one name, one button |
-| `few_candidates` | `pick_person` | short list, user taps their row |
-| `large_firm` | `enter_name` | firm shown, ask for a name instead of listing people |
-| `ambiguous_firm` | `pick_firm` | several firms share this line — user picks the firm first |
+| `few_candidates` | `choose_identity` | the pick-list; user taps their row |
+| `large_firm` | `confirm_firm` | firm card + count. Names come after the OTP — see below |
+| `ambiguous_firm` | `pick_firm` | several firms share this line; pick the firm first |
 | `no_match` | `enter_name` | no SEC firm files this number |
-| `invalid_phone` | `none` | inline validation error |
+| `invalid_phone` | `enter_name` | inline validation error |
 
-Two traps worth coding around:
-
-- **`large_firm` usually means "IAPD has no individual index for this firm"**, not "this firm is
-  huge" — about 30% of lookups. Read `currentAdviserCount === 0 && rosterError === null` before
-  showing any "too many advisers" copy.
-- **`rosterMatchesIncludingFormer` is not a roster size.** It is the SEC's raw match count and
-  includes people who left. Use `currentAdviserCount`.
+Read `meta.outcome` and `meta.nextStep` — not the array lengths.
 
 ### `large_firm` is not a dead end
 
-The anonymous lookup withholds names above a headcount threshold so this cannot be walked into a
-reverse-phone directory of advisers. **That gate is lifted by possession, not by headcount.**
+The anonymous lookup withholds names above a headcount threshold, so this endpoint can't be walked
+into a reverse-phone directory of advisers. **That gate lifts on possession, not headcount.**
 
-Send the OTP, then call `/v1/claim/evaluate` with the accepted `phone_otp`. The response carries
-`rosterUnlocked: true` and the **full current roster**, whatever the size — render that as the
-pick-list. Someone who can answer a firm's filed number is entitled to see who works there; it is
-published on adviserinfo.sec.gov either way.
+Send your OTP, then call `/v1/claim/evaluate` with the accepted `phone_otp`. You get
+`rosterUnlocked: true` and the **full current roster**, whatever the size. Render that as the
+pick-list. Someone who can answer a firm's filed number is entitled to see who works there — it's
+published on adviserinfo.sec.gov anyway.
 
-Measured: Mascoma Wealth Management (11 advisers) returns `large_firm` with **0 names** anonymously,
-and all **11** once the passcode is answered on its filed number. A passcode answered on a
-*different* firm's number leaves it locked.
+Measured on Mascoma Wealth Management (11 advisers):
 
-So a 9-, 11- or 40-adviser firm is claimable. Only the anonymous caller is limited.
+| Request | Names returned |
+|---|---|
+| Anonymous lookup | **0** |
+| `evaluate` + passcode answered on its filed number | **11** |
+| `evaluate` + passcode answered on a *different* firm's number | **0** (stays locked) |
+
+So 9-, 11- and 40-adviser firms are all claimable. Only the anonymous caller is limited.
+
+### Two traps
+
+- **`large_firm` usually means "IAPD has no individual index for this firm"** — not "this firm is
+  huge". About 30% of lookups. Check `currentAdviserCount === 0 && rosterError === null` before you
+  render any "too many advisers" copy.
+- **`rosterMatchesIncludingFormer` is not a roster size.** It's the SEC's raw match count, including
+  people who left. Use `currentAdviserCount`.
 
 ---
 
-## 5. Claiming
+## Claiming
 
-### The core design point
+### The design point in one paragraph
 
-An OTP to `425-296-1611` proves the person can answer **Robinswood's phone**. Seven advisers
-share that line, plus whoever sits at reception. So the OTP proves **firm affiliation**, not
-**identity**. Treating it as identity proof is the bug this model exists to prevent.
+An OTP to `425-296-1611` proves the caller can answer **Robinswood's phone**. Seven advisers share
+that line, plus whoever sits at reception. So the OTP proves **firm affiliation**, not **identity**.
+Treating it as identity proof is exactly the bug this model prevents.
 
-### Provisional vs verified
+### The call
 
-`POST /v1/claim/evaluate` returns both answers:
+```bash
+curl -X POST "$BASE/v1/claim/evaluate" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{
+    "claimType": "individual",
+    "firmCrd": 174907,
+    "individualCrd": 4029224,
+    "evidence": [{ "type": "phone_otp", "phone": "603-676-8813" }]
+  }'
+```
 
-| Field | Meaning |
+| Response field | Meaning |
 |---|---|
-| `provisional` | OTP answered + a valid roster row picked. **Let them into the app.** |
+| `provisional` | OTP answered + a valid roster row picked → **let them into the app** |
 | `profileVerified` | the strict, evidence-bound answer |
-| `verificationLevel` | `provisional` \| `verified` \| `none` |
+| `verificationLevel` | `provisional` · `verified` · `none` |
 | `upgradePlan[]` | what would make it verified, cheapest first |
+| `rosterUnlocked` | `true` once an accepted `phone_otp` proves possession |
+| `roster[]` | full current roster — only when unlocked. **`null` means *not unlocked*, never *this firm has nobody*** |
 | `grants` | at most one of `{individual, firm}` is ever non-null |
 | `evidenceLedger[]` | every signal, accepted or rejected, with the reason |
-| `rosterUnlocked` | `true` once an accepted `phone_otp` proves possession |
-| `roster[]` | the full current roster — present only when unlocked. `null` means *not unlocked*, never *this firm has nobody* |
+| `cheapestNextStep` | the single easiest action left — render this, don't encode policy yourself |
 
-**Store a provisional claim as unverified.** The consuming project must not treat it as
-identity-proven. Verification belongs in the profile section, later — it is not a barrier at the
-door.
+**Store a provisional claim as unverified.** Verification belongs in the profile section later, not
+as a barrier at the door.
 
-### Signals
+### Evidence signals
 
 | Signal | Asserted by | Proves |
 |---|---|---|
 | `phone_otp` | your BFF | firm affiliation |
-| `domain_email` | your BFF | affiliation, second channel — domain must come from the **ADV-filed website**, never user input |
+| `domain_email` | your BFF | affiliation, second channel — the domain must come from the **ADV-filed website**, never user input |
 | `oidc_verified_name` | your BFF | a name a third party verified |
 | `sole_adviser` | *derived* | identity **by elimination** |
-| `email_name_match` | *derived* | identity binding |
+| `email_name_match` | *derived* | identity binding (`rmacrae` ↔ Robert MacRae) |
 | `oidc_name_match` | *derived* | identity binding |
 | `on_live_roster` | *derived* | membership |
 | `adv_officer` | *derived* | authority over the entity |
 
-Derived signals cannot be asserted — sending one is rejected with `derived_only`. Tapping your own
+Derived signals **cannot be asserted** — sending one is rejected as `derived_only`. Tapping your own
 name is **intent, never identity**.
 
-### Thresholds
+**Evidence must be asserted by your server.** A browser-supplied assertion defeats the whole model.
 
-- **Individual → verified:** `phone_otp` + one of `sole_adviser`, `email_name_match`, `oidc_name_match`
-- **Firm → verified:** `phone_otp` + (`adv_officer`, or `domain_email` while on the live roster)
+### Thresholds for `verified`
+
+- **Individual:** `phone_otp` + one of `sole_adviser`, `email_name_match`, `oidc_name_match`
+- **Firm:** `phone_otp` + (`adv_officer`, or `domain_email` while on the live roster)
 
 **The zero-friction path:** at a one-adviser firm, affiliation plus elimination *is* identity. The
-passcode alone reaches `verified`, nothing else to do. That covers most small RIAs — 54% of
+passcode alone reaches `verified` — nothing else to do. That covers most small RIAs; 54% of
 state-registered firms report a single adviser.
 
-Nobody ever types a CRD.
-
-> `adv_officer` cannot fire in the current deployment: the Form ADV table carries no Schedule A.
-> It reports `no_schedule_a_available` — missing data, not a finding that someone is not an
-> officer. Firm claims rest on `domain_email` + roster membership until the Schedule A feed is
-> ingested.
+**Nobody ever types a CRD.**
 
 ---
 
-## 6. Edge cases
+## Edge cases
 
 | Case | Behaviour |
 |---|---|
-| Shared switchboard | `ambiguous_firm`, both firms returned, no guess. 630 numbers map to 2 firms, 202 to 3+. |
-| Departed adviser | Excluded. The SEC's `firm=` filter also matches former employers; we filter on current employment. |
-| Firm reports 0 advisory staff | Names nobody. The gate fails closed on `0`, `null`, `""`, `NaN`. |
-| Number Google knows, SEC doesn't | Places resolves it, cross-validated into a CRD via name **and** address. Address agreement alone is refused — office buildings hold many firms. |
-| Number SEC knows, Google doesn't | Form ADV mapping resolves it. This is why the DB carries coverage: Places alone finds only ~63% of random RIA main lines, name-matching on 79% of those. |
-| Filing typo | Tolerated. One firm filed its own number with two digits transposed; matching allows a single transposition. |
-| IAPD down | Degrades to firm-only with a reason. Never a 5xx for this. |
-| Vertex down | Falls back to deterministic matching. `/v1/claim/lookup` never calls Vertex at all. |
-| Database off | Service runs fully on Places + IAPD. Confidence ceiling drops to `medium`; `ambiguous_firm` can no longer fire. |
-| Roster > 300 | `rosterTruncated: true`, names nobody. |
-| Non-NANP number | Rejected before any upstream call. |
+| Shared switchboard | `ambiguous_firm`, every firm returned, no guess. 630 numbers map to 2 firms, 202 to 3+ |
+| Departed adviser | Excluded. SEC's `firm=` filter also matches former employers; we filter on current employment |
+| Firm reports 0 advisory staff | Names nobody. Gate fails closed on `0`, `null`, `""`, `NaN` |
+| **Filing typo** | Tolerated. One firm filed its own number with two digits transposed; we try the nine adjacent transpositions on an exact miss and report `matchedVia: "transposition"`. Two firms one transposition away → nobody, not a guess |
+| Google knows it, SEC doesn't | Places resolves it, cross-validated into a CRD on name **and** address. Address alone is refused — office buildings hold many firms |
+| SEC knows it, Google doesn't | Form ADV mapping resolves it. Places alone finds only ~63% of random RIA main lines, name-matching 79% of those — which is why the DB carries coverage |
+| Roster > 300 | `rosterTruncated: true`, names nobody |
+| IAPD down | Degrades to firm-only with a reason. Never a 5xx |
+| Vertex down | Falls back to deterministic matching. `/v1/claim/lookup` never calls Vertex at all |
+| Database off | Runs fully on Places + IAPD. Confidence ceiling drops to `medium`; `ambiguous_firm` can't fire |
+| Non-NANP number | Rejected before any upstream call |
 
-Errors: `400` bad input (with `field`), `401` missing/wrong key, `404` no such CRD, `429` rate or
-daily cap (`retry-after` set), `502` upstream fault.
+### Errors
 
----
+| Status | Meaning |
+|---|---|
+| `400` | bad input — the body names the offending `field` |
+| `401` | missing or wrong bearer key |
+| `404` | no such CRD |
+| `429` | rate limit or daily cap — honour `retry-after` |
+| `502` | upstream fault (IAPD/Places), not your request |
 
-## 7. Limits
+### Limits
 
 30 requests/minute per caller, burst 10, plus a daily cap on every route that can name a person.
-The client IP is read from the **right** of `X-Forwarded-For`, so rotating the header buys
-nothing. These exist to stop bulk enumeration of the number space; don't raise them without a
-reason.
+Client IP is read from the **right** of `X-Forwarded-For`, so rotating the header buys nothing.
+These stop bulk enumeration of the number space — don't raise them without a reason.
 
-> On Cloud Run with `min-instances=0` the daily counter is per-instance and resets when an
-> instance is reclaimed. The per-minute limiter is unaffected. If hard daily enforcement matters,
-> use the VM path or `--min-instances=1`.
+> On Cloud Run with `min-instances=0` the daily counter is per-instance and resets when an instance
+> is reclaimed. The per-minute limiter is unaffected. Use the VM path or `--min-instances=1` if hard
+> daily enforcement matters.
 
 ---
 
-## 8. Data sources
+## Test numbers
+
+All verified against live IAPD on 2026-08-06.
+
+### Individual claim — sole adviser, the zero-friction path
+
+| Phone | Firm | CRD |
+|---|---|---|
+| (801) 566-3510 | Olympus Peaks Financial | 283040 |
+| 818-707-5304 | Carmandalian Financial Group | 292458 |
+| 941-388-7249 | CAIM LLC | 144946 |
+| 917-885-5382 | Cypress Point Capital Management | 167195 |
+| 224-326-2044 | Boon Capital Advisors | 174016 |
+
+Each returns `single_person` / `choose_identity` and reaches `verified` on the passcode alone.
+
+### Firm claim — multi-adviser
+
+| Phone | Firm | CRD | Advisers | Anonymous outcome |
+|---|---|---|---|---|
+| 603-676-8813 | Mascoma Wealth Management | 174907 | 11 | `large_firm` — unlock with OTP |
+| 888-879-1376 | Envoy Advisory | 306559 | 10 | `large_firm` — unlock with OTP |
+| 615-665-1085 | Barksdale Investment Management | 105098 | 9 | `large_firm` — unlock with OTP |
+| 866.766.8332 | Rooted Wealth Advisors | 313759 | 8 | `few_candidates` — 8 names inline |
+| 800-456-8850 | *two* Penserra entities | 159042 + 174309 | 16 + 12 | `ambiguous_firm` — pick the firm |
+
+`866.766.8332` is filed with dots — a free formatting check. `800-456-8850` is a genuine
+shared-line case: two Penserra entities file the same toll-free number.
+
+### Edge cases
+
+| Phone | Expect |
+|---|---|
+| 425-296-1611 | Robinswood Financial (143417) — firm claim **and** 7 individual claims. Resolves via `matchedVia: "transposition"`: the firm typo'd its own number on the filing |
+| 617-217-2772 | Osbon Capital — 5 IAPD matches, **2** returned (departed filtered) |
+| 512-322-9318 | Alpha Capital — 7 matches, **6** returned |
+| 201-827-2000 | `ambiguous_firm` — 4 Lord Abbett entities share the line |
+| 914-225-1000 | Consulting Group Advisory Services (137463), 0 advisory staff → names **nobody** |
+| 212-969-1000 | AllianceBernstein (107445), 0 advisory staff → names **nobody** |
+| `555` | `invalid_phone` |
+
+---
+
+## Data sources & attribution
 
 | Fact | Source |
 |---|---|
 | phone → firm | Cloud SQL Form ADV mapping (optional) |
 | phone → business, cross-check | Google Places — **only `placeId` may be stored** |
-| roster, every person profile, firm detail | SEC IAPD, live on every request |
+| roster, person profiles, firm detail | SEC IAPD, live on every request |
 
-The local `advisers` table is **never** read for a roster. For one test firm it held 1 of 4
-current advisers; three real people could not have claimed a profile.
-
-Gemini (Vertex) adjudicates fuzzy name and firm matching only. It returns an *index* into a roster
-we fetched from the SEC — never a name, CRD or date. Asked directly about a real 7-adviser firm it
-named 2 of 7.
+Gemini (Vertex) adjudicates fuzzy name and firm matching only. It returns an **index into a roster
+we fetched from the SEC** — never a name, CRD or date. Asked directly about a real 7-adviser firm it
+named 2 of 7, which is why it can propose but never source a fact.
 
 Attribution: SEC Investment Adviser Public Disclosure (IAPD) and Form ADV public data,
 <https://adviserinfo.sec.gov>, with the retrieval date on every response.
 
 ---
 
-## 9. Test cases
+## Known issues
 
-Real firm main-office lines from public Form ADV filings. Adviser counts verified against live
-IAPD on 2026-08-06.
-
-### Firm claim — multi-adviser
-
-| Phone | Firm | CRD | Advisers |
-|---|---|---|---|
-| 603-676-8813 | Mascoma Wealth Management | 174907 | 11 |
-| 888-879-1376 | Envoy Advisory | 306559 | 10 |
-| 615-665-1085 | Barksdale Investment Management | 105098 | 9 |
-| 800-456-8850 | Penserra Global Investors | 174309 | 8 |
-| 866.766.8332 | Rooted Wealth Advisors | 313759 | 8 |
-
-The last one is filed with dots instead of dashes — a free formatting check.
-
-### Individual claim — sole adviser (zero-friction path)
-
-| Phone | Firm | CRD | Advisers |
-|---|---|---|---|
-| (801) 566-3510 | Olympus Peaks Financial | 283040 | 1 |
-| 818-707-5304 | Carmandalian Financial Group | 292458 | 1 |
-| 941-388-7249 | CAIM LLC | 144946 | 1 |
-| 917-885-5382 | Cypress Point Capital Management | 167195 | 1 |
-| 224-326-2044 | Boon Capital Advisors | 174016 | 1 |
-
-Each reaches `verified` on the passcode alone.
-
-### Edge cases
-
-| Phone | Expect |
-|---|---|
-| 425-296-1611 | Robinswood Financial (CRD 143417) — firm claim **and** 7 individual claims |
-| 617-217-2772 | more IAPD matches than current staff — departed advisers filtered out |
-| 512-322-9318 | same |
-| 201-827-2000 | `ambiguous_firm` — several firms share the line |
-| 914-225-1000 | `no_match` — a wirehouse HQ, deliberately not resolved to a person |
-| 212-969-1000 | firm reports 0 advisory staff — must name **nobody** |
-| `555` | `invalid_phone` |
-
-### Live responses — Cloud Run, 2026-08-06
-
-All 17 numbers above, run against the deployed service
-(`https://ria-identity-api-fro3hygenq-uc.a.run.app`, revision `ria-identity-api-00002-g8x`,
-image `80e834b`) with `stream=off` and a bearer key. Every firm below resolved from
-`form_adv_db` and was corroborated by live IAPD; no adviser names are reproduced here.
-
-| Phone | Outcome | nextStep | Firm (CRD) | Current advisers | Candidates | ms |
-|---|---|---|---|---|---|---|
-| 603-676-8813 | `large_firm` | `confirm_firm` | Mascoma Wealth Management (174907) | 11 | 0 | 871 |
-| 888-879-1376 | `large_firm` | `confirm_firm` | Envoy Advisory Inc. (306559) | 10 | 0 | 748 |
-| 615-665-1085 | `large_firm` | `confirm_firm` | Barksdale Investment Management (105098) | 9 | 0 | 576 |
-| 800-456-8850 | `ambiguous_firm` | `pick_firm` | 2 firms — see note | — | 0 | 482 |
-| 866.766.8332 | `few_candidates` | `choose_identity` | Rooted Wealth Advisors (313759) | 8 | 8 | 710 |
-| (801) 566-3510 | `single_person` | `choose_identity` | Olympus Peaks Financial, LLC (283040) | 1 | 1 | 754 |
-| 818-707-5304 | `single_person` | `choose_identity` | Carmandalian Financial Group (292458) | 1 | 1 | 639 |
-| 941-388-7249 | `single_person` | `choose_identity` | CAIM LLC (144946) | 1 | 1 | 724 |
-| 917-885-5382 | `single_person` | `choose_identity` | Cypress Point Capital Mgmt (167195) | 1 | 1 | 667 |
-| 224-326-2044 | `single_person` | `choose_identity` | Boon Capital Advisors LLC (174016) | 1 | 1 | 635 |
-| 425-296-1611 | `few_candidates` | `choose_identity` | Robinswood Financial (143417) | 7 | 7 | 681 |
-| 617-217-2772 | `few_candidates` | `choose_identity` | Osbon Capital Management (134731) | 2 | 2 | 596 |
-| 512-322-9318 | `few_candidates` | `choose_identity` | Alpha Capital Management (121703) | 6 | 6 | 711 |
-| 201-827-2000 | `ambiguous_firm` | `pick_firm` | 4 Lord Abbett entities | — | 0 | 497 |
-| 914-225-1000 | `large_firm` | `confirm_firm` | Consulting Group Advisory Services (137463) | 0 | 0 | 642 |
-| 212-969-1000 | `large_firm` | `confirm_firm` | AllianceBernstein Corporation (107445) | 0 | 0 | 795 |
-| `555` | `invalid_phone` | `enter_name` | — | — | 0 | 359 |
-
-Where the live answer differs from the expectation tables above, the live answer is the more
-precise one:
-
-- **800-456-8850 is `ambiguous_firm`, not a clean Penserra claim** — two Penserra entities
-  file the same line: Penserra Capital Management LLC (159042, 16 advisers) and Penserra
-  Global Investors LLC (174309, 12). The claimant picks the firm first. The expectation
-  table's "one firm, 8 advisers" was written from a single filing.
-- **914-225-1000 is not `no_match`** — it resolves to Consulting Group Advisory Services
-  (137463), which reports 0 advisory staff, so it still names **nobody**. The disclosure
-  rule holds; the outcome label differs.
-- **617-217-2772 and 512-322-9318 filter departed advisers as designed** — IAPD matches
-  including former staff were 5 and 7; only the 2 and 6 current advisers were returned.
-- **`555` returns `nextStep: "enter_name"`**, not `none` as §4's mapping table suggests —
-  render it as an inline validation error either way.
-- The two `429`s in the first pass were the per-minute limiter doing its job at 15 rapid
-  requests; both numbers answered normally after the window reset.
+- **`/health` reports `ageDays: null, stale: true`** although the Form ADV data is current (23,647
+  rows, written today). The age read fails silently on Cloud Run; the fallback to the rows' own
+  write time works locally but not there. Cosmetic — resolution is unaffected. **Don't alert on
+  `stale` yet.**
+- **`adv_officer` never fires.** The Form ADV table carries no Schedule A, so firm claims rest on
+  `domain_email` + roster membership. Reported as `no_schedule_a_available` — missing data, not a
+  finding that someone isn't an officer.
 
 ---
 
-## 10. Running it
+## Running it
 
 ```bash
-# local
-npm install && npm test                      # 481 tests
-PLACES_API_KEY=… RIA_DB_PASSWORD=… node server.mjs
+npm install && npm test                            # 487 tests
+PLACES_API_KEY=… RIA_DB_PASSWORD=… node server.mjs # local
 
-# deploy (scale to zero, ~$0 idle)
-./scripts/cloudrun/deploy-cloudrun.sh
+./scripts/cloudrun/deploy-cloudrun.sh              # deploy, scale-to-zero, ~$0 idle
 DRY_RUN=1 ./scripts/cloudrun/deploy-cloudrun.sh    # print every call, change nothing
-
-# post-deploy
-./scripts/cloudrun/smoke-cloudrun.sh
+./scripts/cloudrun/smoke-cloudrun.sh               # post-deploy check
 ```
 
 The VM path (`scripts/gcp-vm/deploy-gcp-vm.sh`) still works and is the alternative when the
 per-instance daily cap matters more than the idle bill. Neither path touches the other.
+
+This service is standalone: nothing in `src/` imports it, and it adds no secret, env var or IAM
+grant to the `one` app.
