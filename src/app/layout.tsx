@@ -43,6 +43,11 @@ export const viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: "cover" as const,
+  // Browser chrome follows the user's appearance — light and dark both first-class.
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#050506" },
+    { media: "(prefers-color-scheme: light)", color: "#f5f5f7" },
+  ],
 };
 
 export default function RootLayout({

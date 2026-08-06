@@ -7,6 +7,7 @@
    attached, so the provider knows you're real. Payments become a non-thought. */
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import FamilyDock from "@/components/one/FamilyDock";
 import styles from "../adam/adam.module.css";
 
 type Seniority = "rising" | "established" | "top";
@@ -175,6 +176,7 @@ export default function ReserveExperience() {
           · <Link href="/adam">Adam, the supercomputing agent</Link>.
         </p>
       </div>
+      <FamilyDock active="/reserve" />
     </div>
   );
 }

@@ -5,7 +5,9 @@
    springs in: on-device, or burst to the matched Google Cloud SKU with cost + time)
    → 3 Do it (one CTA into the real BYOC burst path). No settings, no console. */
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import FamilyDock from "@/components/one/FamilyDock";
+import { matchVoiceAsk, speechRecognizer } from "@/lib/adam/voice";
 import styles from "./adam.module.css";
 
 interface DeviceOption { id: string; label: string }
@@ -49,13 +51,19 @@ export default function AdamExperience() {
   const [loading, setLoading] = useState(false);
   const [showBench, setShowBench] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [canListen, setCanListen] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [heard, setHeard] = useState<string | null>(null);
+  const recognizerRef = useRef<{ stop: () => void } | null>(null);
 
   useEffect(() => {
     setDeviceId(guessDeviceId());
+    setCanListen(speechRecognizer() != null);
     fetch("/api/adam/plan")
       .then((r) => r.json())
       .then((d) => { setDevices(d.devices); setPresets(d.presets); })
       .catch(() => setError("Adam couldn't load right now — pull to refresh."));
+    return () => recognizerRef.current?.stop();
   }, []);
 
   const ask = useCallback(async (pid: string, did: string) => {
@@ -81,6 +89,28 @@ export default function AdamExperience() {
       setLoading(false);
     }
   }, []);
+
+  const listen = useCallback(() => {
+    const Ctor = speechRecognizer();
+    if (!Ctor || listening) return;
+    const rec = new Ctor();
+    recognizerRef.current = rec;
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    setListening(true);
+    setHeard(null);
+    rec.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      setHeard(transcript);
+      const match = matchVoiceAsk(transcript);
+      if (match) void ask(match, deviceId);
+      else setError("Adam heard you, but didn't recognize that ask — tap one below.");
+    };
+    rec.onerror = () => setListening(false);
+    rec.onend = () => setListening(false);
+    rec.start();
+  }, [ask, deviceId, listening]);
 
   const onDevice = plan?.placement.target === "puppy";
   const deviceLabel = useMemo(
@@ -115,6 +145,14 @@ export default function AdamExperience() {
         </div>
 
         <p className={styles.sectionLabel}>Ask Adam</p>
+        {canListen && (
+          <p style={{ margin: "0 0 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button className={`${styles.mic} ${listening ? styles.micLive : ""}`} onClick={listen} aria-pressed={listening}>
+              <span aria-hidden>🎙️</span> {listening ? "Listening…" : "Say it"}
+            </button>
+            {heard && <span className={styles.heard}>“{heard}”</span>}
+          </p>
+        )}
         <div className={styles.asks}>
           {presets.map((p) => (
             <button
@@ -199,6 +237,7 @@ export default function AdamExperience() {
           <Link href="/network">🤫 One network of agents</Link> · <Link href="/customers">customer stories</Link>.
         </p>
       </div>
+      <FamilyDock active="/adam" />
     </div>
   );
 }
