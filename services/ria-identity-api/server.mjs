@@ -614,9 +614,46 @@ async function handleEvaluate(response, started, query) {
     evidence: query.evidence,
   });
 
+  // ── POSSESSION-GATED ROSTER ────────────────────────────────────────────────────────────────
+  // /v1/claim/lookup withholds names above a headcount threshold, because an ANONYMOUS caller
+  // who can type phone numbers must not be able to walk this into a reverse-phone directory of
+  // advisers. That gate is right for an anonymous caller and wrong for this one: reaching here
+  // with an ACCEPTED phone_otp means the caller answered the number this firm filed with the
+  // SEC. Someone who can answer a firm's phone is entitled to see who works there — it is
+  // published on adviserinfo.sec.gov, and they can read it there in a browser.
+  //
+  // So the gate moves from HEADCOUNT to POSSESSION. Below the threshold nothing changes. Above
+  // it, a 9-, 11- or 40-adviser firm becomes claimable, which it was not before: its advisers
+  // are exactly the target market and they were the ones locked out.
+  //
+  // The anonymous endpoint is untouched, so this widens nothing for a caller who has not
+  // proven possession, and the daily cap still applies.
+  const otpAccepted = (result.evidenceLedger || []).some(
+    (row) => row.signal === "phone_otp" && row.accepted === true,
+  );
+
   return sendJson(response, 200, {
     ...result,
     firm: context.firmSummary,
+    // Present ONLY once possession is proven. `null` is "not unlocked", never "this firm has
+    // nobody" — a caller must be able to tell those apart.
+    rosterUnlocked: otpAccepted,
+    roster: otpAccepted
+      ? (context.roster || []).map((person) => ({
+          individualCrd: person.individualCrd ?? person.crd ?? null,
+          name: person.name ?? null,
+          branchCity: person.branchCity ?? null,
+          branchState: person.branchState ?? null,
+          hasDisclosures: person.hasDisclosures ?? null,
+          profileUrl: person.individualCrd
+            ? `https://adviserinfo.sec.gov/individual/summary/${person.individualCrd}`
+            : null,
+          claimType: "individual",
+        }))
+      : null,
+    rosterNote: otpAccepted
+      ? "Full current roster, unlocked because the passcode was answered on the number this firm filed with the SEC. Render it as the pick-list. Selecting a row is INTENT, not identity — the claim is still provisional until an identity signal lands."
+      : "Roster withheld: no accepted phone_otp on this evaluation. Prove possession of the firm's filed number to unlock the pick-list.",
     ms: Date.now() - started,
     // A roster we could not read is reported, not hidden. It fails CLOSED — every identity
     // signal is derived by matching against the roster, so an empty one derives nothing and

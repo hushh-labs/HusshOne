@@ -21,16 +21,21 @@ appendix are real firm main-office lines from public Form ADV filings and are re
       └── individualClaims[] → "Claim your adviser profile"      (a person)
       │
       ▼
-  user picks one identity
-      │
-      ▼
   your BFF sends an OTP to that number, then
   POST /v1/claim/evaluate                 ~250ms
+      │
+      ├── rosterUnlocked: true, roster[]   → the pick-list, ANY firm size
+      │
+      ▼
+  user picks one identity
       │
       ▼
   provisional: true, profileVerified: false   → let them into the app
   upgradePlan[]                                → verification, later, in the profile section
 ```
+
+The OTP does two jobs: it proves the claimant can answer the firm's filed number, and that
+possession is what unlocks the roster for firms too large to list anonymously.
 
 One number belongs to **both** a firm and the people registered at it. `425-296-1611` is
 Robinswood Financial's main line and also the working number of all seven advisers there. The
@@ -110,6 +115,22 @@ Two traps worth coding around:
 - **`rosterMatchesIncludingFormer` is not a roster size.** It is the SEC's raw match count and
   includes people who left. Use `currentAdviserCount`.
 
+### `large_firm` is not a dead end
+
+The anonymous lookup withholds names above a headcount threshold so this cannot be walked into a
+reverse-phone directory of advisers. **That gate is lifted by possession, not by headcount.**
+
+Send the OTP, then call `/v1/claim/evaluate` with the accepted `phone_otp`. The response carries
+`rosterUnlocked: true` and the **full current roster**, whatever the size — render that as the
+pick-list. Someone who can answer a firm's filed number is entitled to see who works there; it is
+published on adviserinfo.sec.gov either way.
+
+Measured: Mascoma Wealth Management (11 advisers) returns `large_firm` with **0 names** anonymously,
+and all **11** once the passcode is answered on its filed number. A passcode answered on a
+*different* firm's number leaves it locked.
+
+So a 9-, 11- or 40-adviser firm is claimable. Only the anonymous caller is limited.
+
 ---
 
 ## 5. Claiming
@@ -132,6 +153,8 @@ share that line, plus whoever sits at reception. So the OTP proves **firm affili
 | `upgradePlan[]` | what would make it verified, cheapest first |
 | `grants` | at most one of `{individual, firm}` is ever non-null |
 | `evidenceLedger[]` | every signal, accepted or rejected, with the reason |
+| `rosterUnlocked` | `true` once an accepted `phone_otp` proves possession |
+| `roster[]` | the full current roster — present only when unlocked. `null` means *not unlocked*, never *this firm has nobody* |
 
 **Store a provisional claim as unverified.** The consuming project must not treat it as
 identity-proven. Verification belongs in the profile section, later — it is not a barrier at the
@@ -265,6 +288,50 @@ Each reaches `verified` on the passcode alone.
 | 914-225-1000 | `no_match` — a wirehouse HQ, deliberately not resolved to a person |
 | 212-969-1000 | firm reports 0 advisory staff — must name **nobody** |
 | `555` | `invalid_phone` |
+
+### Live responses — Cloud Run, 2026-08-06
+
+All 17 numbers above, run against the deployed service
+(`https://ria-identity-api-fro3hygenq-uc.a.run.app`, revision `ria-identity-api-00002-g8x`,
+image `80e834b`) with `stream=off` and a bearer key. Every firm below resolved from
+`form_adv_db` and was corroborated by live IAPD; no adviser names are reproduced here.
+
+| Phone | Outcome | nextStep | Firm (CRD) | Current advisers | Candidates | ms |
+|---|---|---|---|---|---|---|
+| 603-676-8813 | `large_firm` | `confirm_firm` | Mascoma Wealth Management (174907) | 11 | 0 | 871 |
+| 888-879-1376 | `large_firm` | `confirm_firm` | Envoy Advisory Inc. (306559) | 10 | 0 | 748 |
+| 615-665-1085 | `large_firm` | `confirm_firm` | Barksdale Investment Management (105098) | 9 | 0 | 576 |
+| 800-456-8850 | `ambiguous_firm` | `pick_firm` | 2 firms — see note | — | 0 | 482 |
+| 866.766.8332 | `few_candidates` | `choose_identity` | Rooted Wealth Advisors (313759) | 8 | 8 | 710 |
+| (801) 566-3510 | `single_person` | `choose_identity` | Olympus Peaks Financial, LLC (283040) | 1 | 1 | 754 |
+| 818-707-5304 | `single_person` | `choose_identity` | Carmandalian Financial Group (292458) | 1 | 1 | 639 |
+| 941-388-7249 | `single_person` | `choose_identity` | CAIM LLC (144946) | 1 | 1 | 724 |
+| 917-885-5382 | `single_person` | `choose_identity` | Cypress Point Capital Mgmt (167195) | 1 | 1 | 667 |
+| 224-326-2044 | `single_person` | `choose_identity` | Boon Capital Advisors LLC (174016) | 1 | 1 | 635 |
+| 425-296-1611 | `few_candidates` | `choose_identity` | Robinswood Financial (143417) | 7 | 7 | 681 |
+| 617-217-2772 | `few_candidates` | `choose_identity` | Osbon Capital Management (134731) | 2 | 2 | 596 |
+| 512-322-9318 | `few_candidates` | `choose_identity` | Alpha Capital Management (121703) | 6 | 6 | 711 |
+| 201-827-2000 | `ambiguous_firm` | `pick_firm` | 4 Lord Abbett entities | — | 0 | 497 |
+| 914-225-1000 | `large_firm` | `confirm_firm` | Consulting Group Advisory Services (137463) | 0 | 0 | 642 |
+| 212-969-1000 | `large_firm` | `confirm_firm` | AllianceBernstein Corporation (107445) | 0 | 0 | 795 |
+| `555` | `invalid_phone` | `enter_name` | — | — | 0 | 359 |
+
+Where the live answer differs from the expectation tables above, the live answer is the more
+precise one:
+
+- **800-456-8850 is `ambiguous_firm`, not a clean Penserra claim** — two Penserra entities
+  file the same line: Penserra Capital Management LLC (159042, 16 advisers) and Penserra
+  Global Investors LLC (174309, 12). The claimant picks the firm first. The expectation
+  table's "one firm, 8 advisers" was written from a single filing.
+- **914-225-1000 is not `no_match`** — it resolves to Consulting Group Advisory Services
+  (137463), which reports 0 advisory staff, so it still names **nobody**. The disclosure
+  rule holds; the outcome label differs.
+- **617-217-2772 and 512-322-9318 filter departed advisers as designed** — IAPD matches
+  including former staff were 5 and 7; only the 2 and 6 current advisers were returned.
+- **`555` returns `nextStep: "enter_name"`**, not `none` as §4's mapping table suggests —
+  render it as an inline validation error either way.
+- The two `429`s in the first pass were the per-minute limiter doing its job at 15 rapid
+  requests; both numbers answered normally after the window reset.
 
 ---
 
