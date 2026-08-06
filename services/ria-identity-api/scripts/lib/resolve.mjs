@@ -1210,6 +1210,7 @@ async function matchFirm(parsed, deps) {
       // caller the SEC has nothing on a number nobody ever looked up.
       return {
         firms: found?.firms || [],
+        matchedVia: found?.matchedVia ?? null,
         error: null,
         available: true,
         ms: found?.ms ?? null,
@@ -1278,6 +1279,10 @@ async function matchFirm(parsed, deps) {
       skipped: db.skipped ?? null,
       note: FORM_ADV_STATUS_NOTE[dbStatus],
       crds: dbFirms.map((firm) => Number(firm.crd)),
+      // "exact" | "transposition" | null. A transposition match means the firm's OWN filing has
+      // its phone number mistyped and we reached it anyway — weaker evidence than an exact hit,
+      // and the caller has to be able to see the difference rather than infer it.
+      matchedVia: db.matchedVia ?? null,
       queryMs: db.ms,
       error: db.error,
     },

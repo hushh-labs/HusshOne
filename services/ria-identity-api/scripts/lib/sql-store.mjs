@@ -88,15 +88,57 @@ const FIRM_BY_CRD_SQL = `
    WHERE crd = $1
    LIMIT 1`;
 
+/** Same functional index, but against a set — used only for the transposition second pass. */
+const FIRM_BY_PHONE_ANY_SQL = `
+  SELECT ${FIRM_COLUMNS}
+    FROM firms
+   WHERE ${PHONE_DIGITS_SQL} = ANY($1::text[])
+      OR ${PHONE_DIGITS_SQL} = ANY(SELECT '1' || v FROM unnest($1::text[]) AS v)
+   LIMIT 25`;
+
+/** The nine numbers reachable from a ten-digit number by swapping one ADJACENT pair of digits.
+ *  Bounded, deterministic, and small enough for one indexed query. Identical neighbours produce
+ *  the original number, which is dropped — it already missed. */
+export function transpositionVariants(phone10) {
+  const s = String(phone10 || "");
+  if (!/^\d{10}$/.test(s)) return [];
+  const out = new Set();
+  for (let i = 0; i < s.length - 1; i++) {
+    if (s[i] === s[i + 1]) continue;
+    out.add(s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2));
+  }
+  out.delete(s);
+  return [...out];
+}
+
 /** The last time the FIRM feed landed successfully. `ok = true` is load-bearing: a run that
- *  started and failed (there is one — id 44, started 2026-08-06, ok=false, finished_at null)
- *  must never be reported as freshness, or a broken pipeline reads as a healthy one. */
+ *  started and failed must never be reported as freshness, or a broken pipeline reads as a
+ *  healthy one.
+ *
+ *  But the run LEDGER is not the only evidence of age, and on its own it lies in the common
+ *  case. Observed live: run id 44 pulled IA_FIRM_SEC_Feed_08_06_2026 and upserted the whole
+ *  table — firms.last_seen moved to 2026-08-06 — then the operator's terminal was interrupted
+ *  before the run could close, leaving finished_at NULL and ok=false. The ledger said "age
+ *  unknown, assume stale" about data that was hours old, and /health told an operator to go
+ *  check a pipeline that had in fact done its job.
+ *
+ *  So: prefer a completed run (it names the source file, which is the better provenance), and
+ *  fall back to the newest firms.last_seen, which is the data's own evidence of when it was
+ *  last written. `ledgerBacked` says which one answered, so an operator can still tell the
+ *  difference between "a run closed cleanly" and "rows are recent but no run claims them". */
 const FRESHNESS_SQL = `
-  SELECT source_file, finished_at, rows_upserted
+  SELECT source_file, finished_at, rows_upserted, true AS ledger_backed
     FROM ingest_runs
    WHERE kind = 'firms' AND ok = true AND finished_at IS NOT NULL
    ORDER BY finished_at DESC
    LIMIT 1`;
+
+const FRESHNESS_FALLBACK_SQL = `
+  SELECT NULL::text AS source_file,
+         MAX(last_seen) AS finished_at,
+         COUNT(*)       AS rows_upserted,
+         false          AS ledger_backed
+    FROM firms`;
 
 const numOrNull = (value) => {
   if (value === null || value === undefined || value === "") return null;
@@ -189,6 +231,9 @@ export function freshnessFrom(row, { now = Date.now(), staleAfterDays = 14 } = {
   return {
     lastIngestAt: finishedAt && !Number.isNaN(finishedAt.getTime()) ? finishedAt.toISOString() : null,
     sourceFile: strOrNull(row?.source_file),
+    // true  = a completed ingest_runs row answered (best provenance: it names the feed file)
+    // false = no closed run, so firms.last_seen answered instead (the rows' own write time)
+    ledgerBacked: row == null ? null : row.ledger_backed !== false,
     rowsUpserted: numOrNull(row?.rows_upserted),
     ageDays,
     staleAfterDays,
@@ -395,8 +440,41 @@ export function createStore(options = {}) {
 
       const started = now();
       const result = await run(FIRM_BY_PHONE_SQL, [phone10], "lookupByPhone");
-      const firms = orderFirms((result?.rows || []).map(mapFirmRow).filter(Boolean));
-      return { firms, phone10, ms: now() - started, consulted: true, skipped: null };
+      let firms = orderFirms((result?.rows || []).map(mapFirmRow).filter(Boolean));
+      let matchedVia = firms.length ? "exact" : null;
+
+      // SECOND PASS: the firm typo'd its own number on the filing.
+      //
+      // Real case, measured 2026-08-06: ROBINSWOOD FINANCIAL (CRD 143417) files 452-296-1611.
+      // The line that actually rings is 425-296-1611 — two adjacent digits transposed. Google
+      // does not list that number either, so BOTH resolution paths missed and seven advisers at
+      // a real firm got "no SEC-registered advisory firm files that number". The adviser has no
+      // idea their firm's filing has a typo, and nothing they can type will fix it.
+      //
+      // So when the exact lookup finds nothing, try the ten-digit number's adjacent
+      // transpositions — nine variants, one indexed query, only ever run on a miss. It is
+      // deliberately NOT a fuzzy search: a transposition is a specific, common typing error
+      // with a bounded variant set, unlike a wrong or missing digit which would collide with
+      // real numbers belonging to other firms.
+      //
+      // A transposition hit is reported as such and never presented as an exact match, because
+      // it is weaker evidence: the resolver and the caller both need to see that the number the
+      // claimant typed is not the number on the filing.
+      if (!firms.length) {
+        const variants = transpositionVariants(phone10);
+        if (variants.length) {
+          const fuzzy = await run(FIRM_BY_PHONE_ANY_SQL, [variants], "lookupByPhone-transposed");
+          const found = orderFirms((fuzzy?.rows || []).map(mapFirmRow).filter(Boolean));
+          // Ambiguity here is not resolvable evidence — if two different firms' filed numbers
+          // are each one transposition away from what was typed, we have learned nothing.
+          if (found.length === 1) {
+            firms = found;
+            matchedVia = "transposition";
+          }
+        }
+      }
+
+      return { firms, phone10, ms: now() - started, consulted: true, skipped: null, matchedVia };
     },
 
     /** The Form ADV row for one firm CRD, or null. Null when the store is disabled, which is
@@ -426,7 +504,17 @@ export function createStore(options = {}) {
       let value;
       try {
         const result = await run(FRESHNESS_SQL, [], "freshness");
-        value = { configured: true, applicable: true, ...freshnessFrom((result?.rows || [])[0], { now: at, staleAfterDays }) };
+        let row = (result?.rows || [])[0] || null;
+        // No closed run says anything about the firm feed. Ask the rows themselves how recently
+        // they were written before concluding the age is unknown — an interrupted run leaves a
+        // fully-updated table behind an open ledger entry, and calling that "stale" sends an
+        // operator after a pipeline that already did its job.
+        if (!row?.finished_at) {
+          const fallback = await run(FRESHNESS_FALLBACK_SQL, [], "freshness-fallback");
+          const candidate = (fallback?.rows || [])[0] || null;
+          if (candidate?.finished_at) row = candidate;
+        }
+        value = { configured: true, applicable: true, ...freshnessFrom(row, { now: at, staleAfterDays }) };
       } catch (error) {
         value = {
           configured: true,

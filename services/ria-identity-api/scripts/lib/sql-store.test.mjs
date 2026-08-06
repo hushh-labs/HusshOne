@@ -643,3 +643,83 @@ test("RIA_DB_ENABLED: an explicit off beats a configured password; an explicit o
   assert.equal(dbConfigUnder({ RIA_DB_PASSWORD: "s3cret", RIA_DB_TIMEOUT_MS: "1500" }).timeoutMs, 1500);
   assert.equal(dbConfigUnder({ RIA_DB_PASSWORD: "s3cret", RIA_DB_TIMEOUT_MS: "0" }).timeoutMs, 0);
 });
+
+// ── Filing typos: a firm that mistyped its own number on Form ADV ───────────────────────────
+// ROBINSWOOD FINANCIAL (CRD 143417) files 452-296-1611; the line that rings is 425-296-1611.
+// Google does not list the number either, so before this both resolution paths missed and
+// seven real advisers were told no firm files their number.
+
+import { transpositionVariants } from "./sql-store.mjs";
+
+test("transpositionVariants: the real Robinswood typo is one adjacent swap away", () => {
+  const v = transpositionVariants("4252961611");
+  assert.ok(v.includes("4522961611"), "must reach the number actually on the filing");
+  assert.ok(v.length <= 9 && v.length >= 1);
+  assert.ok(!v.includes("4252961611"), "the original already missed; do not re-query it");
+});
+
+test("transpositionVariants: rejects anything that is not ten digits", () => {
+  for (const bad of ["", "555", "42529616110", "425-296-1611", null, undefined]) {
+    assert.deepEqual(transpositionVariants(bad), []);
+  }
+});
+
+test("transpositionVariants: identical neighbours do not produce duplicates", () => {
+  const v = transpositionVariants("1111111111");
+  assert.deepEqual(v, [], "swapping equal digits changes nothing");
+  const w = transpositionVariants("4252961611");
+  assert.equal(w.length, new Set(w).size, "variants must be unique");
+});
+
+test("a transposition hit is reported as such, never as an exact match", async () => {
+  const ROW = {
+    crd: 143417, firm_name: "ROBINSWOOD FINANCIAL", phone: "452-296-1611",
+    city: "KIRKLAND", state: "WA", sec_number: "801-68234",
+  };
+  const calls = [];
+  const store = createStore({
+    db: { enabled: true, timeoutMs: 800 },
+    query: async (sql, params) => {
+      calls.push(sql);
+      // exact pass misses, transposition pass finds the firm
+      return calls.length === 1 ? { rows: [] } : { rows: [ROW] };
+    },
+  });
+  const out = await store.lookupByPhone("425-296-1611");
+  assert.equal(out.firms.length, 1);
+  assert.equal(out.firms[0].crd, 143417);
+  assert.equal(out.matchedVia, "transposition", "weaker evidence must be labelled");
+  assert.equal(out.consulted, true);
+});
+
+test("an exact hit never runs the transposition pass", async () => {
+  let queries = 0;
+  const store = createStore({
+    db: { enabled: true, timeoutMs: 800 },
+    query: async () => {
+      queries += 1;
+      return { rows: [{ crd: 2907, firm_name: "NESTLERODE & LOY, INC.", phone: "814-238-6249" }] };
+    },
+  });
+  const out = await store.lookupByPhone("814-238-6249");
+  assert.equal(out.matchedVia, "exact");
+  assert.equal(queries, 1, "the second pass is a miss-only cost");
+});
+
+test("two firms one transposition away resolve to nobody, not to a guess", async () => {
+  let n = 0;
+  const store = createStore({
+    db: { enabled: true, timeoutMs: 800 },
+    query: async () => {
+      n += 1;
+      if (n === 1) return { rows: [] };
+      return { rows: [
+        { crd: 1, firm_name: "FIRM ONE", phone: "452-296-1611" },
+        { crd: 2, firm_name: "FIRM TWO", phone: "425-926-1611" },
+      ] };
+    },
+  });
+  const out = await store.lookupByPhone("425-296-1611");
+  assert.equal(out.firms.length, 0, "ambiguous typo evidence is no evidence");
+  assert.equal(out.matchedVia, null);
+});
