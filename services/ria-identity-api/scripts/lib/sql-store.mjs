@@ -304,6 +304,18 @@ export function createStore(options = {}) {
   const rawTimeout = Number(options.timeoutMs ?? db.timeoutMs);
   const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout >= 0 ? rawTimeout : 800;
 
+  // Freshness is a REPORTING read: nothing waits on it. `timeoutMs` exists to stop a hung proxy
+  // delaying a LOOKUP that is already racing the live chain in parallel, and applying that same
+  // budget here meant a cold pg pool — which needs ~800ms just to connect — timed out on every
+  // cold start, so /health reported "age unknown, assume stale" about data that was hours old.
+  // Six times the lookup budget, DERIVED from it so an operator who tightens one tightens both.
+  const freshnessTimeoutMs = Number.isFinite(db.freshnessTimeoutMs) ? db.freshnessTimeoutMs : timeoutMs * 6;
+
+  // How long a FAILED freshness read is remembered. Short, and separate from freshnessTtlMs:
+  // caching a failure for the full five minutes served a boot-time blip as fact, while not
+  // caching it at all made every /health pay the full deadline against a dead database.
+  const freshnessErrorTtlMs = Number.isFinite(db.freshnessErrorTtlMs) ? db.freshnessErrorTtlMs : 10_000;
+
   let pool = null;
   let poolError = null;
   let closed = false;
@@ -357,18 +369,18 @@ export function createStore(options = {}) {
    * Promise.race attaches a rejection handler to both sides, so a query that fails after the
    * deadline cannot surface as an unhandled rejection and take the process down.
    */
-  function withDeadline(work, label) {
-    if (!(timeoutMs > 0)) return work;
+  function withDeadline(work, label, budgetMs = timeoutMs) {
+    if (!(budgetMs > 0)) return work;
     let timer = null;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(() => {
         reject(
           new StoreError(
-            `Cloud SQL did not answer within ${timeoutMs}ms (${label}); continuing without it`,
+            `Cloud SQL did not answer within ${budgetMs}ms (${label}); continuing without it`,
             { code: "timeout" },
           ),
         );
-      }, timeoutMs);
+      }, budgetMs);
       // DELIBERATELY NOT unref()'d. An unref'd timer only fires if something ELSE is keeping
       // the loop alive, so when a hung query is the last pending work the deadline would
       // never fire and the caller would wait forever — the exact failure it exists to
@@ -380,7 +392,7 @@ export function createStore(options = {}) {
     });
   }
 
-  async function run(sql, params, label) {
+  async function run(sql, params, label, budgetMs = timeoutMs) {
     if (closed) throw new StoreError(`Store is closed (${label})`, { code: "closed" });
     // Structural guarantee, not just a policy: with the store disabled nothing below this
     // line runs, so there is no pool, no socket and no `pg` import. Every public method
@@ -396,7 +408,7 @@ export function createStore(options = {}) {
       const work = injectedQuery
         ? Promise.resolve().then(() => injectedQuery(sql, params))
         : getPool().then((p) => p.query(sql, params));
-      return await withDeadline(work, label);
+      return await withDeadline(work, label, budgetMs);
     } catch (error) {
       if (error instanceof StoreError) throw error;
       throw new StoreError(`Cloud SQL query failed (${label}): ${error?.message || error}`, {
@@ -503,14 +515,14 @@ export function createStore(options = {}) {
       if (freshnessCache && at - freshnessCache.at < freshnessTtlMs) return freshnessCache.value;
       let value;
       try {
-        const result = await run(FRESHNESS_SQL, [], "freshness");
+        const result = await run(FRESHNESS_SQL, [], "freshness", freshnessTimeoutMs);
         let row = (result?.rows || [])[0] || null;
         // No closed run says anything about the firm feed. Ask the rows themselves how recently
         // they were written before concluding the age is unknown — an interrupted run leaves a
         // fully-updated table behind an open ledger entry, and calling that "stale" sends an
         // operator after a pipeline that already did its job.
         if (!row?.finished_at) {
-          const fallback = await run(FRESHNESS_FALLBACK_SQL, [], "freshness-fallback");
+          const fallback = await run(FRESHNESS_FALLBACK_SQL, [], "freshness-fallback", freshnessTimeoutMs);
           const candidate = (fallback?.rows || [])[0] || null;
           if (candidate?.finished_at) row = candidate;
         }
@@ -522,6 +534,12 @@ export function createStore(options = {}) {
           ...freshnessFrom(null, { now: at, staleAfterDays }),
           error: error?.message || String(error),
         };
+        // A failure is remembered only briefly (see freshnessErrorTtlMs). An unknown age is a
+        // transient state, not a fact: the next caller after the blip must reach the database
+        // and get the real answer, but a dead database must not make every health check pay
+        // the full deadline.
+        freshnessCache = { at: at - (freshnessTtlMs - freshnessErrorTtlMs), value };
+        return value;
       }
       freshnessCache = { at, value };
       return value;
