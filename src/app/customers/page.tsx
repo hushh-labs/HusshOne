@@ -43,6 +43,9 @@ export default function CustomersPage() {
           right-sized cloud supercomputer when it doesn&apos;t. Here&apos;s what that looks like.
         </p>
         <p style={{ marginTop: -20, marginBottom: 36 }}>
+          <Link href="/adam" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600, marginRight: 18 }}>
+            Try Adam on your phone →
+          </Link>
           <Link href="/network" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600 }}>
             Part of the One network of agents →
           </Link>

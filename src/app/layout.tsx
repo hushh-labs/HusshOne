@@ -30,8 +30,11 @@ export const metadata: Metadata = {
   // service env; renders <meta name="google-site-verification" ...> when present.
   // Not needed if hushh.ai is verified as a *Domain* property (covers all subdomains).
   verification: { google: process.env.GOOGLE_SITE_VERIFICATION },
+  // Installed-app behavior (Add to Home Screen): full-screen, dark status bar, named Adam.
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Adam" },
   icons: {
     icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🤫%3C/text%3E%3C/svg%3E",
+    apple: "/icon.png",
   },
 };
 

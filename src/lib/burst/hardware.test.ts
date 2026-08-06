@@ -9,22 +9,35 @@ describe("recommendHardware — best hardware for the workload", () => {
     expect(r.accel.id).toBe("a100-40"); // best perf/$ that fits 40GB
   });
 
-  it("sizes a 70B-class job to multiple 80GB GPUs", () => {
+  it("sizes a 70B-class job onto the newest large-memory GPUs", () => {
     const r = recommendHardware(220, "gpu", 8);
     expect(r.fits).toBe(true);
-    expect(r.accel.id).toBe("a100-80");
+    expect(r.accel.id).toBe("h200-141"); // fewer, bigger chips win on perf/$ once H200-class exists
     expect(r.count).toBe(8); // parallelism floor honored
     expect(r.usdPerHour).toBeGreaterThan(20);
   });
 
-  it("routes TPU asks to a TPU class", () => {
+  it("routes TPU asks to a TPU class, and small TPU jobs stay on v5e", () => {
     const r = recommendHardware(16, "tpu", 8);
     expect(r.accel.kind).toBe("tpu");
+    expect(r.accel.id).toBe("tpu-v5e"); // newest isn't forced when the small class is better perf/$
     expect(r.count).toBe(8);
   });
 
+  it("fits a ~1TB frontier job on Blackwell-class single-node hardware", () => {
+    const r = recommendHardware(1000, "gpu", 1);
+    expect(r.fits).toBe(true);
+    expect(["b200-180", "gb200-186"]).toContain(r.accel.id);
+  });
+
+  it("routes memory-heavy TPU jobs to v5p's large HBM", () => {
+    const r = recommendHardware(400, "tpu", 1); // needs 95GB-class chips to fit in 8
+    expect(r.fits).toBe(true);
+    expect(r.accel.id).toBe("tpu-v5p");
+  });
+
   it("flags a job too large for a single node", () => {
-    const r = recommendHardware(2000, "gpu", 1); // 2 TB accel mem
+    const r = recommendHardware(2000, "gpu", 1); // 2 TB accel mem — beyond 8× even of GB200
     expect(r.fits).toBe(false);
   });
 });

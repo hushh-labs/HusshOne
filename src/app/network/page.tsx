@@ -22,11 +22,11 @@ export const metadata: Metadata = {
 const AGENTS = [
   {
     label: "Supercomputing",
-    name: "🤫 Xtreme Super Computing Burst Agent",
+    name: "Adam — 🤫 Xtreme Super Computing Burst",
     summary:
-      "The one that hands you a supercomputer. Vertically integrated with your Mac's OS and silicon — a native agent reads live memory and hardware headroom — so it places each workload where it finishes best and tunnels it across the compute continuum: on-device on Apple Silicon, then burst to the right-sized GPU/TPU in your own cloud when a job outgrows the Mac. BYOC; keys never persisted.",
-    href: "/customers",
-    cta: "See what it does →",
+      "The one that hands you a supercomputer. Vertically integrated with your device's OS and silicon — a native agent reads live memory and hardware headroom — so Adam places each workload where it finishes best and tunnels it across the compute continuum: on-device first, then burst to the right-sized GPU/TPU in your own Google Cloud when a job outgrows the device. BYOC; keys never persisted.",
+    href: "/adam",
+    cta: "Meet Adam →",
     highlight: true,
   },
   {

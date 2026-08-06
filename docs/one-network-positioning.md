@@ -4,7 +4,9 @@
 
 ## The one-sentence position
 
-> The **Xtreme Super Computing Burst Agent** is the supercomputing specialist in the **🤫 One network of agents** — the one that hands you a supercomputer, running heavy work where it finishes best, in your own cloud.
+> **Adam** — the Xtreme Super Computing Burst Agent — is the supercomputing specialist in the **🤫 One network of agents**: the one that hands you a supercomputer, running heavy work where it finishes best, in your own Google Cloud.
+
+**Naming (founder, 2026-08):** the consumer face of the burst capability is **Adam** — mobile-first, "your phone is a supercomputer," live at `/adam`. The registered A2A agent identity stays "Hushh One — Xtreme Super Computing Burst" for registry stability; renaming the registered agent is a separate decision.
 
 ## The core differentiator: vertical integration + the compute continuum
 
