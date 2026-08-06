@@ -1,0 +1,9 @@
+node_modules/
+outputs/
+*.log
+
+# There is no build artifact any more. The service reads three LIVE sources — Cloud SQL
+# (`ria.firms`), Google Places and SEC IAPD — and the offline Form ADV index it used to load
+# from data/ria-firm-index.json has been deleted along with the script that built it. If a
+# data/ directory reappears here, something has started caching what should be fetched live.
+data/

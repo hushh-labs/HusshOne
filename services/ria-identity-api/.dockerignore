@@ -1,0 +1,37 @@
+# Build context for the Cloud Run image (Dockerfile in this directory).
+#
+# This file is ALSO passed to `gcloud builds submit --ignore-file=.dockerignore`, so it decides
+# what gets uploaded to Cloud Build as well as what `docker build` can see. Two consequences:
+#
+#   * Dockerfile and .dockerignore are deliberately NOT excluded. Docker reads the Dockerfile
+#     out of band, but Cloud Build reads it from the uploaded tarball — exclude it here and the
+#     build fails with "Dockerfile not found" and no obvious cause.
+#   * Excluding a path here means the source tarball never leaves the machine with it. That is
+#     the point for outputs/ (deployment records) and data/ (must not exist at all — see
+#     .gitignore).
+
+node_modules/
+npm-debug.log
+*.log
+
+# Deploy records written by the deploy scripts. Never part of an image.
+outputs/
+
+# .gitignore forbids this directory existing: every source is live, there is no offline index.
+# Belt and braces so a stray local copy can never be baked into a public image.
+data/
+
+.git/
+.gitignore
+
+# 40KB of integrator documentation. Useful in the repo, dead weight in a container.
+README.md
+
+# Deploy tooling — shell scripts that run on an operator's machine, not in the container.
+scripts/gcp-vm/
+scripts/cloudrun/
+
+# The unit suite (306 tests) runs from the source tree via `npm test`, never from the image.
+# NOTE: if a future Dockerfile ever adds a `RUN npm test` gate, remove this line first — with
+# it in place the tests are simply absent and the gate would pass green on nothing.
+scripts/lib/*.test.mjs

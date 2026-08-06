@@ -52,3 +52,8 @@ exp-output/
 
 # Generated onboarding kit (rebuilt by prebuild)
 /public/downloads/
+
+# Raw SEC/FINRA captures pulled during the RIA identity work: real individuals' regulatory
+# records. Analysis lives in services/ria-identity-api/docs/DATA-INVENTORY.md; the raw dumps
+# stay out of git history.
+docs/samples/
