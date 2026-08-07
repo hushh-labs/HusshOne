@@ -12,8 +12,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
   (`#fbfbfd`), ink type (`#1d1d1f`), Apple blue accent (`#0071e3`), Liquid-Glass surfaces with
   hairline borders. Dark is the first-class complement via `prefers-color-scheme: dark` — never
   an afterthought, never the default. The shared palette lives in `src/app/adam/adam.module.css`.
-- **Letterhead on published surfaces:** "Built and published by the 🤫 Research & Advisory Team"
-  with the signature line *"Simplicity is the signature of excellence."* (see `.letterhead`).
+- **Letterhead on published surfaces:** "Built and published by the 🤫 Research & Advisory Team ·
+  Signed **🤫 Confidential**" with the signature line *"Simplicity is the signature of excellence."*
+  (see `.letterhead`). Everything is ALWAYS signed 🤫 Confidential — it is the brand's signature
+  mark (hushh = confidentiality), on every artifact: pages, documents, briefs, decks.
 - **Simplicity is the discipline.** Remove until it breaks; one CTA per surface; if a feature
   needs explaining, redesign it.
 <!-- END:nextjs-agent-rules -->

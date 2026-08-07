@@ -105,3 +105,8 @@ Production path: the film renderers in `hushh-agents/alphabets27/tools/` (screen
 ---
 
 *Related: the positioning brief (`docs/one-network-positioning.md`), the Adam working-backwards brief, `/customers` stories, and the burst white paper. This play feeds the same brain as everything else — update it with every closed pilot.*
+
+---
+
+Built and published by the 🤫 Research & Advisory Team · Signed **🤫 Confidential**
+*Simplicity is the signature of excellence.*

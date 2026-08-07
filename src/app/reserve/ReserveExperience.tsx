@@ -176,7 +176,7 @@ export default function ReserveExperience() {
           · <Link href="/adam">Adam, the supercomputing agent</Link>.
         </p>
         <p className={styles.letterhead}>
-          Built and published by the 🤫 Research &amp; Advisory Team<br />
+          Built and published by the 🤫 Research &amp; Advisory Team · Signed <strong>🤫 Confidential</strong><br />
           <span className={styles.letterheadSig}>Simplicity is the signature of excellence.</span>
         </p>
       </div>

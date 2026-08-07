@@ -112,7 +112,7 @@ export default function EnterprisePage() {
           On-device and BYOC cloud bursting are live in the product; edge and supercomputing-scale tiers are expanding.
         </p>
         <p className={styles.foot} style={{ textAlign: "center", borderTop: "1px solid #1f1f23", paddingTop: 18 }}>
-          Built and published by the 🤫 Research &amp; Advisory Team<br />
+          Built and published by the 🤫 Research &amp; Advisory Team · Signed <strong>🤫 Confidential</strong><br />
           <em>Simplicity is the signature of excellence.</em>
         </p>
       </div>

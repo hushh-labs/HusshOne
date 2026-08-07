@@ -72,3 +72,8 @@ The Burst Agent is the newest member: it joins the network as the **compute spec
 - **Customer stories:** `https://one.hushh.ai/customers`
 - **Machine surfaces:** `https://one.hushh.ai/.well-known/agent.json` (A2A), `https://one.hushh.ai/.well-known/ap2/offers.json` (AP2), `https://one.hushh.ai/api/stories` (feed).
 - **Marketing home (planned):** `https://www.hushh.ai/one`.
+
+---
+
+Built and published by the 🤫 Research & Advisory Team · Signed **🤫 Confidential**
+*Simplicity is the signature of excellence.*
