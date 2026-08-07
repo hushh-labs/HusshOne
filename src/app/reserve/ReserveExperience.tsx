@@ -175,6 +175,10 @@ export default function ReserveExperience() {
           AP2-style and preview-mode until live rails are wired. Part of the <Link href="/network">🤫 One network</Link>{" "}
           · <Link href="/adam">Adam, the supercomputing agent</Link>.
         </p>
+        <p className={styles.letterhead}>
+          Built and published by the 🤫 Research &amp; Advisory Team<br />
+          <span className={styles.letterheadSig}>Simplicity is the signature of excellence.</span>
+        </p>
       </div>
       <FamilyDock active="/reserve" />
     </div>

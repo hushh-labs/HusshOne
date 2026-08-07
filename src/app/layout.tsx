@@ -46,7 +46,7 @@ export const viewport = {
   // Browser chrome follows the user's appearance — light and dark both first-class.
   themeColor: [
     { media: "(prefers-color-scheme: dark)", color: "#050506" },
-    { media: "(prefers-color-scheme: light)", color: "#f5f5f7" },
+    { media: "(prefers-color-scheme: light)", color: "#fbfbfd" },
   ],
 };
 

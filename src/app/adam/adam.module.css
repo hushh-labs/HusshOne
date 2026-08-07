@@ -2,49 +2,51 @@
    SF system stack, large-title type, one accent, glass layers with hairline borders,
    concentric radii, calm depth. Light and dark are both first-class. */
 .page {
-  /* Dark is the reference palette… */
-  --bg: #050506;
-  --ink: #f5f5f7;
-  --muted: #b9b9c0;
-  --faint: #8a8a92;
-  --footer: #6e6e76;
-  --accent: #2997ff;
-  --good: #57e0a6;
-  --hairline: rgba(255, 255, 255, 0.10);
-  --glass: rgba(255, 255, 255, 0.06);
-  --glass-strong: rgba(255, 255, 255, 0.05);
-  --glass-active: rgba(41, 151, 255, 0.16);
-  --plan-border: rgba(120, 180, 255, 0.22);
-  --plan-bg: linear-gradient(180deg, rgba(30, 70, 110, 0.34), rgba(12, 20, 30, 0.55));
-  --plan-local-border: rgba(87, 224, 166, 0.26);
-  --plan-local-bg: linear-gradient(180deg, rgba(22, 66, 44, 0.36), rgba(10, 22, 16, 0.55));
-  --stat-bg: rgba(0, 0, 0, 0.24);
-  --glow: radial-gradient(circle, rgba(41, 151, 255, 0.26), rgba(120, 80, 255, 0.10) 45%, transparent 68%);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  /* Summer White is the reference palette — near-white field, ink type, one blue. */
+  --bg: #fbfbfd;
+  --ink: #1d1d1f;
+  --muted: #4b4b52;
+  --faint: #6e6e76;
+  --footer: #86868b;
+  --accent: #0071e3;
+  --good: #23a06c;
+  --hairline: rgba(0, 0, 0, 0.09);
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-strong: rgba(255, 255, 255, 0.55);
+  --glass-active: rgba(0, 113, 227, 0.10);
+  --plan-border: rgba(0, 113, 227, 0.24);
+  --plan-bg: linear-gradient(180deg, rgba(214, 232, 250, 0.75), rgba(244, 248, 252, 0.88));
+  --plan-local-border: rgba(35, 160, 108, 0.28);
+  --plan-local-bg: linear-gradient(180deg, rgba(214, 245, 230, 0.78), rgba(244, 250, 247, 0.9));
+  --stat-bg: rgba(255, 255, 255, 0.6);
+  --glow: radial-gradient(circle, rgba(0, 113, 227, 0.13), rgba(120, 80, 255, 0.05) 45%, transparent 68%);
+  --shadow: 0 24px 60px rgba(60, 90, 130, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   min-height: 100dvh; background: var(--bg); color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
   overflow-x: hidden; -webkit-font-smoothing: antialiased;
 }
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   .page {
-    /* …and light is its equal: warm paper, the same glass physics. */
-    --bg: #f5f5f7;
-    --ink: #1d1d1f;
-    --muted: #4b4b52;
-    --faint: #6e6e76;
-    --footer: #86868b;
-    --hairline: rgba(0, 0, 0, 0.10);
-    --glass: rgba(255, 255, 255, 0.62);
-    --glass-strong: rgba(255, 255, 255, 0.55);
-    --glass-active: rgba(41, 151, 255, 0.14);
-    --plan-border: rgba(41, 121, 210, 0.28);
-    --plan-bg: linear-gradient(180deg, rgba(214, 232, 250, 0.75), rgba(240, 246, 252, 0.85));
-    --plan-local-border: rgba(35, 160, 108, 0.30);
-    --plan-local-bg: linear-gradient(180deg, rgba(214, 245, 230, 0.78), rgba(240, 250, 245, 0.88));
-    --stat-bg: rgba(255, 255, 255, 0.55);
-    --glow: radial-gradient(circle, rgba(41, 151, 255, 0.16), rgba(120, 80, 255, 0.06) 45%, transparent 68%);
-    --shadow: 0 24px 60px rgba(60, 90, 130, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+    /* Dark is the complement — same glass physics, deeper field. */
+    --bg: #050506;
+    --ink: #f5f5f7;
+    --muted: #b9b9c0;
+    --faint: #8a8a92;
+    --footer: #6e6e76;
+    --accent: #2997ff;
+    --good: #57e0a6;
+    --hairline: rgba(255, 255, 255, 0.10);
+    --glass: rgba(255, 255, 255, 0.06);
+    --glass-strong: rgba(255, 255, 255, 0.05);
+    --glass-active: rgba(41, 151, 255, 0.16);
+    --plan-border: rgba(120, 180, 255, 0.22);
+    --plan-bg: linear-gradient(180deg, rgba(30, 70, 110, 0.34), rgba(12, 20, 30, 0.55));
+    --plan-local-border: rgba(87, 224, 166, 0.26);
+    --plan-local-bg: linear-gradient(180deg, rgba(22, 66, 44, 0.36), rgba(10, 22, 16, 0.55));
+    --stat-bg: rgba(0, 0, 0, 0.24);
+    --glow: radial-gradient(circle, rgba(41, 151, 255, 0.26), rgba(120, 80, 255, 0.10) 45%, transparent 68%);
+    --shadow: 0 24px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.10);
   }
 }
 .wrap { max-width: 640px; margin: 0 auto; position: relative;
@@ -139,13 +141,19 @@
 .foot { font-size: 12.5px; color: var(--footer); margin-top: 46px; line-height: 1.55; }
 .foot a { color: var(--accent); text-decoration: none; }
 
+/* The letterhead — quiet, centered, always last. */
+.letterhead { text-align: center; margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--hairline);
+  font-size: 12px; color: var(--footer); line-height: 1.7; letter-spacing: .1px; }
+.letterheadSig { font-style: italic; }
+
 /* The family tab bar — one floating glass dock, iOS-style, safe-area aware. */
 .dock { position: fixed; left: 50%; transform: translateX(-50%);
   bottom: max(14px, env(safe-area-inset-bottom)); z-index: 50;
   display: flex; gap: 4px; padding: 6px; border-radius: 999px;
   border: 1px solid var(--hairline); background: var(--glass);
   backdrop-filter: blur(28px) saturate(180%); -webkit-backdrop-filter: blur(28px) saturate(180%);
-  box-shadow: 0 12px 40px rgba(0,0,0,.28); }
+  box-shadow: 0 12px 40px rgba(40, 60, 90, 0.16); }
+@media (prefers-color-scheme: dark) { .dock { box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28); } }
 .dockItem { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 64px;
   padding: 7px 10px 6px; border-radius: 999px; text-decoration: none; color: var(--faint);
   font-size: 10.5px; font-weight: 600; letter-spacing: .1px;

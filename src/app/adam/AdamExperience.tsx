@@ -236,6 +236,10 @@ export default function AdamExperience() {
           second, keys never persisted, the machine is torn down the moment your answer lands. Part of the{" "}
           <Link href="/network">🤫 One network of agents</Link> · <Link href="/customers">customer stories</Link>.
         </p>
+        <p className={styles.letterhead}>
+          Built and published by the 🤫 Research &amp; Advisory Team<br />
+          <span className={styles.letterheadSig}>Simplicity is the signature of excellence.</span>
+        </p>
       </div>
       <FamilyDock active="/adam" />
     </div>

@@ -11,8 +11,9 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/adam",
     display: "standalone",
     orientation: "portrait",
-    background_color: "#050506",
-    theme_color: "#050506",
+    // Summer White is the reference appearance; dark follows the device via CSS.
+    background_color: "#fbfbfd",
+    theme_color: "#fbfbfd",
     icons: [
       { src: "/icon.png", sizes: "512x512", type: "image/png", purpose: "any" },
       { src: "/icon.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
