@@ -78,6 +78,30 @@ Name categories, not brands (canon: never claim partners we don't have).
 2. **Q1:** first 3 lighthouse accounts via founder network + inside-sales pod on product signals; agent team v1 (harvest, curate, draft — human send).
 3. **Q2:** first device-maker and cloud-provider channel conversations with receipts in hand; marketplace listing; expand agent team to pilot-health + conversion.
 
+## 8. CRM wiring — the funnel in Salesforce (verified against the live org, 2026-08)
+
+The Hushh Salesforce org is live with **23K+ Leads** (the harvested professional network — status `New`) and a standard Opportunity pipeline (`Needs Analysis → Proposal → Closed Won` observed). The Adam funnel maps onto it **without schema surgery**:
+
+| Funnel stage | Salesforce object/state | Written by |
+|---|---|---|
+| **Planner** | `Lead` — `LeadSource="Adam Planner"`, status `New`; product signal (preset, device, plan $) in description | lead-harvesting agent, from `/api/one/events` |
+| **Pilot booked** | `Lead` status `Qualified` → convert to `Account`+`Contact`+`Opportunity` on kit download | inside sales (human), agent-drafted |
+| **Pilot live** | `Opportunity` stage `Needs Analysis` — kit deployed in customer GCP | conversion agent |
+| **Receipted** | `Opportunity` stage `Proposal` — first real burst receipt attached | conversion agent |
+| **Team** | `Opportunity` stage `Negotiation` (add if absent) — 3+ users bursting, spend trend up | account manager |
+| **Standard** | `Opportunity` `Closed Won` — policy + EA | account executive |
+
+Integration contract (build next): a small worker consumes the product's event beacon (`/api/one/events`: planner-created, kit-downloaded, first-receipt) and upserts the rows above — agents write Leads and stage changes, **humans convert and close**. The existing 23K-lead pool is the inside-sales pod's curating backlog: score by employer (F100 match), route the matches into the enterprise motion.
+
+## 9. The 7-second proof — the ad ladder's first rung
+
+Per the zero-attention-span law (7s → 27s → 69s), everything slices from one master take:
+
+**7s (the hook):** iPhone in hand → tap **"Fine-tune the full 70B"** → the card springs in: **"4× NVIDIA B200 in your Google Cloud — ~$84/hr, ~92 min."** → VO, one line: *"Your phone is a supercomputer."* → 🤫
+**27s (the proof):** the 7s + the on-device contrast (clip enhance → **"$0 — runs right here"**) + the teardown receipt ("machine's already gone") + *"Adam, by One. In your cloud, on your keys."*
+**69s (the story):** a quant's full-history backtest — queue vs receipt: *"5 TB. Two dollars. Twenty minutes."* — ending on the enterprise line: *"Every employee already carries a supercomputer. Turn it on."* CTA: one.hushh.ai/adam
+Production path: the film renderers in `hushh-agents/alphabets27/tools/` (screen-capture + neural VO pipeline) — screens are live once deployed; the burst plan card is real product, not a mockup.
+
 ---
 
 *Related: the positioning brief (`docs/one-network-positioning.md`), the Adam working-backwards brief, `/customers` stories, and the burst white paper. This play feeds the same brain as everything else — update it with every closed pilot.*
