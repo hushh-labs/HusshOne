@@ -55,6 +55,9 @@ export default function AdamExperience() {
   const [listening, setListening] = useState(false);
   const [heard, setHeard] = useState<string | null>(null);
   const recognizerRef = useRef<{ stop: () => void } | null>(null);
+  const [coachStep, setCoachStep] = useState<number | null>(null);
+  const [demoCaption, setDemoCaption] = useState<string | null>(null);
+  const demoGen = useRef(0); // bumping this cancels any in-flight demo script
 
   useEffect(() => {
     setDeviceId(guessDeviceId());
@@ -63,7 +66,16 @@ export default function AdamExperience() {
       .then((r) => r.json())
       .then((d) => { setDevices(d.devices); setPresets(d.presets); })
       .catch(() => setError("Adam couldn't load right now — pull to refresh."));
-    return () => recognizerRef.current?.stop();
+    // First run only: three thoughts, then out of the way forever.
+    try {
+      if (!window.localStorage.getItem("adam.onboarded")) setCoachStep(0);
+    } catch { /* private mode — skip onboarding rather than break */ }
+    return () => { recognizerRef.current?.stop(); demoGen.current++; };
+  }, []);
+
+  const dismissCoach = useCallback(() => {
+    setCoachStep(null);
+    try { window.localStorage.setItem("adam.onboarded", "1"); } catch { /* ignore */ }
   }, []);
 
   const ask = useCallback(async (pid: string, did: string) => {
@@ -112,11 +124,47 @@ export default function AdamExperience() {
     rec.start();
   }, [ask, deviceId, listening]);
 
+  /** The scripted walkthrough: Adam demos itself. Any Stop (or leaving) cancels cleanly. */
+  const runDemo = useCallback(async () => {
+    dismissCoach();
+    const gen = ++demoGen.current;
+    const alive = () => demoGen.current === gen;
+    const beat = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const say = (text: string) => { if (alive()) setDemoCaption(text); };
+
+    say("This is your device. Adam already knows what it can do.");
+    setDeviceId("iphone-17-pro");
+    await beat(2600); if (!alive()) return;
+
+    say("Ask for something impossible — the full 70B…");
+    await ask("finetune-70b", "iphone-17-pro");
+    await beat(3400); if (!alive()) return;
+
+    say("Adam matched the right machine in YOUR Google Cloud — priced before anything runs.");
+    await beat(3400); if (!alive()) return;
+
+    say("Small things never leave your phone — instant, private, free.");
+    await ask("clip-edit", "iphone-17-pro");
+    await beat(3200); if (!alive()) return;
+
+    say("Your turn. Tap any ask.");
+    await beat(2600);
+    if (alive()) setDemoCaption(null);
+  }, [ask, dismissCoach]);
+
+  const stopDemo = useCallback(() => { demoGen.current++; setDemoCaption(null); }, []);
+
   const onDevice = plan?.placement.target === "puppy";
   const deviceLabel = useMemo(
     () => devices.find((d) => d.id === deviceId)?.label ?? "your device",
     [devices, deviceId],
   );
+
+  const COACH = [
+    { t: "Meet Adam", b: "Your phone is a supercomputer. Adam runs your biggest work where it finishes best — and brings the answer home." },
+    { t: "It knows your device", b: "Adam reads what the machine in your hand can take. What fits runs right here — instant, private, free." },
+    { t: "Ask for the impossible", b: "When a job outgrows your device, Adam bursts it to the right-sized machine in your own Google Cloud — priced to the dollar before anything runs." },
+  ];
 
   return (
     <div className={styles.page}>
@@ -145,14 +193,19 @@ export default function AdamExperience() {
         </div>
 
         <p className={styles.sectionLabel}>Ask Adam</p>
-        {canListen && (
-          <p style={{ margin: "0 0 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <p style={{ margin: "0 0 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {canListen && (
             <button className={`${styles.mic} ${listening ? styles.micLive : ""}`} onClick={listen} aria-pressed={listening}>
               <span aria-hidden>🎙️</span> {listening ? "Listening…" : "Say it"}
             </button>
-            {heard && <span className={styles.heard}>“{heard}”</span>}
-          </p>
-        )}
+          )}
+          {!demoCaption && (
+            <button className={styles.mic} onClick={() => void runDemo()}>
+              <span aria-hidden>▶</span> Watch the demo
+            </button>
+          )}
+          {heard && <span className={styles.heard}>“{heard}”</span>}
+        </p>
         <div className={styles.asks}>
           {presets.map((p) => (
             <button
@@ -241,6 +294,36 @@ export default function AdamExperience() {
           <span className={styles.letterheadSig}>Simplicity is the signature of excellence.</span>
         </p>
       </div>
+
+      {demoCaption && (
+        <div className={styles.demoBar} role="status">
+          {demoCaption}
+          <button className={styles.demoStop} onClick={stopDemo}>Stop</button>
+        </div>
+      )}
+
+      {coachStep != null && (
+        <div className={styles.coach} role="dialog" aria-modal="true" aria-label="Welcome to Adam">
+          <div className={styles.coachCard}>
+            <p className={styles.coachStep}>{coachStep + 1} of {COACH.length}</p>
+            <h2 className={styles.coachTitle}>{COACH[coachStep].t}</h2>
+            <p className={styles.coachBody}>{COACH[coachStep].b}</p>
+            <div className={styles.coachRow}>
+              {coachStep < COACH.length - 1 ? (
+                <button className={styles.cta} style={{ marginTop: 0 }} onClick={() => setCoachStep(coachStep + 1)}>Continue</button>
+              ) : (
+                <>
+                  <button className={styles.cta} style={{ marginTop: 0 }} onClick={() => void runDemo()}>Watch the 30-second demo</button>
+                  <button className={styles.coachSkip} onClick={dismissCoach}>Try it myself</button>
+                </>
+              )}
+              {coachStep < COACH.length - 1 && (
+                <button className={styles.coachSkip} onClick={dismissCoach}>Skip</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       <FamilyDock active="/adam" />
     </div>
   );
