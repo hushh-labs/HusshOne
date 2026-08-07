@@ -46,6 +46,9 @@ export default function CustomersPage() {
           <Link href="/adam" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600, marginRight: 18 }}>
             Try Adam on your phone →
           </Link>
+          <Link href="/enterprise" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600, marginRight: 18 }}>
+            Adam for the enterprise →
+          </Link>
           <Link href="/network" style={{ color: "#2997ff", textDecoration: "none", fontWeight: 600 }}>
             Part of the One network of agents →
           </Link>

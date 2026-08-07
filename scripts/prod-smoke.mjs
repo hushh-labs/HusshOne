@@ -179,5 +179,12 @@ console.log(`\nProd smoke test → ${BASE}\n`);
     `got ${sm.status}`);
 }
 
+// 15. Enterprise GTM page
+{
+  const r = await req("/enterprise");
+  ok("/enterprise 200 + land-and-expand story", r.status === 200 && /Land in a day|carries a supercomputer/i.test(r.body),
+    `got ${r.status}`);
+}
+
 console.log(`\n${fail === 0 ? "✅ ALL PASS" : "❌ FAILURES"} — ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
