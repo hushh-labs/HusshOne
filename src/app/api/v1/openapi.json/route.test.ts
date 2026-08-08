@@ -24,6 +24,17 @@ describe("GET /api/v1/openapi.json", () => {
     expect(spec.components.securitySchemes.bearerAuth?.scheme).toBe("bearer");
   });
 
+  it("ScanRequest documents optional confirmedProfiles anchors (lockstep with the scan route)", async () => {
+    const res = await GET();
+    const spec = (await res.json()) as {
+      components: { schemas: { ScanRequest: { required: string[]; properties: Record<string, { type?: string; maxItems?: number; items?: { required?: string[] } }> } } };
+    };
+    const prop = spec.components.schemas.ScanRequest.properties.confirmedProfiles;
+    expect(prop).toMatchObject({ type: "array", maxItems: 8 });
+    expect(prop.items?.required).toEqual(["url"]);
+    expect(spec.components.schemas.ScanRequest.required).not.toContain("confirmedProfiles");
+  });
+
   it("OPTIONS preflight is 204", () => {
     expect(OPTIONS().status).toBe(204);
   });

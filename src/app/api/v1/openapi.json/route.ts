@@ -41,6 +41,22 @@ const SPEC = {
           instagramUrl: { type: "string", description: "Optional." },
           xUrl: { type: "string", description: "Optional." },
           threadsUrl: { type: "string", description: "Optional." },
+          confirmedProfiles: {
+            type: "array",
+            maxItems: 8,
+            description:
+              "Optional pre-resolved identity anchors (subject-confirmed \"this is me\" profiles/records). Threaded into both research phases as disambiguation ground truth. Entries without an http(s) url are dropped; max 8.",
+            items: {
+              type: "object",
+              required: ["url"],
+              properties: {
+                platform: { type: "string", maxLength: 60, description: "e.g. \"LinkedIn\", \"SEC AdviserInfo\"." },
+                handle: { type: "string", maxLength: 120 },
+                url: { type: "string", maxLength: 400, description: "http(s) URL of the confirmed profile/record. Required." },
+                category: { type: "string", maxLength: 60, description: "e.g. \"Professional\", \"Government/Regulatory\"." },
+              },
+            },
+          },
           consentAttestation: { type: "boolean", default: true, description: "The API-key holder attests authorization. Default true; false → 403." },
           socialPreferenceConsent: { type: "boolean", default: true, description: "Build the preference/lifestyle layer. Default true; false → dossier only." },
         },
