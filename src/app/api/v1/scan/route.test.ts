@@ -53,6 +53,19 @@ describe("POST /api/v1/scan", () => {
     expect(scanArg.input).toMatchObject({ deepResearchJobId: "job-1", apiKeyId: "acme" });
   });
 
+  it("threads confirmedProfiles anchors into the research question and the stored scan input", async () => {
+    const anchors = [{ platform: "SEC AdviserInfo", handle: "1234567", url: "https://adviserinfo.sec.gov/individual/summary/1234567", category: "Government/Regulatory" }];
+    mocks.buildV1ScanInput.mockResolvedValueOnce({
+      input: { name: "Sundar", email: "s@e.com", zipCode: "94040", purpose: "self_audit", consentAttestation: true, confirmedProfiles: anchors },
+      profiles: { linkedin: null, instagram: null, threads: null, x: null },
+    });
+    const res = await POST(req({ name: "Sundar", email: "s@e.com", zipCode: "94040", confirmedProfiles: anchors }));
+    expect(res.status).toBe(202);
+    expect(mocks.buildPersonDossierQuestion).toHaveBeenCalledWith(expect.objectContaining({ confirmedProfiles: anchors }));
+    const scanArg = mocks.createConsentAndScan.mock.calls[0][0] as { input: Record<string, unknown> };
+    expect(scanArg.input).toMatchObject({ confirmedProfiles: anchors });
+  });
+
   it("401s when the API key is invalid", async () => {
     mocks.verifyDevApiRequest.mockImplementationOnce(() => {
       throw new Error("Invalid or missing API key");

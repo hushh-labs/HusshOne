@@ -5,6 +5,7 @@
    profile is reported in `profiles` and simply omitted from the scan — it never throws. No preference
    layer is touched here. */
 import { scrapeLinkedInProfileUrl } from "@/lib/linkedin/scraper-profile";
+import { normalizeLinkedInUrl } from "@/lib/auth/identity";
 import { scrapeInstagramProfileUrl } from "@/lib/instagram/scraper-profile";
 import { scrapeThreadsProfileUrl } from "@/lib/threads/scraper-profile";
 import { scrapeXProfileUrl } from "@/lib/x/scraper-profile";
@@ -93,6 +94,31 @@ async function enrichSocial(
   }
 }
 
+/** Sanitize optional caller-provided confirmed anchors (pre-resolved identity pivots — e.g. an SEC
+ *  AdviserInfo record) into ConfirmedProfile[]. Mirrors the One web route's parseConfirmedProfiles:
+ *  trim + slice each field, canonicalize LinkedIn URLs, drop entries without an http(s) URL, cap 8. */
+function parseConfirmedProfiles(value: unknown): ConfirmedProfile[] {
+  if (!Array.isArray(value)) return [];
+  const out: ConfirmedProfile[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const p = item as Record<string, unknown>;
+    const rawUrl = typeof p.url === "string" ? p.url.trim().slice(0, 400) : "";
+    if (!/^https?:\/\//i.test(rawUrl)) continue;
+    // Canonicalize the LinkedIn pivot so the anchor is clean ground truth for both phases
+    // (fall back to the raw value if it doesn't normalize).
+    const url = /linkedin\.com/i.test(rawUrl) ? normalizeLinkedInUrl(rawUrl) || rawUrl : rawUrl;
+    out.push({
+      url,
+      platform: typeof p.platform === "string" ? p.platform.trim().slice(0, 60) : "",
+      handle: typeof p.handle === "string" ? p.handle.trim().slice(0, 120) : "",
+      category: typeof p.category === "string" ? p.category.trim().slice(0, 60) : "",
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 function confirmedFrom(linkedin: LinkedInProfileFull | undefined, socials: SocialProfileFull[]): ConfirmedProfile[] {
   const out: ConfirmedProfile[] = [];
   if (linkedin?.profileUrl) out.push({ platform: "LinkedIn", handle: linkedin.profileUrl.split("/in/")[1]?.replace(/\/$/, "") || "", url: linkedin.profileUrl, category: "Professional" });
@@ -124,7 +150,8 @@ export async function buildV1ScanInput(body: Record<string, unknown>): Promise<V
   ]);
 
   const socialProfiles = [ig.profile, th.profile, x.profile].filter((p): p is SocialProfileFull => Boolean(p));
-  const confirmedProfiles = confirmedFrom(li.profile, socialProfiles);
+  // Caller-provided anchors (pre-resolved identity) come first, then the scraped-profile-derived ones.
+  const confirmedProfiles = [...parseConfirmedProfiles(body.confirmedProfiles), ...confirmedFrom(li.profile, socialProfiles)];
 
   const phone = asString(body.phone) || undefined;
   // Consent is part of the contract: default true (the API-key holder attests authorization), the dev may
@@ -141,7 +168,7 @@ export async function buildV1ScanInput(body: Record<string, unknown>): Promise<V
     ...(phone ? { phone } : {}),
     ...(li.profile ? { linkedinProfile: li.profile } : {}),
     ...(socialProfiles.length ? { socialProfiles } : {}),
-    confirmedProfiles,
+    ...(confirmedProfiles.length ? { confirmedProfiles } : {}),
     consentAttestation,
     socialPreferenceConsent,
     purpose: "self_audit",

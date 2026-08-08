@@ -57,6 +57,60 @@ describe("buildV1ScanInput — validation", () => {
   });
 });
 
+describe("buildV1ScanInput — confirmedProfiles", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("passes valid caller-provided anchors through, trimmed", async () => {
+    const { input } = await buildV1ScanInput({
+      ...base,
+      confirmedProfiles: [
+        { platform: " SEC AdviserInfo ", handle: " 1234567 ", url: " https://adviserinfo.sec.gov/individual/summary/1234567 ", category: " Government/Regulatory " },
+      ],
+    });
+    expect(input.confirmedProfiles).toEqual([
+      { platform: "SEC AdviserInfo", handle: "1234567", url: "https://adviserinfo.sec.gov/individual/summary/1234567", category: "Government/Regulatory" },
+    ]);
+  });
+
+  it("drops entries without an http(s) url or that aren't objects", async () => {
+    const { input } = await buildV1ScanInput({
+      ...base,
+      confirmedProfiles: [
+        { platform: "SEC AdviserInfo", handle: "1", url: "javascript:alert(1)", category: "Government/Regulatory" },
+        { platform: "Firm website", handle: "acme.com", category: "Professional" },
+        "not-an-object",
+        null,
+        { platform: "Firm website", handle: "acme.com", url: "https://acme.com", category: "Professional" },
+      ],
+    });
+    expect(input.confirmedProfiles).toEqual([{ platform: "Firm website", handle: "acme.com", url: "https://acme.com", category: "Professional" }]);
+  });
+
+  it("caps caller-provided anchors at 8", async () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ platform: "Web", handle: `h${i}`, url: `https://example.com/${i}`, category: "Professional" }));
+    const { input } = await buildV1ScanInput({ ...base, confirmedProfiles: many });
+    expect(input.confirmedProfiles).toHaveLength(8);
+    expect(input.confirmedProfiles?.[7]?.url).toBe("https://example.com/7");
+  });
+
+  it("absent (or non-array) confirmedProfiles ⇒ undefined; unknown sibling fields still ignored", async () => {
+    const { input } = await buildV1ScanInput({ ...base, mystery: "ignored" });
+    expect(input.confirmedProfiles).toBeUndefined();
+    const { input: input2 } = await buildV1ScanInput({ ...base, confirmedProfiles: "not-an-array" });
+    expect(input2.confirmedProfiles).toBeUndefined();
+  });
+
+  it("caller anchors come before scraped-profile anchors", async () => {
+    mocks.scrapeLinkedInProfileUrl.mockResolvedValueOnce({ profile: richLinkedIn(), raw: {}, normalizedUrl: "https://www.linkedin.com/in/sundarpichai" });
+    const { input } = await buildV1ScanInput({
+      ...base,
+      linkedinUrl: "https://www.linkedin.com/in/sundarpichai",
+      confirmedProfiles: [{ platform: "SEC AdviserInfo", handle: "1234567", url: "https://adviserinfo.sec.gov/individual/summary/1234567", category: "Government/Regulatory" }],
+    });
+    expect(input.confirmedProfiles?.map((p) => p.platform)).toEqual(["SEC AdviserInfo", "LinkedIn"]);
+  });
+});
+
 describe("buildV1ScanInput — enrichment", () => {
   beforeEach(() => vi.clearAllMocks());
 
