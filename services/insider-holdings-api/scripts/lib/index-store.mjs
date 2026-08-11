@@ -178,7 +178,7 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
         street2: best.issuer.address?.street2 || null,
         zip: best.issuer.address?.zip || null,
       },
-      ...describeDistance(best.miles),
+      ...describeDistance(best.miles, best.issuer.geoTier),
       otherIssuersInRange: person.positions.filter((p) => nearby.has(p.issuerCik)).length,
       profileUrl: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${person.cik}&type=4`,
     });
