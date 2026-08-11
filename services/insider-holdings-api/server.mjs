@@ -21,6 +21,7 @@ import { QueryError, parseQuery } from "./scripts/lib/query.mjs";
 import { RateLimiter, clientIp } from "./scripts/lib/rate-limit.mjs";
 import { getIssuer, getPerson, indexMeta, searchNearby } from "./scripts/lib/index-store.mjs";
 import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
+import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -135,6 +136,61 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/v1/insiders") {
       return handleSearch(request, response, url, started);
+    }
+
+    /**
+     * ONE CALL, EVERY SOURCE. The endpoint a client should actually use.
+     *
+     * /v1/insiders is the raw feed and stays as it is. This is the orchestrated view:
+     * co-filed positions collapsed, an aggregate of the area, and an explicit statement
+     * of what each source did and did not contribute — including that Form D founders
+     * are deliberately absent from the ranking rather than missing by accident.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/around") {
+      const query = parseQuery(url.searchParams, DATA_DIR);
+
+      /**
+       * Collapse over the WHOLE radius, not over a page.
+       *
+       * Two reasons it has to be the whole set. Co-filers are not guaranteed to be
+       * adjacent in the ranking, so a page-sized window can split one position across
+       * two pages and collapse neither. And the summary must describe the area — an
+       * earlier revision summarised only the fetched window and reported "39 people,
+       * $343bn" for a radius holding 640, which reads as an area total and is not one.
+       *
+       * The index is in memory and a radius holds hundreds of rows, so this is cheap.
+       */
+      const all = searchNearby({ ...query, limit: Number.MAX_SAFE_INTEGER, offset: 0 }, DATA_DIR);
+      const collapsed = collapseCoFiled(all.rows);
+      const page = collapsed.slice(query.offset, query.offset + query.limit);
+
+      return sendJson(response, 200, {
+        ok: true,
+        resolved: { lat: query.lat, lng: query.lng },
+        resolvedFrom: query.resolvedFrom,
+        radiusMi: query.radiusMi,
+        // Describes the whole radius, not this page.
+        summary: summarise(collapsed),
+        people: page,
+        returned: page.length,
+        total: collapsed.length,
+        hasMore: query.offset + page.length < collapsed.length,
+        collapsedFrom: all.rows.length,
+        duplicatesRemoved: all.rows.length - collapsed.length,
+        sources: {
+          section16: {
+            contributes: "Named officers, directors and 10%+ owners of public companies, ranked by disclosed position value and distance to their employer's office.",
+            people: indexMeta(DATA_DIR).people,
+          },
+          formD: {
+            contributes: "Officers and directors of private companies that raised under Regulation D.",
+            people: formDMeta(DATA_DIR).people,
+            excludedFromRanking:
+              "Not distance-ranked, by design. A small private issuer's filed address is frequently the founder's home, so these are searchable by name and company at /v1/private-offerings and reported by city only.",
+          },
+        },
+        attribution: ATTRIBUTION,
+      });
     }
 
     /**
