@@ -89,14 +89,30 @@ export function getIssuer(cik, dataDir) {
   return issuer ? stripOwnerAddress({ ...issuer }) : null;
 }
 
+/**
+ * The company's public contact details.
+ *
+ * This is a switchboard and a headquarters — the number and address the company itself
+ * filed with EDGAR for the public to use. It is the only contact route this service
+ * will ever carry.
+ *
+ * There is no personal contact information here and there never will be: the SEC does
+ * not publish an insider's phone, email or home address, and reaching a named person
+ * privately is not what a disclosure filing is for. To contact someone, you call their
+ * employer's published number like anyone else would.
+ */
 function summariseIssuer(issuer) {
   if (!issuer) return null;
   return {
     cik: issuer.cik,
     name: issuer.name,
     tickers: issuer.tickers,
+    exchanges: issuer.exchanges || [],
+    industry: issuer.sicDescription || null,
     city: issuer.address?.city || null,
     state: issuer.address?.state || null,
+    phone: issuer.phone || null,
+    reportUrl: issuer.reportUrl || null,
   };
 }
 
@@ -151,7 +167,10 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
       },
       issuer: {
         ...summariseIssuer(best.issuer),
+        // The full street line is carried on a search row (the summary omits it) so a
+        // result card can show a complete company address without a second call.
         street1: best.issuer.address?.street1 || null,
+        street2: best.issuer.address?.street2 || null,
         zip: best.issuer.address?.zip || null,
       },
       ...describeDistance(best.miles),
