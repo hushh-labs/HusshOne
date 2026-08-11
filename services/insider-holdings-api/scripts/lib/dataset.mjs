@@ -261,6 +261,77 @@ export function buildPositions({
 }
 
 /**
+ * Collect every market-priced trade, for re-pricing positions against a common price.
+ *
+ * A second pass over the same non-derivative table that buildPositions() reads. It is
+ * separate because the two want different rows: buildPositions keeps one position per
+ * person and discards the rest, while this keeps every trade regardless of who filed it
+ * — a price observed on a filing by one insider prices the stake of every other insider
+ * in the same stock.
+ *
+ * TRANS_DATE is used rather than the filing date. A Form 4 is due two business days
+ * after the trade, so the filing date is up to a week later than the day the price was
+ * actually struck.
+ *
+ * The transaction code is passed through untouched; prices.mjs decides which codes are
+ * market prices, and it is the only place that decision is made.
+ */
+export function collectPriceObservations({ submissions, transactions }) {
+  const filingByAccession = new Map();
+  for (const row of submissions) {
+    filingByAccession.set(row.ACCESSION_NUMBER, {
+      issuerCik: String(row.ISSUERCIK || "").replace(/^0+/, ""),
+      filedOn: parseSecDate(row.FILING_DATE),
+    });
+  }
+
+  const observations = [];
+  let impossible = 0;
+
+  for (const row of transactions) {
+    const filing = filingByAccession.get(row.ACCESSION_NUMBER);
+    if (!filing?.issuerCik) continue;
+
+    const observed = price(row.TRANS_PRICEPERSHARE);
+    if (observed == null) continue;
+
+    const tradedOn = parseSecDate(row.TRANS_DATE);
+
+    /**
+     * A trade cannot be reported before it happens.
+     *
+     * Filers mistype the transaction date: across the four quarters here, 7 of 166,130
+     * market-coded trades carry a trade date LATER than the filing that reports them,
+     * two of them dated in the future outright. That is only 0.004% of rows, but the
+     * price book takes the most recent date a security traded, so a single date typo
+     * captures that security's price and holds it against everyone who owns the stock.
+     * One bad row in 2026Q1 was dated 2027-01-25.
+     *
+     * The filing date is the reliable bound, so an impossible trade date falls back to
+     * it rather than being trusted or the row being thrown away — the price itself is
+     * fine, only the date is wrong.
+     */
+    let date = tradedOn;
+    if (!date || (filing.filedOn && date > filing.filedOn)) {
+      if (tradedOn && filing.filedOn) impossible += 1;
+      date = filing.filedOn;
+    }
+    if (!date) continue;
+
+    observations.push({
+      issuerCik: filing.issuerCik,
+      security: row.SECURITY_TITLE || "Common Stock",
+      code: row.TRANS_CODE,
+      price: observed,
+      date,
+    });
+  }
+
+  observations.impossibleDates = impossible;
+  return observations;
+}
+
+/**
  * Value a position.
  *
  * Deliberately returns null rather than 0 when no price was ever disclosed. A

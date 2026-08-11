@@ -21,7 +21,8 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 
 import { config } from "./lib/config.mjs";
-import { buildPositions, parseTsv, valuePosition } from "./lib/dataset.mjs";
+import { buildPositions, collectPriceObservations, parseTsv, valuePosition } from "./lib/dataset.mjs";
+import { buildIssuerPrimaryPrices, buildPriceBook, repricePosition } from "./lib/prices.mjs";
 import { fetchIssuer } from "./lib/issuer.mjs";
 import { loadCentroids } from "./lib/geo.mjs";
 import { isUsAddress } from "./lib/geo-us.mjs";
@@ -178,13 +179,39 @@ async function main() {
   const derivativeCount = [...positions.values()].filter((p) => p.kind === "derivative").length;
   log(`positions: ${positions.size} (${derivativeCount} derivative)`);
 
+  /**
+   * One market price per security, so every holder of a stock is valued at the same
+   * price on the same date.
+   *
+   * Without this a position is worth `shares x the price on that person's own filing`,
+   * which means two insiders in one company are valued at different prices and someone
+   * who last filed a year ago carries a year-old price. See lib/prices.mjs for why only
+   * transaction codes S, F, P and I may set a price.
+   */
+  const priceObservations = collectPriceObservations({ submissions, transactions });
+  const priceBook = buildPriceBook(priceObservations);
+  const issuerPrimary = buildIssuerPrimaryPrices(priceBook);
+  const bookDates = [...priceBook.values()].map((entry) => entry.asOf).sort();
+  log(
+    `price book: ${priceBook.size} securities from ${priceObservations.length} trades, ` +
+      `priced ${bookDates[0]} to ${bookDates[bookDates.length - 1]}`,
+  );
+
   // Group by person.
   const people = new Map();
   const issuerCiks = new Set();
+  const repriceStats = { security: 0, issuer: 0, filed: 0, none: 0, gained: 0, suspect: 0 };
 
   for (const position of positions.values()) {
     issuerCiks.add(position.issuerCik);
+    // The value as the filer disclosed it, kept alongside the re-priced one so the two
+    // never collapse into a single unattributable number.
     const value = valuePosition(position);
+    const repriced = repricePosition(position, priceBook, issuerPrimary);
+
+    repriceStats[repriced.marketPriceBasis] += 1;
+    if (value == null && repriced.marketValue != null) repriceStats.gained += 1;
+    if (repriced.priceMovedSuspiciously) repriceStats.suspect += 1;
 
     if (!people.has(position.personCik)) {
       people.set(position.personCik, {
@@ -194,6 +221,7 @@ async function main() {
         titles: new Set(),
         positions: [],
         disclosedValue: 0,
+        marketValue: 0,
         positionsValued: 0,
       });
     }
@@ -214,6 +242,13 @@ async function main() {
       pricePerShare: position.pricePerShare,
       strikePrice: position.strikePrice ?? null,
       value,
+      // The same shares at the security's current market price. `value` stays as filed.
+      marketValue: repriced.marketValue,
+      marketPrice: repriced.marketPrice,
+      marketPriceAsOf: repriced.marketPriceAsOf,
+      marketPriceBasis: repriced.marketPriceBasis,
+      repricedFrom: repriced.repricedFrom,
+      priceMovedSuspiciously: repriced.priceMovedSuspiciously,
       asOf: position.asOf,
       formType: position.formType,
       title: position.title,
@@ -223,8 +258,14 @@ async function main() {
       person.disclosedValue += value;
       person.positionsValued += 1;
     }
+    if (repriced.marketValue != null) person.marketValue += repriced.marketValue;
   }
 
+  log(
+    `repriced: ${repriceStats.security} from their own security, ${repriceStats.issuer} derivatives ` +
+      `from the issuer, ${repriceStats.filed} kept the filed price, ${repriceStats.none} unpriced`,
+  );
+  log(`  ${repriceStats.gained} positions gained a value they did not have; ${repriceStats.suspect} moved >3x`);
   log(`people: ${people.size}   distinct issuers: ${issuerCiks.size}`);
 
   // Issuer addresses, then place each on the map via its postcode.
@@ -252,7 +293,53 @@ async function main() {
   const maxIssuers = Number(arg("max-issuers", "")) || Infinity;
   const targets = [...issuerCiks].slice(0, Number.isFinite(maxIssuers) ? maxIssuers : undefined);
 
+  /**
+   * `--issuers-from <index.json>` reuses issuer records already fetched.
+   *
+   * The issuer half of this build is ~6,100 EDGAR calls at the SEC's rate, close to an
+   * hour, and it produces a company's address and coordinates — which have nothing to
+   * do with positions or prices. Rebuilding to change how a position is valued should
+   * not mean asking the SEC for six thousand addresses that are already on disk.
+   *
+   * Only issuers still present in the new build are reused, and any that are missing
+   * are fetched normally, so this can never quietly serve a stale roster.
+   */
+  const reuseFrom = arg("issuers-from", null);
+  const reusable = new Map();
+  /**
+   * Geocoding metadata travels with the coordinates it describes.
+   *
+   * scripts/geocode-index.mjs upgrades issuers from a postcode centroid to a street
+   * address and records what it did. Reusing the issuer records without their metadata
+   * would leave /health reporting no street-level placement while serving street-level
+   * coordinates — accurate data described by a missing summary.
+   */
+  let reusedGeoMeta = null;
+  if (reuseFrom) {
+    const previous = JSON.parse(fs.readFileSync(reuseFrom, "utf8"));
+    for (const issuer of previous.issuers || []) reusable.set(String(issuer.cik), issuer);
+    const { geocodedAt, issuersStreetLevel, issuersZipCentroid, peopleStreetLevel } =
+      previous.meta || {};
+    if (geocodedAt) {
+      reusedGeoMeta = { geocodedAt, issuersStreetLevel, issuersZipCentroid, peopleStreetLevel };
+    }
+    log(`reusing issuer addresses from ${reuseFrom}: ${reusable.size} available`);
+  }
+
+  let reused = 0;
+
   for (const cik of targets) {
+    const cached = reusable.get(String(cik));
+    if (cached) {
+      issuers.set(cik, cached);
+      done += 1;
+      reused += 1;
+      if (cached.lat != null) placed += 1;
+      else if (isUsAddress(cached.address)) unplaceableUs += 1;
+      else foreign += 1;
+      continue;
+    }
+
     const issuer = await fetchIssuer(cik);
     done += 1;
     if (done % 250 === 0 || done === targets.length) {
@@ -279,6 +366,8 @@ async function main() {
     });
   }
 
+  if (reused) log(`issuers: ${reused} reused, ${targets.length - reused} fetched from EDGAR`);
+
   const output = {
     meta: {
       built: true,
@@ -295,6 +384,26 @@ async function main() {
       partial: targets.length < issuerCiks.size,
       issuersAvailable: issuerCiks.size,
       source: "SEC Forms 3/4/5 quarterly datasets + EDGAR submissions + Census ZCTA gazetteer",
+      // Only present when issuers were reused; a fresh fetch is street-level only after
+      // scripts/geocode-index.mjs has run over it.
+      ...(reusedGeoMeta || {}),
+      /**
+       * Re-pricing provenance.
+       *
+       * `pricedThrough` is the newest date any security was priced at, which is the
+       * real freshness ceiling of every market value in this index — not the build
+       * date. The SEC publishes these datasets quarterly, so it tracks the quarter end.
+       */
+      pricing: {
+        securities: priceBook.size,
+        observations: priceObservations.length,
+        pricedFrom: bookDates[0] ?? null,
+        pricedThrough: bookDates[bookDates.length - 1] ?? null,
+        basis: repriceStats,
+        marketPriceCodes: ["S", "F", "P", "I"],
+        note:
+          "marketValue re-prices the same disclosed shares at the median price of the security's most recent trading day. Only transaction codes S, F, P and I set a price; M and X report the option strike, which runs 0.16-0.30x market. `value` remains exactly as filed.",
+      },
     },
     people: [...people.values()].map((person) => ({
       ...person,

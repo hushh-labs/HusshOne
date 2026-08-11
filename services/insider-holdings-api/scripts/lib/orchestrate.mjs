@@ -107,18 +107,36 @@ function dedupeFilers(filers) {
  */
 export function summarise(rows) {
   const byIssuer = new Map();
+  let marketTotal = 0;
   let disclosedTotal = 0;
   let priced = 0;
   let personCount = 0;
   let personValue = 0;
   let entityValue = 0;
+  let pricedThrough = null;
+  let repriced = 0;
 
   for (const row of rows) {
-    const value = row.position.disclosedValue;
+    /**
+     * Both totals are kept, and the two are never mixed into one number.
+     *
+     * `value` — the market total — is what the headline figures use, falling back to the
+     * filed value for a security that could not be priced. The filed total is summed
+     * separately from the filed values alone, so a caller comparing the two is comparing
+     * like with like rather than reading a blend.
+     */
+    const value = row.position.marketValue ?? row.position.disclosedValue;
     if (value != null) {
-      disclosedTotal += value;
+      marketTotal += value;
       priced += 1;
     }
+    if (row.position.disclosedValue != null) disclosedTotal += row.position.disclosedValue;
+    if (row.position.repricedFrom != null) repriced += 1;
+
+    // The oldest market price in the set bounds how current this whole answer is, so the
+    // caller is given the WEAKEST link rather than the most flattering one.
+    const at = row.position.marketPriceAsOf;
+    if (at && (pricedThrough == null || at < pricedThrough)) pricedThrough = at;
 
     // Split the total by who actually holds it. Reporting one figure for "wealth around
     // here" hides that a large share of it belongs to corporations rather than people.
@@ -148,13 +166,28 @@ export function summarise(rows) {
     companies: byIssuer.size,
     positionsPriced: priced,
     positionsUnpriced: rows.length - priced,
-    // Named to resist being read as "the wealth of this area": it is the sum of the
-    // single largest disclosed position of each holder in range, nothing more.
-    sumOfLargestDisclosedPositions: disclosedTotal,
+    /**
+     * The headline total, at market prices.
+     *
+     * Named to resist being read as "the wealth of this area": it is the sum of the
+     * single largest position of each holder in range, nothing more.
+     */
+    sumOfLargestPositionsAtMarket: marketTotal,
+    // The same holders valued as they each filed. Lower coverage — a position with no
+    // filed price contributes nothing here but may still have a market value.
+    sumOfLargestPositionsAsFiled: disclosedTotal,
+    positionsRepriced: repriced,
+    /**
+     * The oldest market price behind these totals — the honest age of the whole figure.
+     *
+     * The SEC publishes its datasets quarterly, so this trails the current quarter.
+     * Show it next to any total rather than the request timestamp.
+     */
+    pricedThrough,
     // The split that matters. Around Kirkland 39% of the top-100 value sits with
     // corporations, so a single total read as "people near me" is badly wrong.
     heldByNaturalPersons: personValue,
     heldByEntities: entityValue,
-    topEmployersByDisclosedValue: employers,
+    topEmployersByValue: employers,
   };
 }
