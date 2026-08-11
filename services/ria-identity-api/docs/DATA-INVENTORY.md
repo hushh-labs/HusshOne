@@ -380,7 +380,24 @@ Verbatim from `docs/samples/adv-feed-143417.xml`. This replaces the 21-page PDF 
 | `Item9A…9F` | **custody** — whether firm has custody of cash/securities and how much | `Q9A1A="N"` |
 | `Item10A` | control persons | `N` |
 | `Item11 / Item11A…Item11H` | **the full disciplinary questionnaire** — criminal, regulatory, civil, SRO, self-regulatory, foreign | `Q11="N"` and every sub-answer `N` |
-| Schedule D sections (also in the feed for firms that file them) | branch offices, other names, control persons, private funds | — |
+| ~~Schedule D sections (also in the feed for firms that file them)~~ | **NOT IN THE FEED — see below** | — |
+
+> **Correction (2026-08-11).** The line above previously claimed Schedule D sections travel
+> in the daily compilation feed. They do not. Enumerating every element name in
+> `IA_FIRM_SEC_Feed_08_11_2026.xml.gz` yields only `Item1`–`Item11H` plus the address,
+> registration and notice-filing wrappers — **no element begins with `Sch`, and there is no
+> Schedule element of any kind.**
+>
+> The claim is easy to make by grepping, which is presumably how it got here: the feed
+> contains 244 occurrences of the word "Schedule", but every one is a firm *referring* to
+> Schedule D inside a free-text answer — e.g. `Q5E7Oth="AS NOTED IN SCHEDULE D MISC…"`.
+> Matching the word is not the same as carrying the data.
+>
+> Schedule A/B ownership data is genuinely available, but from two other places: the
+> historical bulk archive (`adv-filing-data-20111105-20241231-part1.zip`, whose
+> `IA_Schedule_A_B_*.csv` carries the owner rows and keys `OwnerID` to the individual's
+> CRD), and the per-firm Part 1 PDF at `reports.adviserinfo.sec.gov/reports/ADV/{CRD}/PDF/{CRD}.pdf`.
+> The current monthly bulk zip is a firm roster only and has no owner fields either.
 
 ### Firm PDFs (I, J, K) — what is left
 
