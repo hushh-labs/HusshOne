@@ -40,9 +40,25 @@
  * measured at a 91% skip rate over the first 200 filings, which looked like a data
  * problem and was a parser bug. The prefix is therefore optional.
  */
+/**
+ * Decode the XML entities EDGAR escapes.
+ *
+ * Company names carry ampersands — "PAULSON &amp; CO. INC." reached the roster with
+ * the entity intact and rendered literally. `&amp;` is decoded last so that a
+ * double-escaped "&amp;lt;" resolves to "&lt;" rather than "<".
+ */
+const decode = (value) =>
+  String(value)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&amp;/g, "&");
+
 const text = (xml, tag) => {
   const match = new RegExp(`<(?:\\w+:)?${tag}>([\\s\\S]*?)</(?:\\w+:)?${tag}>`).exec(xml);
-  return match ? match[1].trim() : null;
+  return match ? decode(match[1].trim()) : null;
 };
 
 /** Multi-value read, same prefix tolerance. */
@@ -50,7 +66,7 @@ const all = (xml, tag) => {
   const out = [];
   const re = new RegExp(`<(?:\\w+:)?${tag}>([\\s\\S]*?)</(?:\\w+:)?${tag}>`, "g");
   let match;
-  while ((match = re.exec(xml)) !== null) out.push(match[1].trim());
+  while ((match = re.exec(xml)) !== null) out.push(decode(match[1].trim()));
   return out;
 };
 

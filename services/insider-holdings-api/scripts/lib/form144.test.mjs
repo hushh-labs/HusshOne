@@ -119,6 +119,15 @@ test("the OTHER live XML shape parses too — default namespace, no prefix", () 
   assert.equal(notice.filerCik, "1786391");
 });
 
+test("XML entities in names are decoded", () => {
+  // "PAULSON &amp; CO. INC." reached the live roster with the entity intact.
+  const xml = XML.replace("David Barrett", "PAULSON &amp; CO. INC.")
+    .replace("Expensify, Inc.", "Smith &amp; Wesson &#39;Brands&#39;");
+  const notice = parseForm144(xml);
+  assert.equal(notice.name, "PAULSON & CO. INC.");
+  assert.equal(notice.issuerName, "Smith & Wesson 'Brands'");
+});
+
 test("a non-144 submission and malformed input are refused", () => {
   assert.equal(parseForm144(XML.replace("<own:submissionType>144<", "<own:submissionType>4<")), null);
   assert.equal(parseForm144(""), null);
