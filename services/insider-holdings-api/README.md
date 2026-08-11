@@ -1,11 +1,12 @@
 # insider-holdings-api
 
-Public-company insiders near a location, ranked by the position value **they disclosed
+Company insiders near a location, ranked by the position value **they disclosed
 themselves**.
 
 Ask it "who around here has a large disclosed stake, and in what?" and it answers from
-the SEC's own Section 16 filings — the reports that officers, directors and 10%+ owners
-are legally required to file, by name, precisely so the public can see them.
+filings the people named in them are legally required to make: SEC Section 16 reports
+for public-company officers, directors and 10%+ owners, and Form D for the officers and
+directors of private companies that raised under Regulation D.
 
 Every upstream is free. There is no paid data vendor, no scraped site, and no
 credential beyond the optional bearer key on this service's own routes.
@@ -13,16 +14,22 @@ credential beyond the optional bearer key on this service's own routes.
 | Input | Source | Cost |
 | --- | --- | --- |
 | Positions, prices, names, roles | SEC quarterly Form 3/4/5 datasets | $0 |
+| Private-company officers and directors | SEC Form D | $0 |
 | Issuer business addresses | SEC EDGAR submissions API | $0 |
-| Postcode coordinates | US Census ZCTA gazetteer | $0 |
+| Street-level coordinates | US Census batch geocoder | $0 |
+| Postcode coordinates (fallback) | US Census ZCTA gazetteer | $0 |
+
+Current index: **56,143** Section 16 filers across **6,148** companies (four quarters),
+plus **4,660** Form D founders. 4,303 companies are placed at street level and the rest
+fall back to a postcode centroid.
 
 ---
 
 ## What it will not do
 
-This service indexes **only** people who personally file a Form 3, 4 or 5 under
-Section 16 of the Securities Exchange Act of 1934. That duty is the whole basis for
-naming them: they accepted it with the role, and they filed these numbers themselves.
+This service indexes **only** people under a legal duty to publish, because of a role
+they accepted: Section 16 filers of Forms 3/4/5, and the related persons named on a
+company's Form D.
 
 It will not name anyone else. No inferred wealth, no property records, no political
 donations, no spouses, no private investors. `assertDisclosable` enforces this at
@@ -34,7 +41,15 @@ assumed to be business addresses. So every location here is the **issuer's** cor
 headquarters from EDGAR. Proximity means *"works at a company headquartered near you"*,
 never *"lives near you"*.
 
-A test asserts that no owner-address field can appear in any response.
+**Form D goes further and is not mapped at all.** For a small private issuer the filed
+business address is frequently a residence — in filing `0002133962-26-000001` the issuer
+address and both related persons' addresses are the same house. So Form D records are
+searchable by name and company, reported at **city and state only**, and never geocoded
+or distance-ranked. Ranking them by proximity would put homes on the map indirectly,
+which is the one thing this service refuses to do.
+
+Tests fail the build if any owner-address field survives serialisation, or if a street,
+postcode or coordinate reaches a Form D response.
 
 ---
 
@@ -42,17 +57,34 @@ A test asserts that no owner-address field can appear in any response.
 
 | Route | Auth | Returns |
 | --- | --- | --- |
-| `GET /health` | open | Uptime and index freshness |
+| **`GET /v1/around`** | bearer | **Orchestrated view — build against this one** |
+| `GET /health` | open | Uptime, index freshness, both dataset sizes |
 | `GET /v1/stats` | open | Counters and the disclosure policy. Never per-identity usage |
-| `GET /v1/insiders` | bearer | Location search, streamed as NDJSON |
+| `GET /v1/insiders` | bearer | Raw location search, streamed as NDJSON, not collapsed |
 | `GET /v1/insiders/{cik}` | bearer | One filer's disclosed positions |
 | `GET /v1/issuers/{cik}` | bearer | One company. Never names a person |
+| `GET /v1/private-offerings` | bearer | Private-company founders by name or company |
+
+`/v1/around` is the endpoint to integrate with. It answers a location once across every
+source, collapses co-filed positions, and states what each source contributed:
+
+```
+GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
+
+640 raw filings -> 93 duplicates removed -> 547 positions across 50 companies
+```
+
+One economic holding is routinely reported by a stack of related entities — one group in
+the index has **37 filers** on the same 1,650,000 shares. `/v1/around` merges those into
+a single row and lists every filer; `/v1/insiders` returns them all, uncollapsed.
+
+`/v1/private-offerings` has no `lat`/`lng` and never will — see the Form D note below.
 
 ### Search parameters
 
 ```
+GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25
 GET /v1/insiders?zip=94105&radiusMi=25&limit=25&minValue=1000000
-GET /v1/insiders?lat=37.789&lng=-122.396&radiusMi=10&stream=json
 ```
 
 | Parameter | Default | Notes |
@@ -69,10 +101,16 @@ GET /v1/insiders?lat=37.789&lng=-122.396&radiusMi=10&stream=json
 ## How a position is valued
 
 ```
-disclosedValue = SHRS_OWND_FOLWNG_TRANS × TRANS_PRICEPERSHARE
+direct      disclosedValue = shares × price disclosed on that filing
+derivative  disclosedValue = underlying shares × (market price − strike)
 ```
 
 Both numbers come off the filing. Nothing is modelled or estimated.
+
+A derivative is worth its **intrinsic** value only: options over 100,000 shares at a $50
+strike are not worth $50m when the stock trades at $500, because the holder must pay the
+strike. Underwater options are `0`, never negative. A strike of exactly `0` is a
+restricted stock unit, which converts for free and carries full market value.
 
 **This is not a net worth.** It is one holding in one company as of one filing date, at
 the price disclosed on that filing — not a live market price. A filer with no disclosed
