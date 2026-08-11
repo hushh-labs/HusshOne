@@ -19,17 +19,29 @@ ENV NODE_ENV=production \
     PORT=8080 \
     INSIDER_DATA_DIR=/app/data
 
-# Build the index into the image so a container starts serving immediately instead of
-# spending twenty minutes talking to the SEC while requests arrive.
+# The index is baked into the image so a container serves immediately rather than
+# spending forty-five minutes talking to the SEC while requests arrive.
 #
-# SEC_USER_AGENT must be supplied at build time — the SEC returns 403 without a
-# descriptive agent carrying a contact address, so a build with no value fails loudly
-# here rather than shipping an image with a silently empty index.
+# If data/index.json is already in the build context it is reused as-is. That is the
+# normal path: build it once with `npm run build-index`, then every container build is
+# seconds rather than an hour, and the deployed image is byte-identical to what was
+# tested locally. `.gcloudignore` deliberately lets the file through even though git
+# ignores it.
+#
+# Only when no index is present does the image build one, and then SEC_USER_AGENT is
+# required — the SEC returns 403 to anonymous clients, so a missing value must fail
+# loudly here instead of shipping an image with a silently empty index.
 ARG SEC_USER_AGENT
 ARG INDEX_QUARTER=2026q2
-RUN test -n "$SEC_USER_AGENT" \
-      || (echo "SEC_USER_AGENT build-arg is required; the SEC rejects anonymous clients" && exit 1) \
-  && SEC_USER_AGENT="$SEC_USER_AGENT" node scripts/build-index.mjs --quarter "$INDEX_QUARTER"
+RUN if [ -s data/index.json ]; then \
+      echo "Using the index already in the build context ($(du -h data/index.json | cut -f1))."; \
+    elif [ -n "$SEC_USER_AGENT" ]; then \
+      SEC_USER_AGENT="$SEC_USER_AGENT" node scripts/build-index.mjs --quarter "$INDEX_QUARTER"; \
+    else \
+      echo "No data/index.json and no SEC_USER_AGENT build-arg. Supply one or the other:" >&2; \
+      echo "  npm run build-index   (then rebuild)   OR   --build-arg SEC_USER_AGENT=..." >&2; \
+      exit 1; \
+    fi
 
 EXPOSE 8080
 
