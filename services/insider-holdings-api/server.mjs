@@ -22,6 +22,7 @@ import { RateLimiter, clientIp } from "./scripts/lib/rate-limit.mjs";
 import { getIssuer, getPerson, indexMeta, searchNearby } from "./scripts/lib/index-store.mjs";
 import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
 import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
+import { floridaMeta, searchFlorida } from "./scripts/lib/florida-store.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -63,6 +64,7 @@ const server = http.createServer(async (request, response) => {
         // Reported so a dataset that failed to reach the image is visible here rather
         // than showing up as an endpoint that quietly returns nothing.
         privateOfferings: formDMeta(DATA_DIR),
+        netWorth: floridaMeta(DATA_DIR),
         sources: {
           secDatasets: config.sec.datasetBase,
           edgarSubmissions: config.sec.submissionsBase,
@@ -222,6 +224,48 @@ const server = http.createServer(async (request, response) => {
      * would place residences on the map. City and state are the finest granularity
      * this route will ever return.
      */
+    /**
+     * Sworn net worth — Florida Form 6.
+     *
+     * The only source in the country publishing an exact, sworn net-worth figure for a
+     * named individual, mandated by Article II §8(j)(1) of the Florida Constitution.
+     * Everywhere else in this service the number is one holding in one company; here it
+     * is the person's whole declared position, as they swore to it.
+     *
+     * Ranked by net worth, searchable by name, county and office. No coordinates: the
+     * underlying PDFs print real property by street address, so only the figure is read.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/net-worth") {
+      const result = searchFlorida(
+        {
+          name: url.searchParams.get("name"),
+          county: url.searchParams.get("county"),
+          office: url.searchParams.get("office"),
+          minNetWorth: Number(url.searchParams.get("minNetWorth")) || 0,
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25)),
+          offset: Math.max(0, Number(url.searchParams.get("offset")) || 0),
+        },
+        DATA_DIR,
+      );
+
+      return sendJson(response, 200, {
+        ok: true,
+        total: result.total,
+        returned: result.rows.length,
+        people: result.rows,
+        index: floridaMeta(DATA_DIR),
+        coverage:
+          "Florida officials required to file Form 6. This is the only US regime publishing an exact sworn net worth; every other source here reports a single holding in a single company.",
+        disclosure:
+          "Only the sworn net-worth figure is extracted from each filing. The asset, liability and income schedules are never read or stored, because Form 6 identifies real property by street address. Location is the county and office the person is elected to serve — there are no coordinates.",
+        attribution: {
+          source: "Florida Commission on Ethics — Form 6, Art. II §8(j)(1), Fla. Const.",
+          sourceUrl: "https://disclosure.floridaethics.gov/PublicSearch/Filings",
+          notice: "Filers swear to these figures. The Commission's own record is authoritative.",
+        },
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/v1/private-offerings") {
       const result = searchFormD(
         {
