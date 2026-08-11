@@ -21,7 +21,8 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 
 import { config } from "./lib/config.mjs";
-import { buildPositions, parseTsv, valuePosition } from "./lib/dataset.mjs";
+import { buildPositions, collectPriceObservations, parseTsv, valuePosition } from "./lib/dataset.mjs";
+import { buildIssuerPrimaryPrices, buildPriceBook, repricePosition } from "./lib/prices.mjs";
 import { fetchIssuer } from "./lib/issuer.mjs";
 import { loadCentroids } from "./lib/geo.mjs";
 import { isUsAddress } from "./lib/geo-us.mjs";
@@ -178,13 +179,39 @@ async function main() {
   const derivativeCount = [...positions.values()].filter((p) => p.kind === "derivative").length;
   log(`positions: ${positions.size} (${derivativeCount} derivative)`);
 
+  /**
+   * One market price per security, so every holder of a stock is valued at the same
+   * price on the same date.
+   *
+   * Without this a position is worth `shares x the price on that person's own filing`,
+   * which means two insiders in one company are valued at different prices and someone
+   * who last filed a year ago carries a year-old price. See lib/prices.mjs for why only
+   * transaction codes S, F, P and I may set a price.
+   */
+  const priceObservations = collectPriceObservations({ submissions, transactions });
+  const priceBook = buildPriceBook(priceObservations);
+  const issuerPrimary = buildIssuerPrimaryPrices(priceBook);
+  const bookDates = [...priceBook.values()].map((entry) => entry.asOf).sort();
+  log(
+    `price book: ${priceBook.size} securities from ${priceObservations.length} trades, ` +
+      `priced ${bookDates[0]} to ${bookDates[bookDates.length - 1]}`,
+  );
+
   // Group by person.
   const people = new Map();
   const issuerCiks = new Set();
+  const repriceStats = { security: 0, issuer: 0, filed: 0, none: 0, gained: 0, suspect: 0 };
 
   for (const position of positions.values()) {
     issuerCiks.add(position.issuerCik);
+    // The value as the filer disclosed it, kept alongside the re-priced one so the two
+    // never collapse into a single unattributable number.
     const value = valuePosition(position);
+    const repriced = repricePosition(position, priceBook, issuerPrimary);
+
+    repriceStats[repriced.marketPriceBasis] += 1;
+    if (value == null && repriced.marketValue != null) repriceStats.gained += 1;
+    if (repriced.priceMovedSuspiciously) repriceStats.suspect += 1;
 
     if (!people.has(position.personCik)) {
       people.set(position.personCik, {
@@ -194,6 +221,7 @@ async function main() {
         titles: new Set(),
         positions: [],
         disclosedValue: 0,
+        marketValue: 0,
         positionsValued: 0,
       });
     }
@@ -214,6 +242,13 @@ async function main() {
       pricePerShare: position.pricePerShare,
       strikePrice: position.strikePrice ?? null,
       value,
+      // The same shares at the security's current market price. `value` stays as filed.
+      marketValue: repriced.marketValue,
+      marketPrice: repriced.marketPrice,
+      marketPriceAsOf: repriced.marketPriceAsOf,
+      marketPriceBasis: repriced.marketPriceBasis,
+      repricedFrom: repriced.repricedFrom,
+      priceMovedSuspiciously: repriced.priceMovedSuspiciously,
       asOf: position.asOf,
       formType: position.formType,
       title: position.title,
@@ -223,8 +258,14 @@ async function main() {
       person.disclosedValue += value;
       person.positionsValued += 1;
     }
+    if (repriced.marketValue != null) person.marketValue += repriced.marketValue;
   }
 
+  log(
+    `repriced: ${repriceStats.security} from their own security, ${repriceStats.issuer} derivatives ` +
+      `from the issuer, ${repriceStats.filed} kept the filed price, ${repriceStats.none} unpriced`,
+  );
+  log(`  ${repriceStats.gained} positions gained a value they did not have; ${repriceStats.suspect} moved >3x`);
   log(`people: ${people.size}   distinct issuers: ${issuerCiks.size}`);
 
   // Issuer addresses, then place each on the map via its postcode.
@@ -295,6 +336,23 @@ async function main() {
       partial: targets.length < issuerCiks.size,
       issuersAvailable: issuerCiks.size,
       source: "SEC Forms 3/4/5 quarterly datasets + EDGAR submissions + Census ZCTA gazetteer",
+      /**
+       * Re-pricing provenance.
+       *
+       * `pricedThrough` is the newest date any security was priced at, which is the
+       * real freshness ceiling of every market value in this index — not the build
+       * date. The SEC publishes these datasets quarterly, so it tracks the quarter end.
+       */
+      pricing: {
+        securities: priceBook.size,
+        observations: priceObservations.length,
+        pricedFrom: bookDates[0] ?? null,
+        pricedThrough: bookDates[bookDates.length - 1] ?? null,
+        basis: repriceStats,
+        marketPriceCodes: ["S", "F", "P", "I"],
+        note:
+          "marketValue re-prices the same disclosed shares at the median price of the security's most recent trading day. Only transaction codes S, F, P and I set a price; M and X report the option strike, which runs 0.16-0.30x market. `value` remains exactly as filed.",
+      },
     },
     people: [...people.values()].map((person) => ({
       ...person,

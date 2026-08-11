@@ -104,7 +104,7 @@ test("the summary splits value between people and corporations", () => {
   assert.equal(s.entities, 1);
   assert.equal(s.heldByNaturalPersons, 200);
   assert.equal(s.heldByEntities, 128, "a single total would hide that this is corporate");
-  assert.equal(s.sumOfLargestDisclosedPositions, 328);
+  assert.equal(s.sumOfLargestPositionsAtMarket, 328);
 });
 
 test("the summary counts a co-filed position once, not once per filer", () => {
@@ -117,20 +117,66 @@ test("the summary counts a co-filed position once, not once per filer", () => {
 
   assert.equal(s.holders, 2, "two distinct positions");
   assert.equal(s.companies, 2);
-  assert.equal(s.sumOfLargestDisclosedPositions, 1000500, "the $1m position is counted ONCE");
+  assert.equal(s.sumOfLargestPositionsAtMarket, 1000500, "the $1m position is counted ONCE");
 });
 
 test("unpriced positions are counted, not silently dropped", () => {
   const s = summarise([row("1", "A", { value: null }), row("2", "B", { shares: 7, value: 100 })]);
   assert.equal(s.positionsPriced, 1);
   assert.equal(s.positionsUnpriced, 1);
-  assert.equal(s.sumOfLargestDisclosedPositions, 100);
+  assert.equal(s.sumOfLargestPositionsAtMarket, 100);
 });
 
 test("an empty area summarises to zeroes rather than throwing", () => {
   const s = summarise([]);
   assert.equal(s.holders, 0);
   assert.equal(s.companies, 0);
-  assert.equal(s.sumOfLargestDisclosedPositions, 0);
-  assert.deepEqual(s.topEmployersByDisclosedValue, []);
+  assert.equal(s.sumOfLargestPositionsAtMarket, 0);
+  assert.deepEqual(s.topEmployersByValue, []);
+});
+
+/** A row carrying both a filed value and a re-priced market value. */
+const priced = (cik, name, { filed, market, at = "2026-06-16", issuerCik = "1" }) => ({
+  cik, name, roles: ["Officer"], title: null,
+  position: {
+    issuerCik, issuerName: "Co", shares: 1000, asOf: "2026-01-05", kind: "direct",
+    disclosedValue: filed, marketValue: market, marketPriceAsOf: at,
+    repricedFrom: market != null && filed != null ? 1 : null,
+  },
+});
+
+test("the headline total uses market values, not filed ones", () => {
+  // A holder who last filed in January is valued at June's price like everyone else.
+  const s = summarise([
+    priced("1", "A", { filed: 100, market: 130 }),
+    priced("2", "B", { filed: 200, market: 260 }),
+  ]);
+  assert.equal(s.sumOfLargestPositionsAtMarket, 390);
+  assert.equal(s.sumOfLargestPositionsAsFiled, 300, "the filed total is kept, not overwritten");
+  assert.equal(s.positionsRepriced, 2);
+});
+
+test("a security with no market price falls back to its filed value", () => {
+  const s = summarise([
+    priced("1", "A", { filed: 100, market: 130 }),
+    { ...priced("2", "B", { filed: 70, market: null }), },
+  ]);
+  assert.equal(s.sumOfLargestPositionsAtMarket, 200, "130 + the unrepriced 70");
+  assert.equal(s.positionsPriced, 2, "still priced, just not repriced");
+});
+
+test("pricedThrough reports the OLDEST price, not the newest", () => {
+  // The weakest link bounds how current the whole answer is. Reporting the newest would
+  // flatter a total that contains a year-old price.
+  const s = summarise([
+    priced("1", "A", { filed: 1, market: 1, at: "2026-06-30" }),
+    priced("2", "B", { filed: 1, market: 1, at: "2025-08-22" }),
+  ]);
+  assert.equal(s.pricedThrough, "2025-08-22");
+});
+
+test("a filed value with no market price still contributes to the filed total", () => {
+  const s = summarise([{ ...priced("1", "A", { filed: 500, market: null }) }]);
+  assert.equal(s.sumOfLargestPositionsAsFiled, 500);
+  assert.equal(s.positionsRepriced, 0, "nothing was repriced");
 });

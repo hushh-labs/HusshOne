@@ -46,10 +46,15 @@ GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
     "companies": 50,
     "positionsPriced": 450,
     "positionsUnpriced": 97,
-    "sumOfLargestDisclosedPositions": 345019794510,
+    "positionsRepriced": 431,
+
+    "sumOfLargestPositionsAtMarket": 391284553017,
+    "sumOfLargestPositionsAsFiled": 345019794510,
+    "pricedThrough": "2025-08-22",
+
     "heldByNaturalPersons": 208418890189,
     "heldByEntities": 136600904321,
-    "topEmployersByDisclosedValue": [
+    "topEmployersByValue": [
       {"cik": "1018724", "name": "AMAZON COM INC", "people": 17, "disclosed": 204455354121}
     ]
   },
@@ -70,6 +75,15 @@ GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
 `summary` describes the **whole radius**, not the returned page. `collapsedFrom` is how
 many raw filings that radius held before co-filed positions were merged.
 
+**`sumOfLargestPositionsAtMarket` is the headline number** — every holder priced at their
+security's most recent market price. `sumOfLargestPositionsAsFiled` is the same holders
+valued as each of them filed, kept so the two are comparable rather than blended.
+
+**`pricedThrough` is the oldest market price behind the total**, deliberately the weakest
+link rather than the most flattering one. Show it next to any figure: the SEC publishes
+quarterly, so it trails the current quarter and a single rarely-traded security can drag
+it back further.
+
 ### A holder row
 
 ```json
@@ -87,6 +101,14 @@ many raw filings that radius held before co-filed positions were merged.
     "kind": "direct",
     "shares": 2215333, "pricePerShare": 263.1, "strikePrice": null,
     "disclosedValue": 582854112,
+
+    "marketValue": 589661927,
+    "marketPrice": 266.19,
+    "marketPriceAsOf": "2026-06-03",
+    "marketPriceBasis": "security",
+    "repricedFrom": 263.1,
+    "priceMovedSuspiciously": false,
+
     "asOf": "2026-05-26", "formType": "4"
   },
 
@@ -130,11 +152,65 @@ Centroid distances under half a mile are reported as `0` rather than a decimal t
 implies precision the source cannot support. Street-level distances are not floored,
 because there 0.2 miles is a real measurement.
 
-### 2. A value is one position, at one past moment
+### 2. Two values per position, and you almost always want `marketValue`
 
-`disclosedValue` is shares × the price disclosed **on that filing**. It is not a live
-quote and it is **not the person's net worth** — they may hold ten other things this
-service cannot see, and the price may be months old. Always show `asOf` next to a figure.
+Every position carries both:
+
+| Field | Meaning | Use it for |
+| --- | --- | --- |
+| `disclosedValue` | shares × the price on **that person's own filing** | showing what was filed |
+| `marketValue` | the same shares × the security's **most recent market price** | ranking, totals, any "how rich" reading |
+
+`disclosedValue` is priced on whatever day that individual last traded, so two people
+holding the same stock get different prices and someone who last filed a year ago
+carries a year-old price. Live example: Bezos's Amazon stake was priced at `$231.11`
+from 2026-05-05 while another Amazon insider had filed at `$266.19` on 2026-06-03, and
+an SVF holding in Coupang was still carrying a price from 2025-08-22 — **355 days
+stale**.
+
+`marketValue` prices every holder of a security identically, at the median price of the
+most recent day it traded. `/v1/around` ranks and totals on it.
+
+**`marketPriceAsOf` is the real age of the number**, not `asOf` (which dates the share
+count). The SEC publishes these datasets quarterly, so market prices trail the current
+quarter by up to a few months — check `index.pricing.pricedThrough` on `/health` for the
+ceiling across the whole index.
+
+`marketPriceBasis` says where the price came from:
+
+- `security` — a market-priced trade in this exact security. The normal case.
+- `issuer` — the issuer's principal security. **Derivatives only**, because an option
+  grant discloses no price of its own.
+- `filed` — no market price existed for this security; `pricePerShare` stands.
+- `none` — never priced at all; `marketValue` is `null`.
+
+Neither figure is **the person's net worth**. They may hold ten other things this
+service cannot see.
+
+#### Why only four transaction codes set a price
+
+A Form 4 price column means different things depending on the transaction code, and most
+of them are not the market price of the share. Measured across all 34,191 priced
+non-derivative rows in 2026Q2, as a ratio of the same issuer/security/day median sale:
+
+| Code | Meaning | Ratio vs sale | Used? |
+| --- | --- | --- | --- |
+| `S` `F` `P` `I` | sale, tax withholding, purchase, discretionary | 0.996–1.000 | **yes** |
+| `M` | option exercise — reports the **strike** | **0.299** | no |
+| `X` | derivative exercise — reports the **strike** | **0.158** | no |
+| `A` `G` `J` `C` | grant, gift, other, conversion | 86–97% are `$0` | no |
+
+Letting `M` set a price understates a position by ~70%. That is the same failure that
+once valued Musk's Tesla stake at $9.6B instead of $287.4B.
+
+Share classes are priced separately, always — on 85 issuer-days two classes of one
+company differed by more than 5%, and a Berkshire Class A holder priced at the Class B
+price would be understated roughly 1500×. A share position whose exact security has no
+market-priced trade keeps its filed price rather than borrowing the issuer's.
+
+`priceMovedSuspiciously` is `true` when re-pricing moved a position more than 3× in
+either direction. That is usually a share split — the filing's share count is pre-split
+while the price is post-split — so treat the figure with care rather than as a real move.
 
 ### 3. `null` is not zero
 

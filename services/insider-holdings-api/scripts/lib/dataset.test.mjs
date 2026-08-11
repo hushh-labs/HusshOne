@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPositions, parseSecDate, parseTsv, valuePosition } from "./dataset.mjs";
+import {
+  buildPositions,
+  collectPriceObservations,
+  parseSecDate,
+  parseTsv,
+  valuePosition,
+} from "./dataset.mjs";
 
 test("parseTsv yields row objects keyed by header", () => {
   const rows = [...parseTsv("A\tB\n1\t2\n3\t4\n")];
@@ -193,4 +199,64 @@ test("valuePosition multiplies, and returns null when no price was disclosed", (
   assert.equal(valuePosition({ shares: 100, pricePerShare: null }), null,
     "unpriced must be null, not 0 — unknown value is not zero value");
   assert.equal(valuePosition(null), null);
+});
+
+/** Price observations are collected for RE-PRICING, separately from positions. */
+const SUB = { ACCESSION_NUMBER: "a1", ISSUERCIK: "0000789019", FILING_DATE: "16-JUN-2026" };
+const TRX = {
+  ACCESSION_NUMBER: "a1",
+  SECURITY_TITLE: "Common Stock",
+  TRANS_CODE: "S",
+  TRANS_PRICEPERSHARE: "400.00",
+  TRANS_DATE: "12-JUN-2026",
+};
+
+test("a price observation uses the TRADE date, not the filing date", () => {
+  // A Form 4 is due two business days after the trade, so the filing date can be a week
+  // later than the day the price was actually struck.
+  const [row] = collectPriceObservations({ submissions: [SUB], transactions: [TRX] });
+  assert.equal(row.date, "2026-06-12");
+  assert.equal(row.issuerCik, "789019", "the CIK is unpadded for lookup");
+  assert.equal(row.price, 400);
+  assert.equal(row.code, "S", "the code is passed through; prices.mjs decides on it");
+});
+
+test("a trade dated after its own filing falls back to the filing date", () => {
+  // 7 of 166,130 market-coded trades across the indexed quarters do this, two of them
+  // dated in the future — one at 2027-01-25. The price book takes the most recent date
+  // per security, so one typo would capture that security's price for every holder.
+  const [row] = collectPriceObservations({
+    submissions: [SUB],
+    transactions: [{ ...TRX, TRANS_DATE: "25-JAN-2027" }],
+  });
+  assert.equal(row.date, "2026-06-16", "bounded by the filing that reports it");
+  assert.equal(row.price, 400, "the price itself was never in doubt, only the date");
+});
+
+test("a missing trade date falls back rather than dropping the price", () => {
+  const [row] = collectPriceObservations({
+    submissions: [SUB],
+    transactions: [{ ...TRX, TRANS_DATE: "" }],
+  });
+  assert.equal(row.date, "2026-06-16");
+});
+
+test("every priced trade is collected, not one per person", () => {
+  // buildPositions keeps a single position per person and discards the rest; this keeps
+  // them all, because a trade by one insider prices the stake of every other insider in
+  // the same stock.
+  const rows = collectPriceObservations({
+    submissions: [SUB],
+    transactions: [TRX, { ...TRX, TRANS_PRICEPERSHARE: "410.00" }, { ...TRX, TRANS_CODE: "M" }],
+  });
+  assert.equal(rows.length, 3, "including the M row — filtering happens in prices.mjs");
+});
+
+test("a zero price is not an observation", () => {
+  // A grant reports 0.00, which means "no price to disclose", not "worthless".
+  const rows = collectPriceObservations({
+    submissions: [SUB],
+    transactions: [{ ...TRX, TRANS_PRICEPERSHARE: "0.00" }],
+  });
+  assert.equal(rows.length, 0);
 });

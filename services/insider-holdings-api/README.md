@@ -108,22 +108,42 @@ GET /v1/insiders?zip=94105&radiusMi=25&limit=25&minValue=1000000
 
 ## How a position is valued
 
+Every position carries **two** figures, and they are never merged:
+
 ```
-direct      disclosedValue = shares × price disclosed on that filing
-derivative  disclosedValue = underlying shares × (market price − strike)
+disclosedValue = shares × the price on that person's own filing
+marketValue    = shares × the security's most recent market price
 ```
 
-Both numbers come off the filing. Nothing is modelled or estimated.
+Both come off filings. Nothing is modelled or estimated.
+
+`disclosedValue` answers *"what did they file"*. Its weakness is that the price is
+whatever the stock traded at on the day that individual last dealt — so two insiders in
+one company are valued at different prices, and a filer who last traded a year ago
+carries a year-old price. Bezos's Amazon stake was priced from 2026-05-05 while another
+Amazon insider had filed a month later; an SVF holding in Coupang was carrying a price
+355 days stale.
+
+`marketValue` answers *"what is it worth"*. Every holder of a security is priced
+identically, at the median price of the most recent day that security traded. **Ranking
+and totals use it.** `marketPriceAsOf` on each position is the true age of the figure.
+
+**Only transaction codes S, F, P and I may set a price.** Measured across 34,191 priced
+rows in 2026Q2 against the same-day median sale price: `M` (option exercise) reports the
+strike at **0.299×** market and `X` at **0.158×**, while `A`, `G`, `J` and `C` are 86–97%
+zeros. Admitting `M` would understate positions by ~70% — the failure that once valued
+Musk's Tesla stake at $9.6B instead of $287.4B. Prices are keyed per **security**, never
+per issuer, so a Berkshire Class A holder can never be priced at the Class B price.
 
 A derivative is worth its **intrinsic** value only: options over 100,000 shares at a $50
 strike are not worth $50m when the stock trades at $500, because the holder must pay the
 strike. Underwater options are `0`, never negative. A strike of exactly `0` is a
 restricted stock unit, which converts for free and carries full market value.
 
-**This is not a net worth.** It is one holding in one company as of one filing date, at
-the price disclosed on that filing — not a live market price. A filer with no disclosed
-price returns `disclosedValue: null`, never `0`, because an unknown value is not a value
-of zero; those rows sort last but are still returned with their share count intact.
+**This is not a net worth.** It is one holding in one company — the person may hold ten
+other things this service cannot see. A position that could never be priced returns
+`null`, never `0`, because an unknown value is not a value of zero; those rows sort last
+but are still returned with their share count intact.
 
 Ranking uses a person's **single largest position within the search radius**, not a sum
 across companies. A sum would blend positions filed on different dates at different
