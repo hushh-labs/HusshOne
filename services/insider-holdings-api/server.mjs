@@ -59,6 +59,9 @@ const server = http.createServer(async (request, response) => {
             ? "Index loaded. The SEC publishes these datasets quarterly, so an age in the tens of days is normal."
             : "No index built yet. Run scripts/fetch-centroids.mjs then scripts/build-index.mjs.",
         },
+        // Reported so a dataset that failed to reach the image is visible here rather
+        // than showing up as an endpoint that quietly returns nothing.
+        privateOfferings: formDMeta(DATA_DIR),
         sources: {
           secDatasets: config.sec.datasetBase,
           edgarSubmissions: config.sec.submissionsBase,
