@@ -7,3 +7,4 @@ data/index.json
 
 # Scratch output dirs from bounded/experimental index builds.
 data-*/
+form-d.json

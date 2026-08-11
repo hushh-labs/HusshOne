@@ -20,6 +20,7 @@ import { ATTRIBUTION, stripOwnerAddress } from "./scripts/lib/disclosure.mjs";
 import { QueryError, parseQuery } from "./scripts/lib/query.mjs";
 import { RateLimiter, clientIp } from "./scripts/lib/rate-limit.mjs";
 import { getIssuer, getPerson, indexMeta, searchNearby } from "./scripts/lib/index-store.mjs";
+import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -131,6 +132,42 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/v1/insiders") {
       return handleSearch(request, response, url, started);
+    }
+
+    /**
+     * Private-company officers and directors, from Form D.
+     *
+     * Name/company lookup only — no lat, lng or radius, and none will be added. Form D
+     * issuer addresses are routinely the founder's home, so distance-ranking these
+     * would place residences on the map. City and state are the finest granularity
+     * this route will ever return.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/private-offerings") {
+      const result = searchFormD(
+        {
+          name: url.searchParams.get("name"),
+          company: url.searchParams.get("company"),
+          state: url.searchParams.get("state"),
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25)),
+          offset: Math.max(0, Number(url.searchParams.get("offset")) || 0),
+        },
+        DATA_DIR,
+      );
+
+      if (result.error) return sendJson(response, 400, { ok: false, error: result.error, field: "name" });
+
+      return sendJson(response, 200, {
+        ok: true,
+        total: result.total,
+        returned: result.rows.length,
+        people: result.rows,
+        index: formDMeta(DATA_DIR),
+        disclosure:
+          "Officers, directors and promoters named on a company's Form D. Location is city and state only: a small private issuer's filed address is frequently a residence, so these records are never geocoded or ranked by distance.",
+        valuationNotice:
+          "Offering amounts are money the COMPANY raised. Form D does not state what share of the company any named person holds, so no personal wealth figure can be derived from it.",
+        attribution: ATTRIBUTION,
+      });
     }
 
     return sendJson(response, 404, { ok: false, error: "Not found", service: SERVICE });
