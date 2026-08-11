@@ -222,6 +222,36 @@ Render `meta` immediately, append each `insider` as it lands, stop on `done`. A
 mid-stream failure emits a terminal `{"type":"error"}` frame rather than truncating, so
 a partial list is always distinguishable from a complete one.
 
+## `GET /v1/liquidity` — proposed sales, SEC Form 144
+
+Everything else here reports what someone **holds**. This reports what they have
+signalled they may **sell**, in exact dollars the filer supplied. Shares are not cash,
+and a large holder who has noticed no sale is in a different position from one who has
+noticed $50m.
+
+```
+GET /v1/liquidity?name=barrett
+GET /v1/liquidity?issuer=expensify&minValue=1000000
+```
+
+```json
+{"ok": true, "total": 1,
+ "people": [{
+   "name": "David Barrett", "filerCik": "1892682", "roles": ["Director","Officer"],
+   "noticeCount": 2, "largestProposedSale": 24859.9,
+   "notices": [{"issuerName":"Expensify, Inc.","unitsToBeSold":19123,
+                "proposedSaleValue":24859.9,"approxSaleDate":"06/15/2026","exchange":"NASDAQ"}]
+ }]}
+```
+
+A Form 144 is a **notice of intent**, not a completed sale, and the same shares may be
+noticed more than once. So these figures are **never summed and never added to a
+holding**. `largestProposedSale` is the biggest single notice, not a total.
+
+Where a Form 144 filer CIK matches a Section 16 row, `/v1/around` attaches a compact
+`liquidity` block to that person — so a row can say "holds $582m, and has noticed an
+intent to sell up to $24m" rather than leaving you to guess whether the stake is liquid.
+
 ## `GET /v1/net-worth` — sworn net worth, Florida
 
 **The only source in this service that reports an actual net worth**, and the only US
