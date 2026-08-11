@@ -4,3 +4,6 @@ data/index.json
 
 # The centroid table IS committed: it is ~700 KB, changes once a year, and committing
 # it keeps `npm test` and a local run working with no network at all.
+
+# Scratch output dirs from bounded/experimental index builds.
+data-*/
