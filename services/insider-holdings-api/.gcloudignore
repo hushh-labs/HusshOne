@@ -4,9 +4,12 @@
 # and the Dockerfile would then rebuild the index from scratch inside every container
 # build, turning a seconds-long build into roughly forty-five minutes of SEC calls.
 #
-# The index is a build artefact that git should not carry but Cloud Build must receive,
-# so it is listed here as an explicit un-ignore.
+# These are build artefacts that git should not carry but Cloud Build must receive, so
+# each is listed as an explicit un-ignore. Miss one and the image builds fine, starts
+# fine, and serves an empty result set for that dataset — a silent failure, which is why
+# /health reports the row count of both.
 !data/index.json
+!data/form-d.json
 
 .git/
 .gitignore
