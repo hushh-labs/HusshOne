@@ -12,6 +12,7 @@
 !data/form-d.json
 !data/florida-net-worth.json
 !data/form-144.json
+!data/physician-ownership.json
 
 .git/
 .gitignore

@@ -24,6 +24,7 @@ import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
 import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
 import { floridaMeta, searchFlorida } from "./scripts/lib/florida-store.mjs";
 import { form144Meta, liquidityFor, searchLiquidity } from "./scripts/lib/form144-store.mjs";
+import { cmsMeta, searchPhysicians } from "./scripts/lib/cms-store.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -67,6 +68,7 @@ const server = http.createServer(async (request, response) => {
         privateOfferings: formDMeta(DATA_DIR),
         netWorth: floridaMeta(DATA_DIR),
         liquidity: form144Meta(DATA_DIR),
+        physicianOwnership: cmsMeta(DATA_DIR),
         sources: {
           secDatasets: config.sec.datasetBase,
           edgarSubmissions: config.sec.submissionsBase,
@@ -231,6 +233,53 @@ const server = http.createServer(async (request, response) => {
      * would place residences on the map. City and state are the finest granularity
      * this route will ever return.
      */
+    /**
+     * Physician ownership stakes — CMS Open Payments.
+     *
+     * The Sunshine Act (42 U.S.C. §1320a-7h) makes drug and device makers report, by
+     * name, any ownership interest a physician holds in them — with an EXACT DOLLAR
+     * value rather than a band. It is the only source here covering a profession rather
+     * than a corporate role, so it reaches people no SEC filing ever will.
+     *
+     * Physicians only. Roughly 8% of rows are held by an immediate family member, who
+     * accepted no disclosure duty, and those are excluded at ingest.
+     *
+     * City and state only: the source's "primary business address" is a hospital for
+     * some and a solo practice — routinely a home — for others, with no flag between
+     * them. Free-text terms are scrubbed of anything address-shaped before serving.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/physician-ownership") {
+      const result = searchPhysicians(
+        {
+          name: url.searchParams.get("name"),
+          specialty: url.searchParams.get("specialty"),
+          company: url.searchParams.get("company"),
+          state: url.searchParams.get("state"),
+          minValue: Number(url.searchParams.get("minValue")) || 0,
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25)),
+          offset: Math.max(0, Number(url.searchParams.get("offset")) || 0),
+        },
+        DATA_DIR,
+      );
+
+      return sendJson(response, 200, {
+        ok: true,
+        total: result.total,
+        returned: result.rows.length,
+        people: result.rows,
+        index: cmsMeta(DATA_DIR),
+        disclosure:
+          "Ownership and investment interests physicians hold in drug and device manufacturers, reported by those manufacturers under the Physician Payments Sunshine Act. Interests held by an immediate family member are excluded. Location is city and state only.",
+        valuationNotice:
+          "valueOfInterest is an exact dollar figure for one stake in one company, reported by that company. Stakes in different companies are summed because each is valued once — unlike a Form 144 notice, which may repeat the same shares.",
+        attribution: {
+          source: "CMS Open Payments — Physician Ownership and Investment Interest",
+          sourceUrl: "https://openpaymentsdata.cms.gov",
+          licence: "US Government work — https://www.usa.gov/government-works",
+        },
+      });
+    }
+
     /**
      * Liquidity — SEC Form 144 notices of proposed sale.
      *
