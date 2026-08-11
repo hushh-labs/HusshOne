@@ -15,6 +15,7 @@ credential beyond the optional bearer key on this service's own routes.
 | --- | --- | --- |
 | Positions, prices, names, roles | SEC quarterly Form 3/4/5 datasets | $0 |
 | Private-company officers and directors | SEC Form D | $0 |
+| Sworn net worth (Florida officials) | Florida Form 6 | $0 |
 | Issuer business addresses | SEC EDGAR submissions API | $0 |
 | Street-level coordinates | US Census batch geocoder | $0 |
 | Postcode coordinates (fallback) | US Census ZCTA gazetteer | $0 |
@@ -63,6 +64,7 @@ postcode or coordinate reaches a Form D response.
 | `GET /v1/insiders` | bearer | Raw location search, streamed as NDJSON, not collapsed |
 | `GET /v1/insiders/{cik}` | bearer | One filer's disclosed positions |
 | `GET /v1/issuers/{cik}` | bearer | One company. Never names a person |
+| `GET /v1/net-worth` | bearer | **Sworn exact net worth** — Florida Form 6 |
 | `GET /v1/private-offerings` | bearer | Private-company founders by name or company |
 
 `/v1/around` is the endpoint to integrate with. It answers a location once across every

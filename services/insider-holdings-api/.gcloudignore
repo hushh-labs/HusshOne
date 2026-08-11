@@ -10,6 +10,7 @@
 # /health reports the row count of both.
 !data/index.json
 !data/form-d.json
+!data/florida-net-worth.json
 
 .git/
 .gitignore

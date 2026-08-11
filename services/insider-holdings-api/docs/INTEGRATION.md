@@ -222,6 +222,45 @@ Render `meta` immediately, append each `insider` as it lands, stop on `done`. A
 mid-stream failure emits a terminal `{"type":"error"}` frame rather than truncating, so
 a partial list is always distinguishable from a complete one.
 
+## `GET /v1/net-worth` — sworn net worth, Florida
+
+**The only source in this service that reports an actual net worth**, and the only US
+regime that publishes one. Article II §8(j)(1) of the Florida Constitution requires
+certain officials to file *"a sworn statement showing net worth"* — an exact figure they
+swore to, not a band and not a model.
+
+```
+GET /v1/net-worth?county=hillsborough&limit=25
+GET /v1/net-worth?name=latimer
+GET /v1/net-worth?office=sheriff&minNetWorth=1000000
+```
+
+```json
+{"ok": true, "total": 2841,
+ "people": [{
+   "name": "Craig Latimer", "prefix": "Hon",
+   "offices": ["Supervisor Of Elections - Elected Constitutional Officer"],
+   "county": "Hillsborough", "formYear": 2025,
+   "netWorth": 6629408.00,
+   "filingUrl": "https://disclosure.floridaethics.gov/api/Report/RenderPdf/…/False"
+ }]}
+```
+
+Read the difference carefully. Everywhere else in this service, a figure is **one
+holding in one company** — Bezos's Amazon stake, not Bezos's wealth. Here it is the
+person's **whole declared position**, sworn under the Florida Constitution.
+
+**Only the net-worth figure is extracted.** The asset, liability and income schedules
+are never read or stored, because Form 6 instructs filers to identify real property *"by
+providing the street address of the property"* — so those pages contain home addresses.
+Location is the **county and office** the person is elected to serve. There are no
+coordinates and this endpoint takes no `lat`/`lng`.
+
+A missing figure is `null`, never `0`: filings before form year 2023 are scans with no
+text layer, and treating one as zero would rank a scanned filer as the poorest official
+in Florida. Negative net worth is real and is preserved — Form 6 prints a deficit in
+parentheses.
+
 ## `GET /v1/private-offerings` — private-company founders
 
 Officers, directors and promoters named on a company's **Form D** — the filing a private
