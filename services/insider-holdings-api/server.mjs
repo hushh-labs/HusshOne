@@ -162,19 +162,40 @@ const server = http.createServer(async (request, response) => {
        */
       const all = searchNearby({ ...query, limit: Number.MAX_SAFE_INTEGER, offset: 0 }, DATA_DIR);
       const collapsed = collapseCoFiled(all.rows);
-      const page = collapsed.slice(query.offset, query.offset + query.limit);
+
+      /**
+       * `?subjectType=person` drops corporate filers.
+       *
+       * Section 16 names funds and holding companies alongside human beings, and around
+       * Kirkland the corporations hold 39% of the top-100 value. A caller asking "who
+       * near me holds a lot" usually means people, and until now had no way to say so.
+       *
+       * The summary is computed BEFORE this filter so it always describes the whole
+       * area, and reports the person/entity split either way.
+       */
+      const wanted = (url.searchParams.get("subjectType") || "").trim().toLowerCase();
+      const visible = ["person", "entity"].includes(wanted)
+        ? collapsed.filter((row) => row.subjectType === wanted)
+        : collapsed;
+
+      const page = visible.slice(query.offset, query.offset + query.limit);
 
       return sendJson(response, 200, {
         ok: true,
         resolved: { lat: query.lat, lng: query.lng },
         resolvedFrom: query.resolvedFrom,
         radiusMi: query.radiusMi,
-        // Describes the whole radius, not this page.
+        // Describes the whole radius, before any subjectType filter.
         summary: summarise(collapsed),
-        people: page,
+        subjectTypeFilter: ["person", "entity"].includes(wanted) ? wanted : null,
+        // `holders`, not `people`: Section 16 names funds and holding companies
+        // alongside human beings, and calling the array `people` asserted something
+        // untrue of nearly 40% of the value around Kirkland.
+        holders: page,
         returned: page.length,
-        total: collapsed.length,
-        hasMore: query.offset + page.length < collapsed.length,
+        total: visible.length,
+        totalBeforeFilter: collapsed.length,
+        hasMore: query.offset + page.length < visible.length,
         collapsedFrom: all.rows.length,
         duplicatesRemoved: all.rows.length - collapsed.length,
         sources: {

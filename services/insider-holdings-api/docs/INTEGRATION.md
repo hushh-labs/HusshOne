@@ -40,13 +40,17 @@ GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
   "radiusMi": 25,
 
   "summary": {
-    "people": 547,
+    "holders": 547,
+    "naturalPersons": 537,
+    "entities": 10,
     "companies": 50,
     "positionsPriced": 450,
     "positionsUnpriced": 97,
     "sumOfLargestDisclosedPositions": 345019794510,
+    "heldByNaturalPersons": 208418890189,
+    "heldByEntities": 136600904321,
     "topEmployersByDisclosedValue": [
-      {"cik": "1018724", "name": "AMAZON COM INC", "people": 41, "disclosed": 204455354121}
+      {"cik": "1018724", "name": "AMAZON COM INC", "people": 17, "disclosed": 204455354121}
     ]
   },
 
@@ -55,8 +59,9 @@ GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
   "hasMore": true,
   "collapsedFrom": 640,
   "duplicatesRemoved": 93,
+  "subjectTypeFilter": null,
 
-  "people": [ /* see below */ ],
+  "holders": [ /* see below */ ],
   "sources": { /* see below */ },
   "attribution": { /* see below */ }
 }
@@ -65,7 +70,7 @@ GET /v1/around?lat=47.6749&lng=-122.2155&radiusMi=25&limit=25
 `summary` describes the **whole radius**, not the returned page. `collapsedFrom` is how
 many raw filings that radius held before co-filed positions were merged.
 
-### A person row
+### A holder row
 
 ```json
 {
@@ -103,7 +108,7 @@ many raw filings that radius held before co-filed positions were merged.
 
 ---
 
-## Five things that will shape your UI more than the field list
+## Six things that will shape your UI more than the field list
 
 ### 1. Location is the company's, never the person's
 
@@ -155,7 +160,29 @@ market value.
 Label these differently in your UI. "Holds $45m in options" and "holds $45m in stock"
 are not the same claim.
 
-### 5. `filerCount > 1` means one position, several filers
+### 5. Not every "holder" is a human being
+
+Section 16 names funds, holding companies and sovereign investors alongside people.
+Around Kirkland 10 of the 547 holders are corporations, and they hold **$136.6bn of
+the $345bn total — 39%** — `DEUTSCHE TELEKOM AG` at $128bn is a German telecoms group, not
+somebody's neighbour.
+
+Every row carries `subjectType`, either `person` or `entity`, and you can filter:
+
+```
+GET /v1/around?lat=…&lng=…&subjectType=person
+```
+
+The summary reports the split both ways — `naturalPersons` / `entities` and
+`heldByNaturalPersons` / `heldByEntities` — and is always computed over the whole area
+*before* the filter, so switching the filter never changes the totals.
+
+Be aware this is a **name heuristic, not a fact from the filing**: Section 16 has no
+person/entity flag. It is tuned to prefer calling something a person when uncertain,
+because wrongly labelling a human as a company would silently hide them behind the
+filter.
+
+### 6. `filerCount > 1` means one position, several filers
 
 A single economic holding is routinely reported by a stack of related entities — one
 group in the index has **37 filers** on the same 1,650,000 shares, and 3,713 groups are
