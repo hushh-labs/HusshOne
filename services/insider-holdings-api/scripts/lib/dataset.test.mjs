@@ -45,7 +45,7 @@ test("the newest filing wins, regardless of table order", () => {
     holdings: [],
   });
 
-  const position = positions.get("1111111:320193");
+  const position = positions.get("1111111:320193:direct");
   assert.equal(position.shares, 500, "June's share count must win over May's");
   assert.equal(position.asOf, "2026-06-30");
 });
@@ -80,7 +80,7 @@ test("an older filing may backfill a price the newer one omitted", () => {
     holdings: [{ ACCESSION_NUMBER: "a2", SECURITY_TITLE: "Common Stock", SHRS_OWND_FOLWNG_TRANS: "500" }],
   });
 
-  const position = positions.get("1111111:320193");
+  const position = positions.get("1111111:320193:direct");
   assert.equal(position.shares, 500);
   assert.equal(position.pricePerShare, 150, "price should carry forward from the priced filing");
 });
@@ -110,7 +110,7 @@ test("within one filing date, the first row is the closing position", () => {
     holdings: [],
   });
 
-  const position = positions.get("1111111:320193");
+  const position = positions.get("1111111:320193:direct");
   assert.equal(position.shares, 710172677, "closing position, not the mid-transaction one");
   assert.equal(position.pricePerShare, 404.66, "market price, not the option strike");
   assert.equal(valuePosition(position), 287378475475);
@@ -126,10 +126,64 @@ test("a disclosed price of zero is treated as no price at all", () => {
     holdings: [],
   });
 
-  const position = positions.get("1111111:320193");
+  const position = positions.get("1111111:320193:direct");
   assert.equal(position.shares, 842091670, "the share count is still disclosed");
   assert.equal(position.pricePerShare, null, "0.00 must not survive as a price");
   assert.equal(valuePosition(position), null, "must be unpriced, never $0");
+});
+
+test("derivative-only filers are indexed, priced from the issuer's direct price", () => {
+  // 14.7% of qualifying filers hold ONLY options/RSUs and were dropped entirely.
+  const positions = buildPositions({
+    submissions,
+    owners,
+    transactions: [{ ACCESSION_NUMBER: "a1", SHRS_OWND_FOLWNG_TRANS: "100", TRANS_PRICEPERSHARE: "500" }],
+    holdings: [],
+    derivTransactions: [{
+      ACCESSION_NUMBER: "a2", SECURITY_TITLE: "Stock Option (Right to Buy)",
+      UNDLYNG_SEC_SHARES: "100000", CONV_EXERCISE_PRICE: "50",
+    }],
+    derivHoldings: [],
+  });
+
+  const option = positions.get("1111111:320193:derivative");
+  assert.equal(option.kind, "derivative");
+  assert.equal(option.shares, 100000, "underlying share count");
+  assert.equal(option.strikePrice, 50);
+  assert.equal(option.pricePerShare, 500, "market price borrowed from the direct position");
+
+  // Intrinsic only: 100,000 x (500 - 50). Valuing at face would claim $50m.
+  assert.equal(valuePosition(option), 45000000);
+
+  // The direct holding is untouched and separately keyed.
+  assert.equal(positions.get("1111111:320193:direct").shares, 100);
+});
+
+test("an underwater option is worth zero, never a negative", () => {
+  const option = { kind: "derivative", shares: 1000, pricePerShare: 10, strikePrice: 90 };
+  assert.equal(valuePosition(option), 0);
+});
+
+test("a zero-strike derivative is an RSU and carries full market value", () => {
+  // RSUs convert for free, so 0 is a real strike here — not a missing one.
+  const rsu = { kind: "derivative", shares: 1000, pricePerShare: 250, strikePrice: 0 };
+  assert.equal(valuePosition(rsu), 250000);
+});
+
+test("a derivative with no strike at all is unpriceable, not free", () => {
+  const unknown = { kind: "derivative", shares: 1000, pricePerShare: 250, strikePrice: null };
+  assert.equal(valuePosition(unknown), null);
+});
+
+test("a derivative at an issuer with no direct price stays unpriced", () => {
+  const positions = buildPositions({
+    submissions, owners, transactions: [], holdings: [],
+    derivTransactions: [{ ACCESSION_NUMBER: "a1", UNDLYNG_SEC_SHARES: "5000", CONV_EXERCISE_PRICE: "12" }],
+    derivHoldings: [],
+  });
+  const option = positions.get("1111111:320193:derivative");
+  assert.equal(option.pricePerShare, null, "no honest market price exists, so none is invented");
+  assert.equal(valuePosition(option), null);
 });
 
 test("valuePosition multiplies, and returns null when no price was disclosed", () => {
