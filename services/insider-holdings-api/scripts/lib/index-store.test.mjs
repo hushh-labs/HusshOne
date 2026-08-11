@@ -9,7 +9,7 @@ import { getPerson, resetIndex, searchNearby, setIndex } from "./index-store.mjs
  */
 function seed() {
   const issuers = new Map([
-    ["320193", { cik: "320193", name: "Apple Inc.", tickers: ["AAPL"], address: { city: "SF", state: "CA", street1: "1 WAY", zip: "94105" }, lat: 37.789, lng: -122.396 }],
+    ["320193", { cik: "320193", name: "Apple Inc.", tickers: ["AAPL"], exchanges: ["Nasdaq"], sicDescription: "Electronic Computers", phone: "4089961010", address: { city: "SF", state: "CA", street1: "1 WAY", zip: "94105" }, lat: 37.789, lng: -122.396 }],
     ["789019", { cik: "789019", name: "Msft", tickers: ["MSFT"], address: { city: "SF", state: "CA", street1: "2 WAY", zip: "94105" }, lat: 37.79, lng: -122.4 }],
     ["111111", { cik: "111111", name: "Far Co", tickers: ["FAR"], address: { city: "NY", state: "NY", street1: "3 AVE", zip: "10001" }, lat: 40.75, lng: -73.997 }],
   ]);
@@ -67,6 +67,25 @@ test("offset pages without reordering", () => {
   const page2 = searchNearby({ ...SF, limit: 1, offset: 1 }, ".").rows;
   assert.equal(page2.length, 1);
   assert.equal(page2[0].name, all[1].name);
+});
+
+test("a search row carries the COMPANY's contact details", () => {
+  seed();
+  const row = searchNearby(SF, ".").rows[0];
+  assert.equal(row.issuer.phone, "4089961010", "company switchboard should be present");
+  assert.equal(row.issuer.street1, "1 WAY");
+  assert.equal(row.issuer.industry, "Electronic Computers");
+  assert.deepEqual(row.issuer.exchanges, ["Nasdaq"]);
+});
+
+test("the PERSON object never carries contact details of its own", () => {
+  seed();
+  const row = searchNearby(SF, ".").rows[0];
+  // Contact belongs to the employer, never to the individual. The SEC publishes no
+  // personal phone, email or home address, and this service must not appear to.
+  for (const field of ["phone", "email", "street1", "address", "zip", "city"]) {
+    assert.equal(field in row, false, `person row must not carry its own ${field}`);
+  }
 });
 
 test("no response carries an owner address field", () => {
