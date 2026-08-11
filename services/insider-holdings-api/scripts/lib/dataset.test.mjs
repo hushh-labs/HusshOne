@@ -94,6 +94,44 @@ test("zero and negative share counts are ignored", () => {
   assert.equal(positions.size, 0);
 });
 
+test("within one filing date, the first row is the closing position", () => {
+  // Musk's real 17-JUN-2026 Tesla filing. The option exercise (code M, priced at the
+  // $23.34 STRIKE) happened first and the tax withholding (code F, priced at the
+  // $404.66 MARKET price) second — so 710,172,677 is what he ends up holding, and the
+  // SEC lists that row first. Taking the later row would report both a stale position
+  // and a strike price masquerading as a market price.
+  const positions = buildPositions({
+    submissions: [submissions[0]],
+    owners: [owners[0]],
+    transactions: [
+      { ACCESSION_NUMBER: "a1", TRANS_CODE: "F", SHRS_OWND_FOLWNG_TRANS: "710172677", TRANS_PRICEPERSHARE: "404.66" },
+      { ACCESSION_NUMBER: "a1", TRANS_CODE: "M", SHRS_OWND_FOLWNG_TRANS: "727704534", TRANS_PRICEPERSHARE: "23.34" },
+    ],
+    holdings: [],
+  });
+
+  const position = positions.get("1111111:320193");
+  assert.equal(position.shares, 710172677, "closing position, not the mid-transaction one");
+  assert.equal(position.pricePerShare, 404.66, "market price, not the option strike");
+  assert.equal(valuePosition(position), 287378475475);
+});
+
+test("a disclosed price of zero is treated as no price at all", () => {
+  // Filings for privately-held issuers report 0.00. SpaceX's Form 4s do this, and
+  // taking it literally values an 842m-share position at $0 — worthless, rather than
+  // unpriced. Caught against live 2026Q2 data.
+  const positions = buildPositions({
+    submissions, owners,
+    transactions: [{ ACCESSION_NUMBER: "a1", SHRS_OWND_FOLWNG_TRANS: "842091670", TRANS_PRICEPERSHARE: "0.00" }],
+    holdings: [],
+  });
+
+  const position = positions.get("1111111:320193");
+  assert.equal(position.shares, 842091670, "the share count is still disclosed");
+  assert.equal(position.pricePerShare, null, "0.00 must not survive as a price");
+  assert.equal(valuePosition(position), null, "must be unpriced, never $0");
+});
+
 test("valuePosition multiplies, and returns null when no price was disclosed", () => {
   // A real row from the 2026Q2 dataset: 3,214,080 shares at the $171.30 disclosed on
   // that filing.

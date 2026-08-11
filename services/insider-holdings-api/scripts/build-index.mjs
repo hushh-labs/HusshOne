@@ -141,10 +141,23 @@ async function main() {
   let done = 0;
   let placed = 0;
 
-  for (const cik of issuerCiks) {
+  /**
+   * `--max-issuers N` stops after N issuers. A full quarter is ~4,500 EDGAR calls at
+   * the SEC's rate, which is roughly 45 minutes — far too slow for a smoke test. A
+   * bounded build produces a real, correctly-shaped index in about a minute.
+   *
+   * It is recorded in meta as `partial: true` so a truncated index can never be
+   * mistaken for a complete one by /health or by anything reading the file.
+   */
+  const maxIssuers = Number(arg("max-issuers", "")) || Infinity;
+  const targets = [...issuerCiks].slice(0, Number.isFinite(maxIssuers) ? maxIssuers : undefined);
+
+  for (const cik of targets) {
     const issuer = await fetchIssuer(cik);
     done += 1;
-    if (done % 250 === 0) log(`issuers ${done}/${issuerCiks.size} (${placed} placed)`);
+    if (done % 250 === 0 || done === targets.length) {
+      log(`issuers ${done}/${targets.length} (${placed} placed)`);
+    }
     if (!issuer) continue;
 
     const zip = String(issuer.address.zip || "").slice(0, 5);
@@ -166,6 +179,10 @@ async function main() {
       people: people.size,
       issuers: issuers.size,
       issuersPlaced: placed,
+      // A bounded build is a real index over fewer issuers. Flagging it keeps a smoke
+      // -test artefact from being read as full quarterly coverage.
+      partial: targets.length < issuerCiks.size,
+      issuersAvailable: issuerCiks.size,
       source: "SEC Forms 3/4/5 quarterly datasets + EDGAR submissions + Census ZCTA gazetteer",
     },
     people: [...people.values()].map((person) => ({

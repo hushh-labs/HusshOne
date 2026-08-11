@@ -61,6 +61,19 @@ const number = (value) => {
 };
 
 /**
+ * A price of zero means "no price to disclose", not "worthless".
+ *
+ * Filings for privately-held issuers report 0.00 — SpaceX's Form 4s do exactly this.
+ * Taking that literally values an 842-million-share position at $0, which reads as
+ * worthless when the truth is that no public price exists. Both cases collapse to
+ * null so the caller sees "shares disclosed, no price on file".
+ */
+const price = (value) => {
+  const parsed = number(value);
+  return parsed === 0 ? null : parsed;
+};
+
+/**
  * Build the position index from one quarter's tables.
  *
  * Returns a Map keyed by `${personCik}:${issuerCik}` holding the person's LATEST
@@ -115,7 +128,14 @@ export function buildPositions({ submissions, owners, transactions, holdings }) 
       const key = `${person.cik}:${filing.issuerCik}`;
       const existing = positions.get(key);
 
-      // Keep the most recently FILED position. A missing date loses to a present one.
+      // Keep the most recently FILED position, and on an equal date keep the FIRST row.
+      //
+      // Verified against Musk's 17-JUN-2026 Tesla filing, which carries two rows:
+      //   row 1  code F (shares withheld for tax)  price 404.66  ->  710,172,677 held
+      //   row 2  code M (option exercise)          price  23.34  ->  727,704,534 held
+      // The exercise happened first and the withholding second, so 710,172,677 is the
+      // closing position — and the SEC lists it FIRST. Preferring the later row instead
+      // reports a stale position priced at the option strike rather than the market.
       if (existing && existing.asOf && filing.filedOn && existing.asOf >= filing.filedOn) {
         // An older filing can still supply a price the newer one omitted (Form 3s and
         // gifts report no price), so fill the gap without disturbing the share count.
@@ -149,7 +169,7 @@ export function buildPositions({ submissions, owners, transactions, holdings }) 
       row.ACCESSION_NUMBER,
       row.SECURITY_TITLE || "Common Stock",
       number(row.SHRS_OWND_FOLWNG_TRANS),
-      number(row.TRANS_PRICEPERSHARE),
+      price(row.TRANS_PRICEPERSHARE),
     );
   }
 
@@ -174,6 +194,9 @@ export function buildPositions({ submissions, owners, transactions, holdings }) 
  * would rank a large unpriced holding below a small priced one.
  */
 export function valuePosition(position) {
-  if (!position || position.pricePerShare == null || position.shares == null) return null;
+  if (!position || position.shares == null) return null;
+  // `price()` already maps 0 to null at parse time; this repeats the guard so a value
+  // can never be computed from a zero price even if a caller builds a position by hand.
+  if (!position.pricePerShare) return null;
   return Math.round(position.shares * position.pricePerShare);
 }
