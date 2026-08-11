@@ -23,6 +23,7 @@ import { getIssuer, getPerson, indexMeta, searchNearby } from "./scripts/lib/ind
 import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
 import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
 import { floridaMeta, searchFlorida } from "./scripts/lib/florida-store.mjs";
+import { form144Meta, liquidityFor, searchLiquidity } from "./scripts/lib/form144-store.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -65,6 +66,7 @@ const server = http.createServer(async (request, response) => {
         // than showing up as an endpoint that quietly returns nothing.
         privateOfferings: formDMeta(DATA_DIR),
         netWorth: floridaMeta(DATA_DIR),
+        liquidity: form144Meta(DATA_DIR),
         sources: {
           secDatasets: config.sec.datasetBase,
           edgarSubmissions: config.sec.submissionsBase,
@@ -180,7 +182,12 @@ const server = http.createServer(async (request, response) => {
         ? collapsed.filter((row) => row.subjectType === wanted)
         : collapsed;
 
-      const page = visible.slice(query.offset, query.offset + query.limit);
+      const page = visible.slice(query.offset, query.offset + query.limit).map((row) => {
+        // Enrich only the returned page: a Form 144 lookup per row across the whole
+        // radius would be wasted on rows nobody sees.
+        const liquidity = liquidityFor(row.cik, DATA_DIR);
+        return liquidity ? { ...row, liquidity } : row;
+      });
 
       return sendJson(response, 200, {
         ok: true,
@@ -224,6 +231,41 @@ const server = http.createServer(async (request, response) => {
      * would place residences on the map. City and state are the finest granularity
      * this route will ever return.
      */
+    /**
+     * Liquidity — SEC Form 144 notices of proposed sale.
+     *
+     * Everything else here reports what someone HOLDS. This reports what they have
+     * signalled they may SELL, in exact dollars they supplied. Shares are not cash, and
+     * a large holder who has noticed no sale is in a different position from one who
+     * has noticed $50m — which a holdings figure alone cannot express.
+     *
+     * A notice is an INTENT, not a completed sale, and the same shares can be noticed
+     * repeatedly. So this is never summed into a holding and the field names say so.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/liquidity") {
+      const result = searchLiquidity(
+        {
+          name: url.searchParams.get("name"),
+          issuer: url.searchParams.get("issuer"),
+          minValue: Number(url.searchParams.get("minValue")) || 0,
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25)),
+          offset: Math.max(0, Number(url.searchParams.get("offset")) || 0),
+        },
+        DATA_DIR,
+      );
+
+      return sendJson(response, 200, {
+        ok: true,
+        total: result.total,
+        returned: result.rows.length,
+        people: result.rows,
+        index: form144Meta(DATA_DIR),
+        valuationNotice:
+          "aggregateMarketValue is the value of a PROPOSED sale the filer notified. The sale need not occur, and the same shares may be noticed more than once, so these figures are never summed and never added to a holding. largestProposedSale is the biggest single notice, not a total.",
+        attribution: ATTRIBUTION,
+      });
+    }
+
     /**
      * Sworn net worth — Florida Form 6.
      *
