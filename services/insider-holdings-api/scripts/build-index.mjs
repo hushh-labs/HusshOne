@@ -151,6 +151,8 @@ async function main() {
   const owners = [];
   const transactions = [];
   const holdings = [];
+  const derivTransactions = [];
+  const derivHoldings = [];
 
   const cacheDir = arg("cache", null);
 
@@ -161,6 +163,8 @@ async function main() {
     owners.push(...readTable(extracted, "REPORTINGOWNER"));
     transactions.push(...readTable(extracted, "NONDERIV_TRANS"));
     holdings.push(...readTable(extracted, "NONDERIV_HOLDING"));
+    derivTransactions.push(...readTable(extracted, "DERIV_TRANS"));
+    derivHoldings.push(...readTable(extracted, "DERIV_HOLDING"));
     // Each quarter is ~12 MB zipped but several hundred MB expanded; drop it once
     // parsed so a sixteen-quarter build does not fill the disk.
     fs.rmSync(extracted, { recursive: true, force: true });
@@ -168,8 +172,11 @@ async function main() {
 
   log(`merged ${quarters.length} quarter(s): ${submissions.length} filings, ${owners.length} filer rows`);
 
-  const positions = buildPositions({ submissions, owners, transactions, holdings });
-  log(`positions: ${positions.size}`);
+  const positions = buildPositions({
+    submissions, owners, transactions, holdings, derivTransactions, derivHoldings,
+  });
+  const derivativeCount = [...positions.values()].filter((p) => p.kind === "derivative").length;
+  log(`positions: ${positions.size} (${derivativeCount} derivative)`);
 
   // Group by person.
   const people = new Map();
@@ -200,8 +207,12 @@ async function main() {
       issuerName: position.issuerName,
       ticker: position.ticker,
       security: position.security,
+      // "direct" = shares owned outright. "derivative" = options/RSUs/warrants, whose
+      // `shares` is the UNDERLYING count and whose value is intrinsic only.
+      kind: position.kind || "direct",
       shares: position.shares,
       pricePerShare: position.pricePerShare,
+      strikePrice: position.strikePrice ?? null,
       value,
       asOf: position.asOf,
       formType: position.formType,

@@ -159,8 +159,13 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
         issuerName: best.position.issuerName,
         ticker: best.position.ticker,
         security: best.position.security,
+        // "direct" holds the shares; "derivative" holds options/RSUs over them, valued
+        // at intrinsic worth. Surfaced so a UI can label the two differently rather
+        // than implying an option holder owns the stock.
+        kind: best.position.kind || "direct",
         shares: best.position.shares,
         pricePerShare: best.position.pricePerShare,
+        strikePrice: best.position.strikePrice ?? null,
         disclosedValue: best.position.value,
         asOf: best.position.asOf,
         formType: best.position.formType,
