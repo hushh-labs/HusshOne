@@ -1,0 +1,16 @@
+{
+  "name": "insider-holdings-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Section 16 insiders near a location, ranked by the position value they disclosed themselves. Free public SEC and Census sources only; no paid data vendor.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test scripts/lib/*.test.mjs",
+    "centroids": "node scripts/fetch-centroids.mjs",
+    "build-index": "node scripts/build-index.mjs"
+  }
+}
