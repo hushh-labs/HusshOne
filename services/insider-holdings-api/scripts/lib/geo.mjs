@@ -75,15 +75,27 @@ export function haversineMi(lat1, lng1, lat2, lng2) {
 /**
  * Distance as it should be reported to a caller.
  *
- * Anything under half a mile is a centroid artefact rather than a measurement, so it
- * is reported as 0 with `approximate: true` instead of a decimal that invites the
- * reader to believe we know which building someone is in.
+ * The precision label must state where the coordinate ACTUALLY came from. It was
+ * previously hardcoded to "zip_centroid", which survived unnoticed until street-level
+ * geocoding landed and every row still claimed to be a centroid — under-reporting
+ * 4,303 companies and, worse, leaving a caller no way to tell a precise row from an
+ * approximate one.
+ *
+ * The half-mile floor exists because a centroid puts every address in a postcode on
+ * one point, so "0.2 miles" there is an artefact rather than a measurement. That
+ * reasoning does not apply to a geocoded street address, where 0.2 miles is real — so
+ * the floor is applied only to centroid-placed issuers.
  */
-export function describeDistance(miles) {
-  const rounded = miles < MIN_MEANINGFUL_MI ? 0 : Math.round(miles * 10) / 10;
+export function describeDistance(miles, tier = "zip_centroid") {
+  const isCentroid = tier !== "street";
+  const rounded = isCentroid && miles < MIN_MEANINGFUL_MI ? 0 : Math.round(miles * 10) / 10;
+
   return {
     distanceMiles: rounded,
+    // Street coordinates are interpolated along TIGER address ranges, so they are
+    // accurate to tens of metres rather than rooftop-exact. Still approximate, but
+    // approximate at a different order of magnitude — hence the tier, not just a flag.
     distanceApproximate: true,
-    geoPrecision: "zip_centroid",
+    geoPrecision: isCentroid ? "zip_centroid" : "street_interpolated",
   };
 }

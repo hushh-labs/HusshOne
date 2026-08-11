@@ -54,11 +54,28 @@ test("haversine matches a known distance", () => {
   assert.equal(Math.round(haversineMi(37.789, -122.396, 37.789, -122.396)), 0);
 });
 
-test("sub-half-mile distances report as 0 rather than false precision", () => {
-  const near = describeDistance(0.2);
+test("a centroid distance under half a mile reports as 0, not false precision", () => {
+  const near = describeDistance(0.2, "zip_centroid");
   assert.equal(near.distanceMiles, 0);
   assert.equal(near.distanceApproximate, true);
   assert.equal(near.geoPrecision, "zip_centroid");
 
-  assert.equal(describeDistance(12.34).distanceMiles, 12.3);
+  assert.equal(describeDistance(12.34, "zip_centroid").distanceMiles, 12.3);
+});
+
+test("a street-level distance under half a mile is a real measurement", () => {
+  // The half-mile floor exists because a centroid puts a whole postcode on one point.
+  // That reasoning does not apply to a geocoded street address.
+  const near = describeDistance(0.2, "street");
+  assert.equal(near.distanceMiles, 0.2, "must not be floored away");
+  assert.equal(near.geoPrecision, "street_interpolated");
+});
+
+test("the precision label states where the coordinate really came from", () => {
+  // This was hardcoded to "zip_centroid" and survived until geocoding landed, leaving
+  // every street-level row claiming to be a centroid.
+  assert.equal(describeDistance(5, "street").geoPrecision, "street_interpolated");
+  assert.equal(describeDistance(5, "zip_centroid").geoPrecision, "zip_centroid");
+  assert.equal(describeDistance(5).geoPrecision, "zip_centroid", "defaults to the weaker claim");
+  assert.equal(describeDistance(5, null).geoPrecision, "zip_centroid", "unknown tier is not street");
 });
