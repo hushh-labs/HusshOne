@@ -64,8 +64,22 @@ export function extractNetWorth(text) {
 export function buildFiler(roster, netWorth) {
   if (!roster || netWorth == null) return null;
 
-  const offices = (roster.fullOrganizations || [])
-    .map((o) => o.fullOrganizationName || o.organizationName)
+  /**
+   * The two Florida roster endpoints describe the same person with different field
+   * names, and reading only one shape silently yields a record with no office at all —
+   * which is this source's entire geographic anchor.
+   *
+   *   SearchPublicFilings  ->  delimitedOrganizationNames (a string), countyName
+   *   SearchPublicFilers   ->  fullOrganizations (objects),           countyOfResidence
+   *
+   * Both are accepted rather than pinning to whichever endpoint the builder happens to
+   * call today.
+   */
+  const offices = [
+    ...(roster.fullOrganizations || []).map((o) => o.fullOrganizationName || o.organizationName),
+    ...String(roster.delimitedOrganizationNames || "").split(/\s*[;|]\s*/),
+  ]
+    .map((office) => String(office || "").trim())
     .filter(Boolean);
 
   return {
@@ -75,8 +89,8 @@ export function buildFiler(roster, netWorth) {
     // The public office the person holds. This IS their public location — a county
     // commissioner's jurisdiction is a matter of record — and it is the only geography
     // this source contributes. No street, no postcode, no coordinates.
-    offices,
-    county: roster.countyOfResidence || null,
+    offices: [...new Set(offices)],
+    county: roster.countyName || roster.countyOfResidence || null,
     formYear: roster.formYear ?? null,
     netWorth,
     source: "Florida Form 6 (Art. II §8(j)(1), Fla. Const.) — sworn statement of net worth",

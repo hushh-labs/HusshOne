@@ -73,6 +73,33 @@ test("buildFiler refuses a record with no figure rather than inventing one", () 
   assert.equal(buildFiler(null, 100), null);
 });
 
+test("both Florida roster shapes yield an office — neither is silently empty", () => {
+  // SearchPublicFilings and SearchPublicFilers name the same fields differently.
+  // Reading only one shape produced records with no office at all, which is this
+  // source's entire geographic anchor.
+  const fromFilings = buildFiler(
+    { fullName: "Edwin Bailey Browning III", delimitedOrganizationNames: "Judicial Circuit (3Rd)", countyName: "Madison" },
+    500000,
+  );
+  assert.deepEqual(fromFilings.offices, ["Judicial Circuit (3Rd)"]);
+  assert.equal(fromFilings.county, "Madison");
+
+  const fromFilers = buildFiler(
+    { fullName: "Craig McCarthy", fullOrganizations: [{ fullOrganizationName: "Judicial Circuit (9Th)" }], countyOfResidence: "Orange" },
+    500000,
+  );
+  assert.deepEqual(fromFilers.offices, ["Judicial Circuit (9Th)"]);
+  assert.equal(fromFilers.county, "Orange");
+});
+
+test("multiple offices split, and duplicates collapse", () => {
+  const filer = buildFiler(
+    { fullName: "X", delimitedOrganizationNames: "County Commission; School Board; County Commission" },
+    1,
+  );
+  assert.deepEqual(filer.offices, ["County Commission", "School Board"]);
+});
+
 test("the public office is kept — it is the person's public location", () => {
   const filer = buildFiler({
     filingId: 1067851, fullName: "Craig Latimer", countyOfResidence: "Hillsborough",
