@@ -25,6 +25,7 @@ import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
 import { floridaMeta, searchFlorida } from "./scripts/lib/florida-store.mjs";
 import { form144Meta, liquidityFor, searchLiquidity } from "./scripts/lib/form144-store.mjs";
 import { cmsMeta, searchPhysicians } from "./scripts/lib/cms-store.mjs";
+import { advMeta, searchAdvOwners } from "./scripts/lib/adv-store.mjs";
 
 const SERVICE = "insider-holdings-api";
 const DATA_DIR = path.resolve(config.dataDir);
@@ -69,6 +70,7 @@ const server = http.createServer(async (request, response) => {
         netWorth: floridaMeta(DATA_DIR),
         liquidity: form144Meta(DATA_DIR),
         physicianOwnership: cmsMeta(DATA_DIR),
+        adviserOwners: advMeta(DATA_DIR),
         sources: {
           secDatasets: config.sec.datasetBase,
           edgarSubmissions: config.sec.submissionsBase,
@@ -233,6 +235,57 @@ const server = http.createServer(async (request, response) => {
      * would place residences on the map. City and state are the finest granularity
      * this route will ever return.
      */
+    /**
+     * Investment-adviser owners — SEC Form ADV Schedule A/B.
+     *
+     * The largest population in this service: ~144,000 named individuals who own or
+     * control a registered investment adviser or exempt reporting adviser.
+     *
+     * Two things make it different from every other source here. `crd` is the SEC's own
+     * individual identifier, so these records join directly to IAPD and to this repo's
+     * ria-identity-api — no other source supplies a person-level regulator id. And it
+     * reports CONTROL separately from size, because a 5% holder can direct a firm while
+     * a 30% holder may not.
+     *
+     * Ownership is a BAND, never a dollar figure, and code F is reported as ambiguous
+     * rather than guessed — see lib/adv-owners.mjs. There is no address of any kind in
+     * Schedule A/B, so this route carries no geography and takes no lat/lng.
+     */
+    if (request.method === "GET" && url.pathname === "/v1/adviser-owners") {
+      const minOwnershipRaw = url.searchParams.get("minOwnership");
+      const result = searchAdvOwners(
+        {
+          name: url.searchParams.get("name"),
+          crd: url.searchParams.get("crd"),
+          minOwnership: minOwnershipRaw == null ? null : Number(minOwnershipRaw),
+          controlOnly: /^(1|true|yes)$/i.test(url.searchParams.get("controlOnly") || ""),
+          limit: Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 25)),
+          offset: Math.max(0, Number(url.searchParams.get("offset")) || 0),
+        },
+        DATA_DIR,
+      );
+
+      if (result.error) return sendJson(response, 400, { ok: false, error: result.error, field: "name" });
+
+      return sendJson(response, 200, {
+        ok: true,
+        total: result.total,
+        returned: result.rows.length,
+        people: result.rows,
+        index: advMeta(DATA_DIR),
+        joinKey: "crd is the SEC individual CRD — the same identifier IAPD and ria-identity-api use.",
+        ownershipNote:
+          "Ownership is a percentage BAND, never a dollar figure. Code F appears on an older form scale the current legend does not define, so rows carrying it are reported as ambiguous and excluded from largestOwnership and from any minOwnership threshold rather than guessed.",
+        disclosure:
+          "Schedule A/B contains no address of any kind, so these records carry no location and are never distance-ranked.",
+        attribution: {
+          source: "SEC Form ADV Schedule A and B — direct and indirect owners",
+          sourceUrl: "https://adviserinfo.sec.gov",
+          coverage: "Bulk archive 2011-11-05 to 2024-12-31. Owner data from 2025 onward exists only on the per-firm ADV Part 1 PDF.",
+        },
+      });
+    }
+
     /**
      * Physician ownership stakes — CMS Open Payments.
      *
