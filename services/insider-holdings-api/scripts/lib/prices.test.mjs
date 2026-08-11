@@ -284,3 +284,48 @@ test("a trade dated after the filing that reports it cannot set the price", () =
   ]);
   assert.equal(book.get(priceKey("789019", "Common Stock")).price, 400);
 });
+
+test("a price above any real share price is discarded", () => {
+  // Berkshire Class A, the most expensive US share ever traded, has never reached $1m.
+  // A 2026Q1 filing reports Rare Element Resources at $24,035,774.40 per share against
+  // a real price of $0.24 — the filer put the total consideration in the price column.
+  const book = buildPriceBook([
+    obs({ price: 0.24, date: "2026-03-13" }),
+    obs({ price: 24035774.4, date: "2026-03-14" }),
+  ]);
+  assert.equal(book.get(priceKey("789019", "Common Stock")).price, 0.24);
+  assert.equal(book.get(priceKey("789019", "Common Stock")).asOf, "2026-03-13");
+});
+
+test("a typo under the ceiling is caught by disagreeing with its own security", () => {
+  // Ferrellgas at $312,115.08 against a real $24.25, and Mainz Biomed at $201,000.755
+  // against $1.51. Both sit below the absolute ceiling, so they are rejected instead for
+  // being more than 20x from the median of every trade in the same security.
+  const book = buildPriceBook([
+    obs({ price: 24.25, date: "2026-06-01" }),
+    obs({ price: 24.5, date: "2026-06-02" }),
+    obs({ price: 23.9, date: "2026-06-03" }),
+    obs({ price: 312115.08, date: "2026-06-17" }),
+  ]);
+  const entry = book.get(priceKey("789019", "Common Stock"));
+  assert.equal(entry.price, 23.9, "the late typo does not become the price");
+  assert.equal(entry.asOf, "2026-06-03", "nor does it become the date");
+  assert.equal(book.outliersRejected, 1);
+});
+
+test("the outlier test is loose enough for real movement", () => {
+  // A small stock running 5x in a year is real and must survive; only data entry is
+  // being caught here, not volatility.
+  const book = buildPriceBook([
+    obs({ price: 2, date: "2025-09-01" }),
+    obs({ price: 4, date: "2026-01-01" }),
+    obs({ price: 10, date: "2026-06-01" }),
+  ]);
+  assert.equal(book.get(priceKey("789019", "Common Stock")).price, 10);
+  assert.equal(book.outliersRejected, 0);
+});
+
+test("a security whose every observation is implausible is not priced at all", () => {
+  const book = buildPriceBook([obs({ price: 5000000 }), obs({ price: 9000000 })]);
+  assert.equal(book.size, 0, "no price beats a wrong price");
+});

@@ -147,6 +147,30 @@ const median = (values) => {
 };
 
 /**
+ * The highest price per share that can be believed.
+ *
+ * Berkshire Hathaway Class A is the most expensive US share ever traded and has never
+ * reached $1m. Anything above this is a filer putting the total consideration in the
+ * price-per-share column, which really happens: one 2026Q1 filing reports Rare Element
+ * Resources at $24,035,774.40 per share, against a real price of $0.24.
+ */
+export const MAX_PLAUSIBLE_PRICE = 1_000_000;
+
+/**
+ * How far one observation may sit from its security's own median before it is discarded.
+ *
+ * A typo in the price column is not rare enough to ignore and not small enough to
+ * survive: Ferrellgas appears at $312,115.08 against a real $24.25, Mainz Biomed at
+ * $201,000.755 against $1.51. Both are under the absolute ceiling, so they are caught
+ * instead by disagreeing violently with every other trade in the same security.
+ *
+ * 20x is deliberately loose. A genuine stock can double or halve inside a year and a
+ * small one can run several times over, so this is set to catch data entry rather than
+ * to smooth out real movement.
+ */
+export const OUTLIER_FACTOR = 20;
+
+/**
  * Build one market price per security from raw transaction observations.
  *
  * Each observation is `{ issuerCik, security, code, price, date }`. Rows whose code is
@@ -167,6 +191,7 @@ export function buildPriceBook(observations) {
 
     const price = Number(row.price);
     if (!Number.isFinite(price) || price <= 0) continue;
+    if (price > MAX_PLAUSIBLE_PRICE) continue;
 
     const date = String(row.date || "").trim();
     if (!date) continue;
@@ -182,10 +207,35 @@ export function buildPriceBook(observations) {
   }
 
   const book = new Map();
+  let rejected = 0;
+
   for (const [key, dates] of byKey) {
+    /**
+     * Discard typos before choosing a date, not after.
+     *
+     * The reference is the median of EVERY observation of this security across the
+     * whole window, which a handful of bad rows cannot move. Anything more than
+     * OUTLIER_FACTOR away from it is dropped. Doing this first matters: the book takes
+     * the most recent date a security traded, so a single mistyped row on a late date
+     * would otherwise become that security's price for every holder of it.
+     */
+    const all = [];
+    for (const prices of dates.values()) all.push(...prices);
+    const reference = median(all);
+
+    const clean = new Map();
+    for (const [date, prices] of dates) {
+      const kept = prices.filter(
+        (price) => price <= reference * OUTLIER_FACTOR && price >= reference / OUTLIER_FACTOR,
+      );
+      rejected += prices.length - kept.length;
+      if (kept.length) clean.set(date, kept);
+    }
+    if (clean.size === 0) continue;
+
     let latest = null;
-    for (const date of dates.keys()) if (latest == null || date > latest) latest = date;
-    const prices = dates.get(latest);
+    for (const date of clean.keys()) if (latest == null || date > latest) latest = date;
+    const prices = clean.get(latest);
 
     book.set(key, {
       price: median(prices),
@@ -194,10 +244,11 @@ export function buildPriceBook(observations) {
       // security priced by a single trade on a single day is weaker evidence than one
       // priced by twenty, and the caller can see which it got.
       samples: prices.length,
-      observedDays: dates.size,
+      observedDays: clean.size,
     });
   }
 
+  book.outliersRejected = rejected;
   return book;
 }
 

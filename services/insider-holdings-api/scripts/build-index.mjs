@@ -293,7 +293,53 @@ async function main() {
   const maxIssuers = Number(arg("max-issuers", "")) || Infinity;
   const targets = [...issuerCiks].slice(0, Number.isFinite(maxIssuers) ? maxIssuers : undefined);
 
+  /**
+   * `--issuers-from <index.json>` reuses issuer records already fetched.
+   *
+   * The issuer half of this build is ~6,100 EDGAR calls at the SEC's rate, close to an
+   * hour, and it produces a company's address and coordinates — which have nothing to
+   * do with positions or prices. Rebuilding to change how a position is valued should
+   * not mean asking the SEC for six thousand addresses that are already on disk.
+   *
+   * Only issuers still present in the new build are reused, and any that are missing
+   * are fetched normally, so this can never quietly serve a stale roster.
+   */
+  const reuseFrom = arg("issuers-from", null);
+  const reusable = new Map();
+  /**
+   * Geocoding metadata travels with the coordinates it describes.
+   *
+   * scripts/geocode-index.mjs upgrades issuers from a postcode centroid to a street
+   * address and records what it did. Reusing the issuer records without their metadata
+   * would leave /health reporting no street-level placement while serving street-level
+   * coordinates — accurate data described by a missing summary.
+   */
+  let reusedGeoMeta = null;
+  if (reuseFrom) {
+    const previous = JSON.parse(fs.readFileSync(reuseFrom, "utf8"));
+    for (const issuer of previous.issuers || []) reusable.set(String(issuer.cik), issuer);
+    const { geocodedAt, issuersStreetLevel, issuersZipCentroid, peopleStreetLevel } =
+      previous.meta || {};
+    if (geocodedAt) {
+      reusedGeoMeta = { geocodedAt, issuersStreetLevel, issuersZipCentroid, peopleStreetLevel };
+    }
+    log(`reusing issuer addresses from ${reuseFrom}: ${reusable.size} available`);
+  }
+
+  let reused = 0;
+
   for (const cik of targets) {
+    const cached = reusable.get(String(cik));
+    if (cached) {
+      issuers.set(cik, cached);
+      done += 1;
+      reused += 1;
+      if (cached.lat != null) placed += 1;
+      else if (isUsAddress(cached.address)) unplaceableUs += 1;
+      else foreign += 1;
+      continue;
+    }
+
     const issuer = await fetchIssuer(cik);
     done += 1;
     if (done % 250 === 0 || done === targets.length) {
@@ -320,6 +366,8 @@ async function main() {
     });
   }
 
+  if (reused) log(`issuers: ${reused} reused, ${targets.length - reused} fetched from EDGAR`);
+
   const output = {
     meta: {
       built: true,
@@ -336,6 +384,9 @@ async function main() {
       partial: targets.length < issuerCiks.size,
       issuersAvailable: issuerCiks.size,
       source: "SEC Forms 3/4/5 quarterly datasets + EDGAR submissions + Census ZCTA gazetteer",
+      // Only present when issuers were reused; a fresh fetch is street-level only after
+      // scripts/geocode-index.mjs has run over it.
+      ...(reusedGeoMeta || {}),
       /**
        * Re-pricing provenance.
        *
