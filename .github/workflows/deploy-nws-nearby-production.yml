@@ -1,0 +1,100 @@
+name: Deploy NWS Nearby production
+
+on:
+  workflow_run:
+    workflows: [NWS Nearby CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nws-nearby-production
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: hushh-tech-prod
+  REGION: us-central1
+  SERVICE: nws-nearby-intelligence
+  REPOSITORY: cloud-run-source-deploy
+  IMAGE_NAME: nws-nearby-intelligence
+  SOURCE_STAGING_DIR: gs://hushh-tech-prod-nws-nearby-source/source
+  BUILD_LOG_DIR: gs://hushh-tech-prod-nws-nearby-build-logs/logs
+  BUILD_SA: projects/hushh-tech-prod/serviceAccounts/nws-nearby-build@hushh-tech-prod.iam.gserviceaccount.com
+  RUNTIME_SA: nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com
+  SECRET_NAME: nws-nearby-api-key
+  # Advance deliberately after adding a Secret Manager version; do not use latest.
+  NWS_API_KEY_SECRET_VERSION: '1'
+
+jobs:
+  deploy:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    environment: nws-nearby-production
+    defaults:
+      run:
+        working-directory: services/nws-nearby-intelligence
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: projects/646258530541/locations/global/workloadIdentityPools/github-actions/providers/nws-nearby-husshone-production
+          service_account: nws-nearby-deployer@hushh-tech-prod.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Build and push immutable image
+        id: image
+        run: |
+          DEPLOY_SHA='${{ github.event.workflow_run.head_sha || github.sha }}'
+          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${DEPLOY_SHA}"
+          BUILD_ID="$(gcloud builds submit --async --quiet --project="$PROJECT_ID" \
+            --service-account="$BUILD_SA" \
+            --gcs-source-staging-dir="$SOURCE_STAGING_DIR" \
+            --gcs-log-dir="$BUILD_LOG_DIR" \
+            --tag="$IMAGE_URI" --format='value(id)' .)"
+          test -n "$BUILD_ID"
+          for ATTEMPT in $(seq 1 120); do
+            BUILD_STATUS="$(gcloud builds describe "$BUILD_ID" --project="$PROJECT_ID" --format='value(status)')"
+            case "$BUILD_STATUS" in
+              SUCCESS) break ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                gcloud builds describe "$BUILD_ID" --project="$PROJECT_ID" \
+                  --format='yaml(status,statusDetail,logUrl)'
+                exit 1
+                ;;
+              *) sleep 5 ;;
+            esac
+          done
+          test "${BUILD_STATUS:-}" = 'SUCCESS'
+          DIGEST="$(gcloud artifacts docker images describe "$IMAGE_URI" --format='value(image_summary.digest)')"
+          test -n "$DIGEST"
+          echo "uri=${IMAGE_URI%@*}@${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Deploy immutable image
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project="$PROJECT_ID" --region="$REGION" \
+            --image='${{ steps.image.outputs.uri }}' \
+            --service-account="$RUNTIME_SA" \
+            --ingress=all --allow-unauthenticated \
+            --cpu=1 --memory=256Mi --concurrency=8 --timeout=15s --max-instances=2 \
+            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=VERIFIED_PUBLIC_BOOTSTRAP,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
+            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION}" \
+            --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=6 \
+            --liveness-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=10,failureThreshold=3
+      - name: Verify revision and public probes
+        run: |
+          URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
+          curl --fail-with-body --retry 5 --retry-all-errors "$URL/health"
+          curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready"
+          gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
+            --format='json(status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName)'

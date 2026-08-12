@@ -1,0 +1,35 @@
+name: NWS Nearby CI
+
+on:
+  pull_request:
+    paths:
+      - 'services/nws-nearby-intelligence/**'
+      - '.github/workflows/nws-nearby-ci.yml'
+      - '.github/workflows/deploy-nws-nearby-production.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/nws-nearby-intelligence/**'
+      - '.github/workflows/nws-nearby-ci.yml'
+      - '.github/workflows/deploy-nws-nearby-production.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: services/nws-nearby-intelligence
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - run: python -m pip install --require-hashes -r requirements.dev.lock
+      - run: python -m pytest -q
+      - run: >-
+          python -m ruff check app/main.py app/coverage.py app/settings.py app/security.py
+          app/bootstrap_data.py tests/test_api_discovery.py tests/test_security.py
+      - run: python -m compileall -q app tests

@@ -1,0 +1,2 @@
+postal_code,latitude,longitude,label,source_note
+98033,47.6720,-122.1910,"Kirkland, WA 98033","Development sample only; replace with the current Census Gazetteer ZCTA file during deployment."

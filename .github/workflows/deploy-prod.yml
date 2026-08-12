@@ -12,6 +12,10 @@ name: deploy-prod
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'services/nws-nearby-intelligence/**'
+      - '.github/workflows/nws-nearby-ci.yml'
+      - '.github/workflows/deploy-nws-nearby-production.yml'
   workflow_dispatch:
 
 # Never run two prod deploys at once; let an in-flight deploy finish (don't cancel it).
