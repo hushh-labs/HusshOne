@@ -7,6 +7,10 @@ name: prod-smoke
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'services/nws-nearby-intelligence/**'
+      - '.github/workflows/nws-nearby-ci.yml'
+      - '.github/workflows/deploy-nws-nearby-production.yml'
   schedule:
     - cron: "17,47 * * * *" # twice hourly, off the :00/:30 marks
   workflow_dispatch:

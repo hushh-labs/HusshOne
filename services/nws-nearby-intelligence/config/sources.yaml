@@ -1,0 +1,219 @@
+version: 2
+product: nws_nearby
+source_contract_defaults:
+  immutable_artifacts: true
+  sha256_required: true
+  parser_version_required: true
+  no_authentication_bypass: true
+  no_captcha_bypass: true
+  no_private_pages: true
+  no_personal_contact_enrichment: true
+
+sources:
+  census_gazetteer_zcta:
+    authority: U.S. Census Bureau
+    acquisition: annual_bulk_zip
+    trust_tier: authoritative
+    cadence: annual
+    allowed_fact_types: [postal_centroid, postal_boundary, place_label]
+    purpose: Resolve ZIP/ZCTA queries to representative public geography.
+
+  census_tiger_places:
+    authority: U.S. Census Bureau
+    acquisition: annual_bulk_shapefile
+    trust_tier: authoritative
+    cadence: annual
+    allowed_fact_types: [city_boundary, metro_boundary, geographic_crosswalk]
+
+  sec_edgar_ownership:
+    authority: U.S. Securities and Exchange Commission
+    acquisition: daily_indexes_and_filing_archives
+    trust_tier: authoritative
+    cadence: intraday_and_nightly
+    forms: ["3", "3/A", "4", "4/A", "5", "5/A", "13D", "13D/A", "13G", "13G/A"]
+    allowed_fact_types: [public_role, director_role, issuer_relationship, beneficial_ownership, capital_access]
+    forbidden_fact_types: [private_residence, family_relationship]
+    graph_edges:
+      REPORTING_OWNER_OF: 0.85
+      DIRECTOR_OF: 0.90
+      OFFICER_OF: 0.85
+
+  sec_proxy_and_company_filings:
+    authority: U.S. Securities and Exchange Commission
+    acquisition: filing_archives
+    trust_tier: authoritative
+    cadence: daily
+    forms: ["DEF 14A", "10-K", "8-K", "S-1", "S-1/A"]
+    allowed_fact_types: [executive_role, board_role, founder_history, company_event, compensation_context]
+    forbidden_fact_types: [personal_net_worth_from_compensation]
+
+  irs_990_xml:
+    authority: Internal Revenue Service
+    acquisition: monthly_bulk_xml
+    trust_tier: authoritative
+    cadence: monthly
+    allowed_fact_types: [nonprofit_officer, trustee_role, organization_scale, grantmaking_context]
+    forbidden_fact_types: [personal_net_worth, donor_identity_where_not_public]
+    graph_edges:
+      OFFICER_OF_NONPROFIT: 0.65
+      TRUSTEE_OF: 0.70
+
+  uspto_patentsview_bulk:
+    authority: U.S. Patent and Trademark Office Open Data Portal
+    acquisition: bulk_tables
+    trust_tier: authoritative
+    cadence: release_driven
+    allowed_fact_types: [inventor, patent, assignee, coinventor]
+    graph_edges:
+      INVENTED: 0.55
+      COINVENTED_WITH: 0.42
+      ASSIGNED_TO: 0.45
+
+  openalex_snapshot:
+    authority: OpenAlex
+    acquisition: quarterly_snapshot_parquet
+    trust_tier: primary
+    cadence: quarterly
+    allowed_fact_types: [author, work, institution, coauthor, citation_count, concept]
+    graph_edges:
+      AUTHORED: 0.45
+      COAUTHORED_WITH: 0.34
+      AFFILIATED_WITH: 0.48
+
+  wikidata_dump:
+    authority: Wikimedia Foundation community data
+    acquisition: json_or_rdf_dump
+    trust_tier: corroborative
+    cadence: weekly_or_monthly
+    allowed_fact_types: [identity_alias, occupation, organization_relation, official_website, city_level_affiliation]
+    forbidden_fact_types: [unreferenced_wealth, unreferenced_residence]
+    policy: Discovery and corroboration only; material facts require a primary source.
+
+  common_crawl:
+    authority: Common Crawl
+    acquisition: WARC_WAT_WET_and_index
+    trust_tier: discovery_only
+    cadence: monthly
+    allowed_fact_types: [source_discovery, public_page_history, official_domain_candidate]
+    forbidden_fact_types: [direct_identity_merge, direct_score_input, private_residence]
+    policy: Extract URLs and claims, then corroborate against primary sources.
+
+  official_company_pages:
+    authority: Issuer or organization
+    acquisition: respectful_public_crawl
+    trust_tier: primary
+    cadence: weekly
+    allowed_fact_types: [identity_alias, organization_identity, current_role, founder_role, board_role, office_location, public_bio, official_profile_link]
+    forbidden_fact_types: [personal_net_worth, private_residence, family_graph]
+    crawl_policy:
+      obey_robots_txt: true
+      declared_user_agent: true
+      centralized_rate_limit: true
+
+  official_fund_and_portfolio_pages:
+    authority: Investment firm or portfolio company
+    acquisition: respectful_public_crawl
+    trust_tier: primary
+    cadence: weekly
+    allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, partner_role, investor_role, portfolio_relationship, public_office_location]
+    graph_edges:
+      PARTNER_AT: 0.86
+      PUBLICLY_INVESTED_IN: 0.62
+
+  state_business_registries:
+    authority: State secretary of state or corporations division
+    acquisition: public_bulk_or_public_search
+    trust_tier: authoritative_for_filing_fact
+    cadence: weekly
+    allowed_fact_types: [entity_existence, filing_role, formation_date, public_business_location]
+    forbidden_fact_types: [economic_ownership_without_support, registered_agent_as_owner]
+
+  official_government_directories:
+    authority: Federal, state, county, or municipal government
+    acquisition: public_bulk_or_respectful_crawl
+    trust_tier: authoritative
+    cadence: weekly
+    allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, public_official_role, agency_leadership, public_service_jurisdiction, official_bio]
+    forbidden_fact_types: [political_affiliation_inference, personal_contact_enrichment]
+
+  university_and_research_bios:
+    authority: Accredited university or research institution
+    acquisition: respectful_public_crawl
+    trust_tier: primary
+    cadence: monthly
+    allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, faculty_role, lab_leadership, public_bio, institution_location, awards]
+
+  public_event_agendas:
+    authority: Event organizer or host institution
+    acquisition: public_page_or_pdf
+    trust_tier: corroborative
+    cadence: weekly
+    allowed_fact_types: [speaker_role, panel_role, public_topic]
+    forbidden_fact_types: [stable_local_affiliation_from_single_event]
+    graph_edges:
+      SPOKE_AT: 0.18
+
+  official_press_releases:
+    authority: Company, government, university, or nonprofit
+    acquisition: public_rss_and_respectful_crawl
+    trust_tier: primary
+    cadence: daily
+    allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, appointment, funding_event, acquisition, award, board_change, public_partnership]
+
+  github_public_claimed_profiles:
+    authority: Public GitHub profile and repository metadata
+    acquisition: public_pages_or_approved_bulk_archive
+    trust_tier: corroborative
+    cadence: weekly
+    allowed_fact_types: [claimed_identity_link, open_source_maintainership, repository_collaboration]
+    forbidden_fact_types: [location_inference_from_commit_timestamps, private_repository_data]
+    graph_edges:
+      MAINTAINS: 0.32
+      COLLABORATED_WITH: 0.18
+
+  public_social_verified:
+    authority: Public verified or officially linked social profile
+    acquisition: public_page_only
+    trust_tier: corroborative
+    cadence: weekly
+    enabled: false
+    allowed_fact_types: [identity_link, official_role_claim, official_website_link, bounded_public_reach]
+    forbidden_fact_types:
+      - wealth
+      - private_residence
+      - family_graph
+      - lifestyle_asset_inference
+      - face_recognition
+      - checkin_history
+    scoring_cap:
+      maximum_share_of_total_nws: 0.0105
+      maximum_share_of_reach_component: 0.15
+
+relation_half_lives_days:
+  CURRENT_EXECUTIVE_ROLE: 365
+  BOARD_ROLE: 540
+  FOUNDER_ROLE: 1825
+  INVESTOR_ROLE: 730
+  NONPROFIT_ROLE: 540
+  PUBLIC_OFFICIAL_ROLE: 180
+  PATENT: 2555
+  COAUTHORSHIP: 1825
+  SPEAKING_EVENT: 180
+  PRESS_MENTION: 120
+  PUBLIC_LOCATION_ASSOCIATION: 730
+
+relation_base_weights:
+  FOUNDED: 1.00
+  CURRENT_CEO: 0.95
+  CURRENT_CXO: 0.82
+  BOARD_MEMBER: 0.85
+  GENERAL_PARTNER: 0.90
+  INVESTOR: 0.68
+  PUBLIC_OFFICIAL: 0.85
+  NONPROFIT_CHAIR: 0.72
+  RESEARCH_LAB_LEAD: 0.74
+  INVENTED: 0.55
+  COAUTHORED_WITH: 0.34
+  MAINTAINS_OPEN_SOURCE: 0.32
+  SPOKE_AT: 0.18
+  TRUSTED_MEDIA_MENTION: 0.10

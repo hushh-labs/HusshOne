@@ -1,0 +1,41 @@
+[project]
+name = "nws-nearby-intelligence"
+version = "2.3.0"
+description = "Privacy-safe, location-driven discovery for verified public and opted-in professionals."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[project.optional-dependencies]
+dev = [
+  "numpy>=2.0",
+  "pyyaml>=6.0",
+  "pytest>=8.0",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "httpx>=0.27",
+]
+
+postgres = [
+  "psycopg[binary]>=3.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
