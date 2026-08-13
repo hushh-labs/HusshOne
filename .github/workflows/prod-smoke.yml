@@ -9,8 +9,12 @@ on:
     branches: [main]
     paths-ignore:
       - 'services/nws-nearby-intelligence/**'
+      - 'services/insider-holdings-api/**'
       - '.github/workflows/nws-nearby-ci.yml'
       - '.github/workflows/deploy-nws-nearby-production.yml'
+      - '.github/workflows/insider-holdings-ci.yml'
+      - '.github/workflows/deploy-prod.yml'
+      - '.github/workflows/prod-smoke.yml'
   schedule:
     - cron: "17,47 * * * *" # twice hourly, off the :00/:30 marks
   workflow_dispatch:

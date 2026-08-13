@@ -25,8 +25,13 @@ env:
   BUILD_SA: projects/hushh-tech-prod/serviceAccounts/nws-nearby-build@hushh-tech-prod.iam.gserviceaccount.com
   RUNTIME_SA: nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com
   SECRET_NAME: nws-nearby-api-key
+  SEC_SECRET_NAME: insider-api-key
+  NPPES_DB_SECRET_NAME: nws-nearby-nppes-db-password
+  CLOUD_SQL_INSTANCE: hushh-tech-prod:us-central1:hushh-directories-db
   # Advance deliberately after adding a Secret Manager version; do not use latest.
   NWS_API_KEY_SECRET_VERSION: '1'
+  SEC_API_KEY_SECRET_VERSION: '1'
+  NPPES_DB_PASSWORD_SECRET_VERSION: '1'
 
 jobs:
   deploy:
@@ -79,22 +84,81 @@ jobs:
           DIGEST="$(gcloud artifacts docker images describe "$IMAGE_URI" --format='value(image_summary.digest)')"
           test -n "$DIGEST"
           echo "uri=${IMAGE_URI%@*}@${DIGEST}" >> "$GITHUB_OUTPUT"
-      - name: Deploy immutable image
+      - name: Deploy candidate with zero production traffic
+        id: rollout
         run: |
+          set -euo pipefail
+          DEPLOY_SHA='${{ github.event.workflow_run.head_sha || github.sha }}'
+          TAG="candidate-${DEPLOY_SHA:0:12}"
+          BEFORE="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json)"
+          PREVIOUS_REVISION="$(jq -r '.status.traffic[] | select(.percent == 100) | .revisionName' <<<"$BEFORE" | head -n1)"
+          test -n "$PREVIOUS_REVISION"
           gcloud run deploy "$SERVICE" \
             --project="$PROJECT_ID" --region="$REGION" \
             --image='${{ steps.image.outputs.uri }}' \
             --service-account="$RUNTIME_SA" \
             --ingress=all --allow-unauthenticated \
-            --cpu=1 --memory=256Mi --concurrency=8 --timeout=15s --max-instances=2 \
-            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=REVIEWED_PUBLIC_ASSOCIATION_RELEASE,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
-            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION}" \
+            --cpu=1 --memory=512Mi --concurrency=8 --timeout=30s --max-instances=4 \
+            --no-traffic --tag="$TAG" \
+            --add-cloudsql-instances="$CLOUD_SQL_INSTANCE" \
+            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT,NWS_NATIONAL_SOURCES_ENABLED=true,NWS_SEC_SOURCE_ENABLED=true,NWS_SEC_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_NPPES_SOURCE_ENABLED=true,NWS_NPPES_DB_HOST=/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db,NWS_NPPES_DB_PORT=5432,NWS_NPPES_DB_NAME=healthcare,NWS_NPPES_DB_USER=nws_nearby_ro,NWS_NPPES_STATEMENT_TIMEOUT_MS=4000,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
+            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION},NWS_SEC_API_KEY=${SEC_SECRET_NAME}:${SEC_API_KEY_SECRET_VERSION},NWS_NPPES_DB_PASSWORD=${NPPES_DB_SECRET_NAME}:${NPPES_DB_PASSWORD_SECRET_VERSION}" \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=6 \
             --liveness-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=10,failureThreshold=3
-      - name: Verify revision and public probes
+          AFTER="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json)"
+          CANDIDATE_REVISION="$(jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .revisionName' <<<"$AFTER")"
+          CANDIDATE_URL="$(jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .url' <<<"$AFTER")"
+          test -n "$CANDIDATE_REVISION"
+          test -n "$CANDIDATE_URL"
+          echo "previous_revision=$PREVIOUS_REVISION" >> "$GITHUB_OUTPUT"
+          echo "candidate_revision=$CANDIDATE_REVISION" >> "$GITHUB_OUTPUT"
+          echo "candidate_url=$CANDIDATE_URL" >> "$GITHUB_OUTPUT"
+      - name: Verify candidate national sources before promotion
         run: |
+          set -euo pipefail
+          URL='${{ steps.rollout.outputs.candidate_url }}'
+          SMOKE_KEY="$(gcloud secrets versions access "$NWS_API_KEY_SECRET_VERSION" --secret="$SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$SMOKE_KEY"
+          curl --fail-with-body --retry 5 --retry-all-errors "$URL/health" >/dev/null
+          READY="$(curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready")"
+          jq -e '.status == "ok" and .geography_record_count == 33791 and .national_sources_enabled == true' <<<"$READY" >/dev/null
+          BODY="$(curl --fail-with-body --retry 3 --retry-all-errors \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $SMOKE_KEY" \
+            -d '{"query":{"postal_code":"60637"},"top_n":60,"initial_radius_km":20,"max_radius_km":25}' \
+            "$URL/v2/nearby-network/discover")"
+          jq -e '
+            .coverage.status == "COVERED" and
+            .coverage.data_mode == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT" and
+            (.results | length) == 60 and
+            any(.source_status[]; .source == "CMS_NPPES" and .status == "OK") and
+            any(.source_status[]; .source == "SEC_SECTION16" and .status == "OK")
+          ' <<<"$BODY" >/dev/null
+          jq '{coverage:.coverage.status,returned:(.results|length),sources:[.source_status[]|{source,status}]}' <<<"$BODY"
+      - name: Promote candidate and retain automatic rollback
+        run: |
+          set -euo pipefail
+          PREVIOUS='${{ steps.rollout.outputs.previous_revision }}'
+          CANDIDATE='${{ steps.rollout.outputs.candidate_revision }}'
+          rollback() {
+            gcloud run services update-traffic "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
+              --to-revisions="$PREVIOUS=100" --quiet
+          }
+          trap rollback ERR
+          gcloud run services update-traffic "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
+            --to-revisions="$CANDIDATE=100" --quiet
           URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
-          curl --fail-with-body --retry 5 --retry-all-errors "$URL/health"
-          curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready"
+          curl --fail-with-body --retry 5 --retry-all-errors "$URL/health" >/dev/null
+          curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready" >/dev/null
+          SMOKE_KEY="$(gcloud secrets versions access "$NWS_API_KEY_SECRET_VERSION" --secret="$SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$SMOKE_KEY"
+          LIVE_BODY="$(curl --fail-with-body --retry 3 --retry-all-errors \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $SMOKE_KEY" \
+            -d '{"query":{"postal_code":"60637"},"top_n":60,"initial_radius_km":20,"max_radius_km":25}' \
+            "$URL/v2/nearby-network/discover")"
+          jq -e '.coverage.status == "COVERED" and (.results | length) == 60' <<<"$LIVE_BODY" >/dev/null
+          LIVE_REVISION="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
+            --format=json | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')"
+          test "$LIVE_REVISION" = "$CANDIDATE"
+          trap - ERR
           gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
             --format='json(status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName)'

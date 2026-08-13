@@ -14,6 +14,14 @@ const num = (name, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const bool = (name, fallback) => {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  if (["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())) return true;
+  if (["0", "false", "no", "off"].includes(raw.trim().toLowerCase())) return false;
+  throw new Error(`${name} must be a boolean`);
+};
+
 /**
  * The SEC requires a descriptive User-Agent with a contact address on every
  * automated request and returns 403 without one. This is not optional politeness;
@@ -25,6 +33,7 @@ export const SEC_USER_AGENT =
 export const config = Object.freeze({
   port: num("PORT", 8080),
   apiKey: process.env.INSIDER_API_KEY || "",
+  requireApiKey: bool("INSIDER_REQUIRE_API_KEY", process.env.NODE_ENV === "production"),
 
   dataDir: process.env.INSIDER_DATA_DIR || "./data",
 

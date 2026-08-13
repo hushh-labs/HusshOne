@@ -1,7 +1,9 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.security import rate_limiter
+from app.settings import Settings
 
 
 def setup_function() -> None:
@@ -16,6 +18,16 @@ def test_invalid_api_key_is_rejected() -> None:
         json={"query": {"postal_code": "98033"}},
     )
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("api_key", ["", "short", "local-development-only"])
+def test_production_rejects_missing_or_weak_api_key(monkeypatch, api_key: str) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("NWS_ENVIRONMENT", "production")
+    monkeypatch.setenv("NWS_REQUIRE_API_KEY", "true")
+    monkeypatch.setenv("NWS_API_KEY", api_key)
+
+    with pytest.raises(RuntimeError, match="at least 32 characters"):
+        Settings.from_environment()
 
 
 def test_security_headers_and_no_store_cache_policy_are_returned() -> None:
@@ -39,3 +51,33 @@ def test_oversized_payload_is_rejected_before_json_processing() -> None:
     )
     assert response.status_code == 413
     assert response.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
+
+
+def test_headerless_oversized_payload_is_rejected_before_validation() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/v2/nearby-network/discover",
+        headers={
+            "X-NWS-API-Key": "local-development-only",
+            "Content-Type": "application/json",
+        },
+        content=b'{"oversized":"' + (b"x" * 40_000) + b'"}',
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
+    assert "xxx" not in response.text
+
+
+def test_validation_errors_do_not_reflect_submitted_values() -> None:
+    client = TestClient(app)
+    marker = "sensitive-user-supplied-value"
+    response = client.post(
+        "/v2/nearby-network/discover",
+        headers={"X-NWS-API-Key": "local-development-only"},
+        json={"query": {"postal_code": "98033", "unexpected": marker}},
+    )
+
+    assert response.status_code == 422
+    assert marker not in response.text
+    assert all("input" not in error for error in response.json()["detail"])

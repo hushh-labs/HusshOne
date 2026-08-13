@@ -1,8 +1,9 @@
 # NWS Nearby Operations Runbook
 
-> The currently deployed public service is the finite `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` route described
-> in `PRODUCTION_HANDOFF.md`. The broader ingestion, graph, and PostGIS steps below are future
-> production-data-plane runbook material, not a description of the live query path.
+> The public query service uses the national snapshot plus reviewed Kirkland path described in
+> `US_NATIONAL_COVERAGE_HANDOFF.md`. Sections below that discuss a completed graph, collector fleet,
+> or generalized PostGIS data plane remain roadmap material unless explicitly identified as the
+> active NPPES restricted read model.
 
 ## 1. Local verification
 
@@ -17,8 +18,9 @@ Expected:
 
 ```text
 O1 test suite passes (count varies as contracts expand)
-health endpoint returns service version 2.5.0
-the corrected Kirkland coordinate is COVERED; India input returns an explicit empty coverage state
+health endpoint returns service version 3.0.0
+60637 routes nationally, the corrected Kirkland coordinate uses its reviewed release, and an
+explicit India coordinate returns an empty NOT_COVERED state
 ```
 
 ## 2. Local infrastructure

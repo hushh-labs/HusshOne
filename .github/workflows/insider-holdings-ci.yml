@@ -1,0 +1,28 @@
+name: Insider Holdings CI
+
+on:
+  pull_request:
+    paths:
+      - 'services/insider-holdings-api/**'
+      - '.github/workflows/insider-holdings-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/insider-holdings-api/**'
+      - '.github/workflows/insider-holdings-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: services/insider-holdings-api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+      - run: npm test

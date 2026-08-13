@@ -1,5 +1,11 @@
 # NWS Nearby Intelligence — Complete Architecture
 
+> **Implementation status (2026-08-14):** the synchronous API now has national US Census ZCTA
+> resolution plus governed CMS NPPES and SEC Section 16 professional-association adapters. The
+> later graph, collector, review-console, and distributed-compute sections remain target
+> architecture. See `docs/IMPLEMENTATION_STATUS.md` and `docs/US_NATIONAL_COVERAGE_HANDOFF.md` for
+> the exact deployed-path boundary.
+
 ## 1. Product definition
 
 ### User story
@@ -469,9 +475,10 @@ ZIP string
 → search public professional associations
 ```
 
-The deployed bootstrap includes one approved ZIP centroid. National Gazetteer and TIGER/ZCTA
-ingestion is future data-plane work; do not treat this architecture diagram as evidence that it is
-live today.
+The deployed request plane validates and loads a pinned 2025 Census snapshot containing 33,791
+five-digit ZCTA representative points plus an official US state/territory boundary. Postal
+resolution is separate from candidate availability: a valid US ZIP can resolve even when its
+approved source query returns few or no eligible professional associations.
 
 ## 9. Graph computation
 
@@ -919,20 +926,19 @@ Corrections supersede data; they do not erase audit history.
 
 ## 21. Rollout plan
 
-### Phase 1 — Kirkland/98033 pilot
+### Phase 1 — Kirkland/98033 pilot (complete)
 
-- Load national ZIP/ZCTA lookup but index only Seattle metro profiles.
-- Implement SEC, IRS, USPTO, OpenAlex, official organization pages, and official bios.
-- Human-review top 1,000 candidates.
-- Launch top 100 and top 200.
+- Publish the 60-record, reviewed public-association release.
+- Preserve it as the preferred source inside the approved Kirkland market.
 
-### Phase 2 — Seattle metro
+### Phase 2 — national authoritative-source bootstrap (current)
 
-- Add state registries, public events, press releases, research institutions, and GitHub claimed profiles.
-- Add top 300/400, lane filters, and better community diversification.
-- Train pairwise calibration model.
+- Resolve US ZIP/ZIP+4 and consented coordinates with pinned Census geography.
+- Query approved CMS NPPES practice-area and SEC issuer-office professional associations.
+- Keep all national scores provisional, with source status and snapshot timestamps.
+- Return truthful sparse or degraded results rather than fabricated fallback people.
 
-### Phase 3 — national
+### Phase 3 — calibrated national graph (future)
 
 - Distributed graph computation.
 - National geospatial index.
@@ -944,8 +950,10 @@ Corrections supersede data; they do not erase audit history.
 A production launch is ready when:
 
 - A ZIP or current-location request returns deterministic, paginated results.
-- Every result is a verified public/opted-in professional.
-- Every location is a reviewed public professional association.
+- Every result comes from an approved source contract with a stable public identifier and
+  provenance; human review is not implied for deterministic registry rows.
+- Every location is coarse public-professional association data, never a residence or inferred
+  live presence.
 - Every NWS has component evidence, confidence, and model version.
 - Social reach cannot materially dominate the score.
 - A single organization cannot monopolize the result list when alternatives exist.

@@ -61,7 +61,9 @@ def require_api_access(
 ) -> AccessContext:
     settings: Settings = get_settings()
     supplied = x_nws_api_key or ""
-    if settings.require_api_key and not hmac.compare_digest(supplied, settings.api_key):
+    if settings.require_api_key and (
+        not supplied or not settings.api_key or not hmac.compare_digest(supplied, settings.api_key)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "API_KEY_REQUIRED", "message": "A valid X-NWS-API-Key is required."},

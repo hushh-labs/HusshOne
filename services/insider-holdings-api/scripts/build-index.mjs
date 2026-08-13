@@ -233,6 +233,9 @@ async function main() {
     person.positions.push({
       issuerCik: position.issuerCik,
       issuerName: position.issuerName,
+      // Preserve the relationship on this issuer-specific filing. Person-level roles
+      // can span several issuers and must not be projected onto a different office.
+      relationship: position.relationship,
       ticker: position.ticker,
       security: position.security,
       // "direct" = shares owned outright. "derivative" = options/RSUs/warrants, whose

@@ -14,8 +14,12 @@ on:
     branches: [main]
     paths-ignore:
       - 'services/nws-nearby-intelligence/**'
+      - 'services/insider-holdings-api/**'
       - '.github/workflows/nws-nearby-ci.yml'
       - '.github/workflows/deploy-nws-nearby-production.yml'
+      - '.github/workflows/insider-holdings-ci.yml'
+      - '.github/workflows/deploy-prod.yml'
+      - '.github/workflows/prod-smoke.yml'
   workflow_dispatch:
 
 # Never run two prod deploys at once; let an in-flight deploy finish (don't cancel it).
