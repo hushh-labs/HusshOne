@@ -188,8 +188,8 @@ The application projection retains:
 - Registry `last_seen` freshness and a public NPPES profile citation.
 
 Street address, mailing address, telephone, raw NPPES payload, and other source columns are not in
-the view projection used by the adapter or the public response. NPPES rows are labeled
-`PROVISIONAL`: the service computes the published NWS shape from supported professional-role,
+the fixed-function result projections used by the adapter or the public response. NPPES rows are
+labeled `PROVISIONAL`: the service computes the published NWS shape from supported professional-role,
 source-authority, recency, and location-confidence facts, while unsupported graph, track-record,
 reach, and financial features stay zero rather than being inferred.
 
@@ -366,8 +366,8 @@ National coverage tests must verify at least:
 - Explicit non-US coordinates never enter the US fan-out.
 - SEC professional mode excludes value ordering, legal entities, owner-only records, exact source
   coordinates, street/phone, securities, and financial values.
-- NPPES reads only the restricted view, supports exact-ZIP and PostGIS-radius queries, rejects
-  invalid/duplicate rows, and fails soft without leaking a connection string.
+- NPPES calls only the fixed postal/coordinate functions, supports exact-ZIP and PostGIS-radius
+  queries, rejects invalid/duplicate rows, and fails soft without leaking a connection string.
 - Public response serialization contains neither raw person coordinates nor prohibited financial
   or contact fields.
 
@@ -416,7 +416,7 @@ Alert or investigate when:
 - `/health` or `/ready` fails.
 - The active revision or traffic split differs from the intended release.
 - SEC reports an unbuilt/partial/stale index or fails the professional-ranking contract.
-- NPPES is unavailable, `last_seen` is unexpectedly old, or the restricted view loses rows.
+- NPPES is unavailable, `last_seen` is unexpectedly old, or fixed-function probes lose expected rows.
 - `60637` falls below the release-health acceptance threshold while both national sources claim
   healthy status.
 - Requests cross the latency/error budget, rate limiting rises, or Cloud SQL connections saturate.
