@@ -182,6 +182,12 @@ class NwsScore:
     confidence: float
     confidence_grade: str
     components: NwsComponents
+    # The three multipliers that separate the weighted component sum from the
+    # published score. Without them a reader can add the components up, get a
+    # different number, and reasonably conclude the score is arbitrary.
+    coverage_multiplier: float
+    integrity_penalty: float
+    evidence_count: int
     reasons: tuple[str, ...]
     warnings: tuple[str, ...]
     model_version: str

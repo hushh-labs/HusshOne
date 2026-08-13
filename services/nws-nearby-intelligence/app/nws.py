@@ -14,6 +14,30 @@ from app.nws_models import (
 
 MODEL_VERSION = "nws-v2.1.0"
 
+# The published weighting of the seven components, declared once so the score
+# and any explanation of the score cannot drift apart. A consumer that renders
+# a breakdown reads these rather than restating them, which is the only way the
+# explanation stays true after a re-weighting.
+GLOBAL_NWS_WEIGHTS: dict[str, float] = {
+    "graph_authority": 0.30,
+    "institutional_influence": 0.20,
+    "verified_track_record": 0.20,
+    "capital_access": 0.10,
+    "trusted_reach": 0.07,
+    "freshness": 0.05,
+    "evidence_confidence": 0.08,
+}
+
+COMPONENT_LABELS: dict[str, str] = {
+    "graph_authority": "Graph authority",
+    "institutional_influence": "Institutional influence",
+    "verified_track_record": "Verified track record",
+    "capital_access": "Capital access",
+    "trusted_reach": "Trusted reach",
+    "freshness": "Freshness",
+    "evidence_confidence": "Evidence confidence",
+}
+
 
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, value))
@@ -125,14 +149,8 @@ def score_candidate(
     components = build_components(candidate)
     f = candidate.features
 
-    weighted = (
-        0.30 * components.graph_authority
-        + 0.20 * components.institutional_influence
-        + 0.20 * components.verified_track_record
-        + 0.10 * components.capital_access
-        + 0.07 * components.trusted_reach
-        + 0.05 * components.freshness
-        + 0.08 * components.evidence_confidence
+    weighted = sum(
+        GLOBAL_NWS_WEIGHTS[name] * value for name, value in components.as_dict().items()
     )
     # A small balance term prevents one-dimensional profiles from winning on a single signal.
     balance = sqrt(
@@ -173,6 +191,9 @@ def score_candidate(
         confidence=round(confidence, 4),
         confidence_grade=_confidence_grade(confidence),
         components=components,
+        coverage_multiplier=round(coverage_multiplier, 4),
+        integrity_penalty=round(anti_gaming_penalty, 4),
+        evidence_count=f.evidence_count,
         reasons=_explanations(components, local, candidate),
         warnings=_warnings(candidate, confidence),
         model_version=MODEL_VERSION,
