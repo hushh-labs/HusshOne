@@ -28,9 +28,9 @@ coordinate, raw device coordinate, personal contact data, or financial net-worth
 
 | Source grouping | Records | Primary official source family |
 | --- | ---: | --- |
-| Existing reviewed leaders and civic records | 11 | Employer, civic, or institution pages |
-| City of Kirkland leaders and councilmembers | 6 | City of Kirkland |
-| Lake Washington Institute of Technology executive cabinet | 9 | LWTech |
+| Individual reviewed organization records | 7 | Employer or institution pages |
+| City of Kirkland leaders and councilmembers | 9 | City of Kirkland |
+| Lake Washington Institute of Technology executive cabinet | 10 | LWTech |
 | Northwest University cabinet and academic leaders | 11 | Northwest University |
 | GenCap Construction leadership | 8 | GenCap Construction |
 | Compass Construction leadership | 6 | Compass Construction |
