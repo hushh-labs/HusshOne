@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -39,7 +40,7 @@ def _provider(rows: list[dict[str, object]]) -> NppesCandidateProvider:
     return NppesCandidateProvider(row_query=lambda _query, _params: rows, clock=lambda: NOW)
 
 
-def test_fetch_queries_least_privilege_view_by_postgis_radius() -> None:
+def test_fetch_queries_least_privilege_function_by_postgis_radius() -> None:
     captured: dict[str, object] = {}
 
     def query(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
@@ -54,9 +55,9 @@ def test_fetch_queries_least_privilege_view_by_postgis_radius() -> None:
     )
 
     sql = str(captured["sql"])
-    assert "FROM public.nws_public_professionals p" in sql
+    assert "FROM public.nws_public_professionals_nearby(" in sql
     assert "FROM providers" not in sql
-    assert "ST_DWithin" in sql
+    assert "ST_DWithin" not in sql
     assert "address_line" not in sql
     assert "phone" not in sql
     assert "raw" not in sql
@@ -86,8 +87,7 @@ def test_postal_query_uses_indexed_exact_zip_path() -> None:
     )
 
     sql = str(captured["sql"])
-    assert "FROM public.nws_public_professionals p" in sql
-    assert "p.zip = %(postal_code)s" in sql
+    assert "FROM public.nws_public_professionals_by_postal(" in sql
     assert "ST_DWithin" not in sql
     assert captured["params"] == {"postal_code": "60637", "limit": 60}
     assert result.source_status["query_mode"] == "POSTAL_CODE"
@@ -192,7 +192,7 @@ def test_connection_factory_is_supported_without_importing_psycopg() -> None:
             if sql.startswith("SET LOCAL statement_timeout"):
                 self.timeout_set = params["timeout_ms"] == 8_000
                 return Cursor()
-            self.called = "ST_DWithin" in sql and params["limit"] == 10
+            self.called = "nws_public_professionals_nearby" in sql and params["limit"] == 10
             return Cursor()
 
     connection = Connection()
@@ -228,3 +228,30 @@ def test_fetch_rejects_noncanonical_us_postal_code(postal_code: str) -> None:
             limit=10,
             postal_code=postal_code,
         )
+
+
+def test_database_contract_is_fixed_execute_only_and_indexed() -> None:
+    sql_dir = Path(__file__).parents[1] / "sql"
+    sql = (sql_dir / "nppes_read_model.sql").read_text(encoding="utf-8")
+    contract_sql = (sql_dir / "nppes_read_model_contract.sql").read_text(encoding="utf-8")
+    verification_sql = (sql_dir / "verify_nppes_read_model.sql").read_text(encoding="utf-8")
+
+    assert "SECURITY DEFINER" in sql
+    assert "SET search_path = pg_catalog, pg_temp" in sql
+    assert "zips_geog_gix" in sql
+    assert "providers_zip_idx" in sql
+    assert "EXISTS (" in sql
+    assert "LIMIT 2000" in sql
+    assert "BEGIN;" in sql
+    assert "COMMIT;" in sql
+    assert "REVOKE ALL ON FUNCTION" in sql
+    assert "GRANT EXECUTE ON FUNCTION" in sql
+    assert "REVOKE SELECT ON TABLE public.providers, public.zips" in sql
+    assert "REVOKE SELECT ON TABLE public.nws_public_professionals" not in sql
+    assert "REVOKE SELECT ON TABLE public.nws_public_professionals" in contract_sql
+    assert "BEGIN;" in contract_sql
+    assert "COMMIT;" in contract_sql
+    assert "statement_timeout = '4s'" in verification_sql
+    assert "index_state.indisvalid" in verification_sql
+    assert "nws_public_professionals_nearby" in verification_sql
+    assert "nws_public_professionals_by_postal" in verification_sql

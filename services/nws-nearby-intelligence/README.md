@@ -80,8 +80,9 @@ value, liquidity, property, income, and inferred net worth. `financial_context` 
 `NOT_PROFILED`.
 
 SEC selection uses a value-free professional ordering and excludes owner-only/legal-entity
-records. NPPES is read through a least-privilege Cloud SQL view containing active individual
-public-practice facts; the runtime role has no access to the underlying address/phone/raw table.
+records. NPPES is read through fixed, least-privilege Cloud SQL functions over active individual
+public-practice facts; the runtime role cannot query the underlying provider/ZIP tables or
+inspection view.
 BrokerCheck is excluded pending written terms clearance.
 
 ## Integration and CORS

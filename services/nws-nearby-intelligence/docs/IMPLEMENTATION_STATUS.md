@@ -33,7 +33,8 @@
 - CMS NPPES adapter for active individual public-practice associations.
 - Exact practice-ZIP-first retrieval with bounded PostGIS expansion for sparse postal input, and
   direct PostGIS `ST_DWithin` retrieval for coordinates.
-- Restricted `public.nws_public_professionals` view and NWS read-only database role.
+- Fixed `public.nws_public_professionals_by_postal` and
+  `public.nws_public_professionals_nearby` functions plus an execute-only NWS database role.
 - Fail-soft source status with non-secret error codes, source freshness, and truncation disclosure.
 - Source-verified NPPES records leave unsupported graph, outcome, reach, and financial features at
   zero.

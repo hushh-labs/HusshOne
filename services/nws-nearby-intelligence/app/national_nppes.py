@@ -62,66 +62,21 @@ class NppesCandidateProvider:
     """
 
     _RADIUS_QUERY = """
-    SELECT p.npi,
-           p.first_name,
-           p.middle_name,
-           p.last_name,
-           p.credential,
-           p.primary_taxonomy_code,
-           p.primary_taxonomy_desc,
-           p.city,
-           p.state,
-           p.zip,
-           p.lat,
-           p.lng,
-           p.last_seen
-      FROM public.nws_public_professionals p
-     WHERE p.geog IS NOT NULL
-       AND NULLIF(BTRIM(p.first_name), '') IS NOT NULL
-       AND NULLIF(BTRIM(p.last_name), '') IS NOT NULL
-       AND p.last_seen IS NOT NULL
-       AND ST_DWithin(
-             p.geog,
-             ST_SetSRID(
-               ST_MakePoint(%(longitude)s, %(latitude)s),
-               4326
-             )::geography,
-             %(radius_meters)s
+    SELECT *
+      FROM public.nws_public_professionals_nearby(
+             %(latitude)s,
+             %(longitude)s,
+             %(radius_meters)s,
+             %(limit)s
            )
-     ORDER BY ST_Distance(
-                p.geog,
-                ST_SetSRID(
-                  ST_MakePoint(%(longitude)s, %(latitude)s),
-                  4326
-                )::geography
-              ),
-              p.last_seen DESC,
-              p.npi
-     LIMIT %(limit)s
     """
 
     _POSTAL_QUERY = """
-    SELECT p.npi,
-           p.first_name,
-           p.middle_name,
-           p.last_name,
-           p.credential,
-           p.primary_taxonomy_code,
-           p.primary_taxonomy_desc,
-           p.city,
-           p.state,
-           p.zip,
-           p.lat,
-           p.lng,
-           p.last_seen
-      FROM public.nws_public_professionals p
-     WHERE p.zip = %(postal_code)s
-       AND p.geog IS NOT NULL
-       AND NULLIF(BTRIM(p.first_name), '') IS NOT NULL
-       AND NULLIF(BTRIM(p.last_name), '') IS NOT NULL
-       AND p.last_seen IS NOT NULL
-     ORDER BY p.last_seen DESC, p.npi
-     LIMIT %(limit)s
+    SELECT *
+      FROM public.nws_public_professionals_by_postal(
+             %(postal_code)s,
+             %(limit)s
+           )
     """
 
     def __init__(

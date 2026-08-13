@@ -117,10 +117,11 @@ does not honor the value-free contract, the adapter fails closed.
 
 ### NPPES path
 
-The NPPES adapter queries `public.nws_public_professionals` in Cloud SQL. The view admits active
-individual providers and projects professional identity, credential/taxonomy, city/state/ZIP,
-geospatial practice association, and `last_seen`. The NWS database role can select the view but
-not underlying provider/address tables.
+The NPPES adapter calls the fixed `public.nws_public_professionals_by_postal` and
+`public.nws_public_professionals_nearby` Cloud SQL functions. They admit active individual
+providers and return only professional identity, credential/taxonomy, city/state/ZIP, geospatial
+practice association, and `last_seen`. The NWS database role cannot select the underlying
+provider/ZIP tables or the owner-inspection view.
 
 Postal requests use an exact five-digit practice ZIP first, then bounded PostGIS radius expansion
 when the ZIP is sparse and `auto_expand` is enabled. Coordinate requests use bounded PostGIS
