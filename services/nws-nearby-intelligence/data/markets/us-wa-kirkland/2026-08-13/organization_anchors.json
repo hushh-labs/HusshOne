@@ -1,0 +1,154 @@
+{
+  "schema_version": "organization-anchor-release-v1",
+  "release_id": "us-wa-kirkland-organization-anchors-2026-08-13",
+  "market_id": "us-wa-kirkland-public-association",
+  "reviewed_at": "2026-08-13",
+  "source_policy_version": "source-policy-v2.0",
+  "market_census_complete": false,
+  "automatic_candidate_publication": false,
+  "anchors": [
+    {
+      "anchor_id": "kirkland-bluetooth-sig",
+      "organization_id": "bluetooth-sig",
+      "organization_name": "Bluetooth SIG",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "bluetooth.com",
+      "approved_hosts": ["bluetooth.com", "www.bluetooth.com"],
+      "approved_path_prefixes": ["/about-us/", "/press/", "/wp-content/uploads/"],
+      "location_classification": "VERIFIED_HEADQUARTERS",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-city-of-kirkland",
+      "organization_id": "city-of-kirkland",
+      "organization_name": "City of Kirkland",
+      "source_contract_id": "official_government_directories",
+      "canonical_domain": "kirklandwa.gov",
+      "approved_hosts": ["kirklandwa.gov", "www.kirklandwa.gov"],
+      "approved_path_prefixes": ["/Government/"],
+      "location_classification": "GOVERNMENT_OR_INSTITUTIONAL_OFFICE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-compass-construction",
+      "organization_id": "compass-construction",
+      "organization_name": "Compass Construction",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "compass-gc.com",
+      "approved_hosts": ["compass-gc.com", "www.compass-gc.com"],
+      "approved_path_prefixes": ["/about/", "/contact/"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-echodyne",
+      "organization_id": "echodyne",
+      "organization_name": "Echodyne",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "echodyne.com",
+      "approved_hosts": ["echodyne.com", "www.echodyne.com"],
+      "approved_path_prefixes": ["/company", "/about", "/contact"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-evergreenhealth",
+      "organization_id": "evergreenhealth",
+      "organization_name": "EvergreenHealth",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "evergreenhealth.com",
+      "approved_hosts": ["evergreenhealth.com", "www.evergreenhealth.com", "careers.evergreenhealth.com"],
+      "approved_path_prefixes": ["/", "/about", "/careers"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-gencap-construction",
+      "organization_id": "gencap-construction",
+      "organization_name": "GenCap Construction",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "gencapgc.com",
+      "approved_hosts": ["gencapgc.com", "www.gencapgc.com"],
+      "approved_path_prefixes": ["/people/", "/about/", "/contact/"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-inrix",
+      "organization_id": "inrix",
+      "organization_name": "INRIX",
+      "source_contract_id": "official_press_releases",
+      "canonical_domain": "inrix.com",
+      "approved_hosts": ["inrix.com", "www.inrix.com"],
+      "approved_path_prefixes": ["/press-releases/", "/about/"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-chamber-of-commerce",
+      "organization_id": "kirkland-chamber-of-commerce",
+      "organization_name": "Kirkland Chamber of Commerce",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "kirklandchamber.org",
+      "approved_hosts": ["kirklandchamber.org", "www.kirklandchamber.org"],
+      "approved_path_prefixes": ["/the-board-of-directors", "/contact", "/about"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-lwtech",
+      "organization_id": "lake-washington-institute-of-technology",
+      "organization_name": "Lake Washington Institute of Technology",
+      "source_contract_id": "university_and_research_bios",
+      "canonical_domain": "lwtech.edu",
+      "approved_hosts": ["lwtech.edu", "www.lwtech.edu"],
+      "approved_path_prefixes": ["/about-us/", "/directory/"],
+      "location_classification": "PUBLIC_BRANCH_OR_CAMPUS",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-monolithic-power-systems",
+      "organization_id": "monolithic-power-systems",
+      "organization_name": "Monolithic Power Systems",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "monolithicpower.com",
+      "approved_hosts": ["monolithicpower.com", "www.monolithicpower.com"],
+      "approved_path_prefixes": ["/en/about-mps/", "/about-mps/"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-northwest-university",
+      "organization_id": "northwest-university",
+      "organization_name": "Northwest University",
+      "source_contract_id": "university_and_research_bios",
+      "canonical_domain": "northwestu.edu",
+      "approved_hosts": ["northwestu.edu", "www.northwestu.edu", "eagle.northwestu.edu"],
+      "approved_path_prefixes": ["/about/", "/president/", "/center-leadership-studies/", "/directory/"],
+      "location_classification": "PUBLIC_BRANCH_OR_CAMPUS",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-wyze",
+      "organization_id": "wyze",
+      "organization_name": "Wyze",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "wyze.com",
+      "approved_hosts": ["wyze.com", "www.wyze.com"],
+      "approved_path_prefixes": ["/pages/", "/blog/"],
+      "location_classification": "VERIFIED_OPERATING_SITE",
+      "public_market_label": "Kirkland, Washington"
+    },
+    {
+      "anchor_id": "kirkland-ziply-fiber",
+      "organization_id": "ziply-fiber",
+      "organization_name": "Ziply Fiber",
+      "source_contract_id": "official_company_pages",
+      "canonical_domain": "ziplyfiber.com",
+      "approved_hosts": ["ziplyfiber.com", "www.ziplyfiber.com"],
+      "approved_path_prefixes": ["/about-us", "/about/", "/contact"],
+      "location_classification": "VERIFIED_HEADQUARTERS",
+      "public_market_label": "Kirkland, Washington"
+    }
+  ]
+}

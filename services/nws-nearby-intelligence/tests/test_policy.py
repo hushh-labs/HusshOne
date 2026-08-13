@@ -1,6 +1,4 @@
-from datetime import date, datetime, timezone
-
-import pytest
+from datetime import UTC, date, datetime
 
 from app.domain.models import (
     Evidence,
@@ -23,7 +21,7 @@ def evidence(kind: EvidenceKind, subject_type: SubjectType, uses: set[EvidenceUs
         source_authority="test",
         source_uri="https://example.invalid",
         source_date=date(2026, 8, 1),
-        retrieved_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        retrieved_at=datetime(2026, 8, 2, tzinfo=UTC),
         artifact_sha256="a" * 64,
         reliability=0.9,
     )
@@ -47,7 +45,7 @@ def test_public_social_never_creates_wealth_amount() -> None:
     assert not decision.allowed
 
 
-def test_verified_public_figure_is_allowed_for_named_output() -> None:
+def test_verified_public_figure_is_not_permission_for_named_financial_output() -> None:
     engine = PolicyEngine()
     subject = Subject(
         subject_id="public-1",
@@ -55,4 +53,16 @@ def test_verified_public_figure_is_allowed_for_named_output() -> None:
         display_name="Example Founder",
         public_figure_status=PublicFigureStatus.VERIFIED,
     )
-    assert engine.authorize_subject_for_named_wealth(subject).allowed
+    decision = engine.authorize_subject_for_named_wealth(subject)
+    assert decision.allowed is False
+    assert decision.rule_id == "SUBJECT-003"
+
+
+def test_public_sec_position_is_not_a_named_financial_profile() -> None:
+    engine = PolicyEngine()
+    decision = engine.authorize_evidence(
+        evidence(EvidenceKind.SEC_OWNERSHIP, SubjectType.PUBLIC_FIGURE, {EvidenceUse.WEALTH}),
+        EvidenceUse.WEALTH,
+    )
+    assert decision.allowed is False
+    assert decision.rule_id == "EVIDENCE-009"

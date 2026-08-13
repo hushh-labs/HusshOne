@@ -16,8 +16,8 @@ uvicorn app.main:app --reload --port 8080
 Expected:
 
 ```text
-58 tests passed (current release baseline)
-health endpoint returns service version 2.4.0
+O1 test suite passes (count varies as contracts expand)
+health endpoint returns service version 2.5.0
 the corrected Kirkland coordinate is COVERED; India input returns an explicit empty coverage state
 ```
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Mapping
 
 
 class AcquisitionMode(StrEnum):
@@ -20,6 +20,18 @@ class SourceTrustTier(StrEnum):
     DISCOVERY_ONLY = "DISCOVERY_ONLY"
 
 
+class CandidateProposalMode(StrEnum):
+    """How observations from a source may enter the organization review plane.
+
+    A source contract can never authorize a direct write into a public NWS
+    release.  The only non-discovery option is a proposal that still requires
+    a human reviewer and a separately versioned market release.
+    """
+
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    DISCOVERY_ONLY = "DISCOVERY_ONLY"
+
+
 @dataclass(frozen=True)
 class SourceContract:
     source_id: str
@@ -32,6 +44,8 @@ class SourceContract:
     requests_per_second: float = 1.0
     obey_robots_txt: bool = True
     user_agent: str = "NWSResearchBot/1.0 contact@example.invalid"
+    source_family: str | None = None
+    candidate_proposal_mode: CandidateProposalMode = CandidateProposalMode.REVIEW_REQUIRED
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -41,6 +55,8 @@ class SourceContract:
             raise ValueError("base_reliability must be in [0, 1]")
         if self.requests_per_second <= 0:
             raise ValueError("requests_per_second must be positive")
+        if self.source_family is not None and not self.source_family.strip():
+            raise ValueError("source_family cannot be blank when supplied")
         overlap = self.allowed_fact_types & self.forbidden_fact_types
         if overlap:
             raise ValueError(f"fact types cannot be both allowed and forbidden: {sorted(overlap)}")
@@ -71,7 +87,7 @@ class ArtifactManifest:
 
     @staticmethod
     def now() -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
