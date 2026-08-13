@@ -54,9 +54,14 @@ other resolved US locations use the national fan-out.
 These are resource names only. Never put values in source, docs, command output, screenshots, or
 browser storage. The deployment workflow references explicit numbered versions, not `latest`.
 
-The NPPES runtime role may select only `public.nws_public_professionals`. It must not receive
-`SELECT` on `public.providers` or `public.zips`. The view/rules are in
-[`sql/nppes_read_model.sql`](../sql/nppes_read_model.sql).
+The NPPES runtime role may execute only `public.nws_public_professionals_by_postal` and
+`public.nws_public_professionals_nearby`. It must not receive `SELECT` on `public.providers`,
+`public.zips`, or the owner-inspection view. Apply the expand migration in
+[`sql/nppes_read_model.sql`](../sql/nppes_read_model.sql), promote and probe the function-calling
+revision, then apply the view-revocation contract in
+[`sql/nppes_read_model_contract.sql`](../sql/nppes_read_model_contract.sql). Use
+`psql -v ON_ERROR_STOP=1`, then run
+[`sql/verify_nppes_read_model.sql`](../sql/verify_nppes_read_model.sql) as `nws_nearby_ro`.
 
 Cloud Run delivery uses Workload Identity Federation and dedicated service accounts; there is no
 NWS SSH key or persistent application VM login.

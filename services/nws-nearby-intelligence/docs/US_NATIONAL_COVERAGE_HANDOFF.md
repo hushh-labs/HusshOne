@@ -168,10 +168,15 @@ or current physical presence.
 
 ### 4.3 CMS NPPES active individual practice associations
 
-NWS queries a least-privilege Cloud SQL view, `public.nws_public_professionals`, over the shared
-`healthcare` database. The view admits only active individual providers with public professional
-identity and geospatial practice data. The runtime role can select the view but must not have
-`SELECT` on the underlying `public.providers` or `public.zips` tables.
+NWS calls two fixed, least-privilege Cloud SQL functions,
+`public.nws_public_professionals_by_postal` and
+`public.nws_public_professionals_nearby`, over the shared `healthcare` database. They admit only
+active individual providers and project a bounded public-professional column set. The runtime role
+can execute those functions but cannot select the underlying `public.providers`, `public.zips`, or
+owner-inspection view. The nearby function walks nearest provider-bearing in-radius postal areas
+through the ZIP GIST index, uses the provider ZIP index, and stops when the bounded candidate target
+is full; this avoids arbitrary service queries, sparse-area false empties, and multi-million-row
+spatial scans.
 
 The application projection retains:
 
@@ -307,16 +312,34 @@ or persistent VM login is required for the NWS Cloud Run service.
 
 ## 8. Database boundary and NPPES refresh
 
-Apply `sql/nppes_read_model.sql` as the `healthcare` database owner before enabling NPPES. Confirm:
+Use an expand/contract rollout. First apply `sql/nppes_read_model.sql` as the `healthcare` database
+owner; it creates the fixed functions and grants them atomically while leaving any legacy view
+grant unchanged. Deploy and promote the function-calling application, verify postal and coordinate
+queries, then apply `sql/nppes_read_model_contract.sql` to revoke the legacy view. Run both files
+with `psql -v ON_ERROR_STOP=1`; the expand file also enforces that setting internally so a failed
+concurrent index cannot be ignored. Finally run `sql/verify_nppes_read_model.sql` as
+`nws_nearby_ro`; it fails if privileges regress or either Chicago probe exceeds the four-second
+statement budget. Confirm:
 
 ```sql
 SELECT has_table_privilege('nws_nearby_ro', 'public.nws_public_professionals', 'SELECT');
 SELECT has_table_privilege('nws_nearby_ro', 'public.providers', 'SELECT');
 SELECT has_table_privilege('nws_nearby_ro', 'public.zips', 'SELECT');
+SELECT has_function_privilege(
+  'nws_nearby_ro',
+  'public.nws_public_professionals_nearby(double precision,double precision,double precision,integer)',
+  'EXECUTE'
+);
+SELECT has_function_privilege(
+  'nws_nearby_ro',
+  'public.nws_public_professionals_by_postal(text,integer)',
+  'EXECUTE'
+);
 ```
 
-The first result must be true; the latter two must be false. Load or refresh NPPES through the
-existing directory-ingestion owner, not through the NWS runtime role. After refresh, verify
+All three table/view results must be false and both function results must be true. Load or refresh
+NPPES through the existing directory-ingestion owner, not through the NWS runtime role. After
+refresh, verify
 active-individual counts, non-null `last_seen`, geospatial coverage, and a sample of public practice
 ZIPs before promoting a revision.
 
