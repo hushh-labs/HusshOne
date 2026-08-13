@@ -82,8 +82,8 @@ The national response requires these resources to be healthy:
 | Dependency | Requirement |
 | --- | --- |
 | SEC source | `insider-holdings-api` exposes and honors value-free `professional` ranking over its current nationwide index. |
-| NPPES database | `hushh-directories-db`, database `healthcare`, contains a current active-individual snapshot and the restricted NWS view. |
-| Database grants | `nws_nearby_ro` can select the restricted view and cannot select underlying `providers`/`zips`. |
+| NPPES database | `hushh-directories-db`, database `healthcare`, contains a current active-individual snapshot, owner-inspection view, and fixed postal/coordinate functions. |
+| Database grants | `nws_nearby_ro` can execute only the fixed NWS postal/coordinate functions; it cannot select the owner-inspection view or underlying `providers`/`zips`. |
 | Runtime secrets | Numbered versions of `nws-nearby-api-key`, `insider-api-key`, and `nws-nearby-nppes-db-password`. |
 | Cloud Run identity | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` has only required Cloud SQL/secret access. |
 
