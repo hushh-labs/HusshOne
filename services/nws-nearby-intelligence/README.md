@@ -105,6 +105,7 @@ Copy `.env.example` to `.env` only for local development. Never commit a real pr
 
 ## Operations
 
+- [End-to-end technical handoff](docs/END_TO_END_TECHNICAL_HANDOFF.md)
 - [API contract](docs/API_CONTRACT.md)
 - [Kirkland 98033 source release](docs/KIRKLAND_98033_SOURCE_RELEASE.md)
 - [Organization discovery O1](docs/ORGANIZATION_DISCOVERY_O1.md)
