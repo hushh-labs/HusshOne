@@ -69,6 +69,67 @@ test("offset pages without reordering", () => {
   assert.equal(page2[0].name, all[1].name);
 });
 
+test("professional ranking uses role authority, recency, and distance instead of value", () => {
+  const issuers = new Map([
+    ["10", { cik: "10", name: "Near Co", address: { city: "SF", state: "CA", zip: "94105" }, lat: 37.789, lng: -122.396, geoTier: "street_interpolated" }],
+    ["20", { cik: "20", name: "Farther Co", address: { city: "Oakland", state: "CA", zip: "94607" }, lat: 37.804, lng: -122.271, geoTier: "zip_centroid" }],
+  ]);
+  const position = (issuerCik, { value, asOf, title = null, relationship } = {}) => ({
+    issuerCik,
+    issuerName: issuers.get(issuerCik).name,
+    ticker: "TEST",
+    security: "Common Stock",
+    shares: value,
+    pricePerShare: 1,
+    value,
+    marketValue: value,
+    asOf,
+    formType: "4",
+    title,
+    relationship,
+  });
+  const people = new Map([
+    ["11", { cik: "11", name: "DIRECTOR HUGE", roles: ["Director"], positionsValued: 1,
+      positions: [position("10", { value: 1_000_000_000, asOf: "2026-08-01", relationship: "Director" })] }],
+    ["12", { cik: "12", name: "OFFICER OLD", roles: ["Officer"], positionsValued: 1,
+      positions: [position("10", { value: 1, asOf: "2026-01-01", title: "CFO", relationship: "Officer" })] }],
+    ["13", { cik: "13", name: "OFFICER DIRECTOR", roles: ["Officer", "Director"], positionsValued: 2,
+      positions: [
+        position("10", { value: 1, asOf: "2026-07-01", title: "CEO", relationship: "Officer,Director" }),
+        position("20", { value: 9_000_000_000, asOf: "2025-01-01", title: "CEO", relationship: "TenPercentOwner" }),
+      ] }],
+  ]);
+  setIndex({ people, issuers, meta: { built: true, builtAt: new Date().toISOString() } });
+
+  const result = searchNearby({
+    ...SF,
+    ranking: "professional",
+    minValue: Number.MAX_SAFE_INTEGER,
+  }, ".");
+
+  assert.deepEqual(result.rows.map((row) => row.name), [
+    "OFFICER DIRECTOR",
+    "OFFICER OLD",
+    "DIRECTOR HUGE",
+  ]);
+  assert.equal(
+    result.rows[0].issuer.cik,
+    "10",
+    "the newer professional association wins even though the other position is worth more",
+  );
+  assert.deepEqual(result.rows[0].professional, {
+    roleAuthority: 3,
+    relationshipSource: "selected_position",
+    filingAsOf: "2026-07-01",
+    issuerOffice: {
+      latitude: 37.789,
+      longitude: -122.396,
+      geoPrecision: "street_interpolated",
+    },
+  });
+  assert.equal("_professionalDistanceMiles" in result.rows[0], false);
+});
+
 test("a search row carries the COMPANY's contact details", () => {
   seed();
   const row = searchNearby(SF, ".").rows[0];

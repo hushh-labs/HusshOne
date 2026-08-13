@@ -1,9 +1,16 @@
+import json
+from dataclasses import replace
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+import app.main as main
+from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
 from app.main import QueryLocationInput, app
+from app.nws_models import GeoPoint
 from app.security import rate_limiter
+from app.settings import get_settings
 
 API_HEADERS = {"X-NWS-API-Key": "local-development-only"}
 
@@ -44,6 +51,10 @@ def test_market_release_discovery_returns_reviewed_public_association_records() 
         "model_version": "nws-v2.3.0-kirkland.2026-08-13",
         "verified_at": "2026-08-13",
         "reviewed_at": "2026-08-13",
+        "semantics": (
+            "Immutable reviewed Kirkland public-association release; not live physical "
+            "tracking or a residence claim."
+        ),
     }
     assert body["summary"]["verified_seed_candidate_count"] == 60
     assert body["summary"]["reviewed_public_association_candidate_count"] == 60
@@ -105,31 +116,91 @@ def test_legacy_and_explicit_us_kirkland_postal_requests_are_compatible() -> Non
     assert legacy.json()["query"] == explicit_us.json()["query"]
 
 
-def test_nonlegacy_postal_code_requires_country_context() -> None:
+def test_bare_us_postal_code_is_accepted_as_us() -> None:
     client = TestClient(app)
     response = client.post(
         "/v2/nearby-network/discover",
         headers=API_HEADERS,
         json={"query": {"postal_code": "10001"}},
     )
-    assert response.status_code == 422
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "NATIONAL_CANDIDATE_BACKEND_UNAVAILABLE"
 
 
-def test_unindexed_us_postal_is_a_truthful_non_error_coverage_state() -> None:
+def test_national_us_postal_uses_the_national_backend() -> None:
     client = TestClient(app)
     response = client.post(
         "/v2/nearby-network/discover",
         headers=API_HEADERS,
         json={"query": {"postal_code": "10001", "country_code": "US"}},
     )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "NATIONAL_CANDIDATE_BACKEND_UNAVAILABLE"
+
+
+def test_successful_national_route_exposes_consistent_safe_contract(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    original = BOOTSTRAP_CANDIDATES[0]
+    candidate = replace(
+        original,
+        person_id="nppes:1234567890",
+        location=replace(
+            original.location,
+            label="New York, NY 10001 public practice area",
+            point=GeoPoint(40.75, -73.99),
+        ),
+    )
+    metadata = replace(
+        BOOTSTRAP_METADATA[original.person_id],
+        score_status="PROVISIONAL",
+        review_flags=("SOURCE_VERIFIED_PROVISIONAL", "NO_FINANCIAL_INPUTS"),
+    )
+    batch = main.NationalCandidateBatch(
+        candidates=(candidate,),
+        metadata={candidate.person_id: metadata},
+        source_status=(
+            {
+                "source": "CMS_NPPES",
+                "status": "OK",
+                "candidate_count": 1,
+                "query_mode": "POSTAL_CODE",
+                "score_status": "PROVISIONAL",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: replace(get_settings(), national_sources_enabled=True),
+    )
+    monkeypatch.setattr(main, "_fetch_national_candidates", lambda **_: batch)
+
+    response = TestClient(app).post(
+        "/v2/nearby-network/discover",
+        headers=API_HEADERS,
+        json={"query": {"postal_code": "10001"}, "top_n": 1},
+    )
+
     assert response.status_code == 200
     body = response.json()
-    assert body["coverage"]["status"] == "LOCATION_UNRESOLVED"
-    assert body["coverage"]["reason_code"] == "POSTAL_CODE_NOT_IN_GEOGRAPHY_INDEX"
-    assert body["results"] == []
-    assert body["summary"]["verified_seed_candidate_count"] == 0
-    assert body["summary"]["search_performed"] is False
-    assert "Kirkland" not in body["query"]["label"]
+    assert body["coverage"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
+    assert body["snapshot"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
+    assert body["snapshot"]["policy_reviewed_at"] == "2026-08-14"
+    assert "reviewed_at" not in body["snapshot"]
+    assert body["source_status"][0]["status"] == "OK"
+    assert body["summary"]["public_registry_candidate_count"] == 1
+    assert body["summary"]["returned_count"] == 1
+    assert body["results"][0]["model_version"] == ("nws-v3.0.0-us-public-professional.2026-08-14")
+    serialized_result = json.dumps(body["results"][0]).casefold()
+    for forbidden in (
+        "street_address",
+        "phone",
+        "email",
+        "marketvalue",
+        "disclosedvalue",
+        '"latitude"',
+        '"longitude"',
+    ):
+        assert forbidden not in serialized_result
 
 
 def test_india_coordinate_returns_not_covered_without_kirkland_people() -> None:
@@ -145,10 +216,14 @@ def test_india_coordinate_returns_not_covered_without_kirkland_people() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["coverage"]["status"] == "NOT_COVERED"
-    assert body["coverage"]["reason_code"] == "NO_APPROVED_MARKET_DATA"
+    assert body["coverage"]["reason_code"] == "COUNTRY_NOT_IN_NATIONAL_INDEX"
     assert body["results"] == []
     assert body["summary"]["verified_seed_candidate_count"] == 0
     assert "Kirkland" not in body["query"]["label"]
+    assert body["snapshot"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
+    assert body["release"]["market_id"] == "us-national-public-association"
+    assert body["discovery"]["mode"] == "AUTHORITATIVE_PUBLIC_REGISTRY_FANOUT"
+    assert "kirkland" not in json.dumps(body).casefold()
 
 
 def test_india_postal_is_accepted_but_not_mapped_to_a_fake_market() -> None:
@@ -164,6 +239,10 @@ def test_india_postal_is_accepted_but_not_mapped_to_a_fake_market() -> None:
     assert body["results"] == []
     assert body["summary"]["returned_count"] == 0
     assert "Kirkland" not in body["query"]["label"]
+    assert body["snapshot"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
+    assert body["release"]["market_id"] == "us-national-public-association"
+    assert body["discovery"]["mode"] == "AUTHORITATIVE_PUBLIC_REGISTRY_FANOUT"
+    assert "kirkland" not in json.dumps(body).casefold()
 
 
 def test_country_context_mismatch_with_kirkland_coordinate_never_returns_people() -> None:
@@ -178,11 +257,11 @@ def test_country_context_mismatch_with_kirkland_coordinate_never_returns_people(
     assert response.status_code == 200
     body = response.json()
     assert body["coverage"]["status"] == "NOT_COVERED"
-    assert body["coverage"]["reason_code"] == "COUNTRY_CONTEXT_DOES_NOT_MATCH_APPROVED_MARKET"
+    assert body["coverage"]["reason_code"] == "COUNTRY_NOT_IN_NATIONAL_INDEX"
     assert body["results"] == []
 
 
-def test_uncovered_us_coordinate_does_not_fall_back_to_kirkland() -> None:
+def test_us_coordinate_routes_to_national_backend_without_kirkland_fallback() -> None:
     client = TestClient(app)
     response = client.post(
         "/v2/nearby-network/discover",
@@ -191,12 +270,8 @@ def test_uncovered_us_coordinate_does_not_fall_back_to_kirkland() -> None:
             "query": {"latitude": 40.7128, "longitude": -74.0060, "country_code": "US"},
         },
     )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["coverage"]["status"] == "NOT_COVERED"
-    assert body["coverage"]["reason_code"] == "NO_APPROVED_MARKET_DATA"
-    assert body["results"] == []
-    assert "Kirkland" not in body["query"]["label"]
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "NATIONAL_CANDIDATE_BACKEND_UNAVAILABLE"
 
 
 def test_invalid_location_forms_remain_validation_errors() -> None:

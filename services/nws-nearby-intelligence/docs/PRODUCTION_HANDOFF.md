@@ -1,130 +1,138 @@
-# NWS Nearby Intelligence — Production Handoff
+# NWS Nearby Intelligence — production handoff
 
-This document is the integration and operations handoff for the standalone NWS Nearby service.
+This document is the operator checklist for the standalone US national NWS service. Read the
+canonical [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md) before operating it.
 
 ## Service identity
 
 | Item | Value |
 | --- | --- |
-| Source repository | `hushh-labs/HusshOne` |
-| Source directory | `services/nws-nearby-intelligence/` |
+| Repository path | `hushh-labs/HusshOne/services/nws-nearby-intelligence/` |
 | Runtime | Python 3.13 / FastAPI / Cloud Run |
 | Cloud Run service | `nws-nearby-intelligence` |
 | Project / region | `hushh-tech-prod` / `us-central1` |
 | Public base URL | `https://nws-nearby-intelligence-fro3hygenq-uc.a.run.app` |
 | Discovery route | `POST /v2/nearby-network/discover` |
 | Public probes | `GET /health`, `GET /ready` |
-| Current data mode | `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` |
-| Current approved market | Kirkland, Washington / US `98033`, 60 reviewed public-association records |
+| Data mode | `NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT` with reviewed Kirkland compatibility |
+| Geography | 33,791-record 2025 Census Gazetteer ZCTA package |
+| National sources | SEC Section 16 Officers/Directors and CMS NPPES active individuals |
 
-This Cloud Run service remains separate from HusshOne's `one` web application. Moving the source
-into HusshOne does not share its runtime identity, secret, container image, data, or deployment
-lane with `one`.
+The service is separate from the HusshOne `one` web application: separate runtime identity,
+container image, secrets, deployment workflow, Cloud SQL read role, and rollback history.
 
-## How a product integrates
+## Integration boundary
 
-1. Collect device-location consent in the product—not in this service.
-2. The product's BFF/server route sends a coarse coordinate to this API, plus optional
-   `country_code`. For manual location, send `postal_code` and `country_code`.
-3. The BFF reads `coverage.status` before rendering results:
-   - `COVERED`: render the public-association results.
-   - `NOT_COVERED`: show that the location is understood but not yet available.
-   - `LOCATION_UNRESOLVED`: ask for approximate location when available or show that postal
-     geography is not yet indexed.
-4. Never label results as people physically around the user. They are public professional,
-   institutional, civic, or opt-in associations only.
-
-Example server-to-server request (the key must come from that project's secret store):
+Products call through their BFF/server route using `X-NWS-API-Key`. Wildcard non-cookie CORS
+removes origin allowlist friction but does not protect a key in browser/mobile code.
 
 ```bash
 curl --fail-with-body -X POST \
   -H 'Content-Type: application/json' \
   -H "X-NWS-API-Key: $NWS_API_KEY" \
-  -d '{"query":{"latitude":47.6715,"longitude":-122.2133,"country_code":"US"},"top_n":100}' \
+  -d '{"query":{"postal_code":"60637"},"top_n":60}' \
   'https://nws-nearby-intelligence-fro3hygenq-uc.a.run.app/v2/nearby-network/discover'
 ```
 
-The historical `{"postal_code":"98033"}` request remains compatible. Global postal and
-coordinate inputs are accepted safely, but only approved markets receive people. See
-[the API contract](API_CONTRACT.md) and the
-[Kirkland 98033 source release](KIRKLAND_98033_SOURCE_RELEASE.md) for exact response and source
-semantics.
+The consumer must parse `coverage.status`, treat covered-but-sparse results as valid, and render
+public-association rather than physical-presence language. `98033` stays on its reviewed release;
+other resolved US locations use the national fan-out.
 
-## Authentication, CORS, and privacy boundary
+## IAM, secrets, and database
 
-`NWS_API_KEY` is a server-held secret, injected into Cloud Run from Secret Manager at an immutable
-numbered version. It is not browser-safe. The API intentionally has non-cookie wildcard CORS for
-`POST` and `OPTIONS`, which removes origin allowlisting friction but does not protect a key exposed
-in a browser or mobile bundle.
+| Purpose | Resource |
+| --- | --- |
+| Runtime identity | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` |
+| Build identity | `nws-nearby-build@hushh-tech-prod.iam.gserviceaccount.com` |
+| Deploy identity | `nws-nearby-deployer@hushh-tech-prod.iam.gserviceaccount.com` |
+| Cloud SQL instance | `hushh-tech-prod:us-central1:hushh-directories-db` |
+| NPPES database / role | `healthcare` / `nws_nearby_ro` |
+| Discovery secret | `nws-nearby-api-key` |
+| SEC source secret | `insider-api-key` |
+| NPPES database secret | `nws-nearby-nppes-db-password` |
 
-Each consuming project must use a BFF/server route. Put its access credential in that project's
-secret manager and never expose it through `NEXT_PUBLIC_*`, client JavaScript, a mobile bundle,
-source control, logs, or DevTools. The current in-process rate limiter is an abuse guard; add
-gateway/WAF quotas and per-consumer credential issuance before independently administered or high
-volume clients are onboarded.
+These are resource names only. Never put values in source, docs, command output, screenshots, or
+browser storage. The deployment workflow references explicit numbered versions, not `latest`.
 
-The service does **not** use an SSH key. Cloud Run is managed with three distinct, least-privilege
-runtime, deployer, and builder identities. The runtime can read only its version-pinned API-key
-secret; it has no Editor role, project-wide secret access, GitHub credential, Cloud SQL access, or
-scraper access. Exact resource identifiers and break-glass operations are maintained in the private
-platform runbook rather than this public source repository.
+The NPPES runtime role may select only `public.nws_public_professionals`. It must not receive
+`SELECT` on `public.providers` or `public.zips`. The view/rules are in
+[`sql/nppes_read_model.sql`](../sql/nppes_read_model.sql).
 
-## Delivery path
+Cloud Run delivery uses Workload Identity Federation and dedicated service accounts; there is no
+NWS SSH key or persistent application VM login.
 
-1. `.github/workflows/nws-nearby-ci.yml` runs only when the NWS service or its deployment workflow
-   changes.
-2. `.github/workflows/deploy-nws-nearby-production.yml` runs only after a successful `main` CI
-   result (or a `main`-only manual dispatch).
-3. GitHub OIDC federation is restricted to HusshOne's `main` branch. A privileged workflow-run
-   must originate from a same-repository `push`, not a pull request.
-4. The workflow uploads only this service directory, builds through a dedicated build identity,
-   resolves the Artifact Registry digest, and deploys that immutable image to the standalone Cloud
-   Run service.
-5. `NWS_API_KEY` is pinned to a numbered Secret Manager version (`1` at this handoff), never
-   `latest`.
+## Delivery
 
-The unrelated HusshOne Cloud Build trigger for the `one` app ignores NWS-only service and workflow
-changes. That keeps an NWS release from redeploying `one`.
+1. `.github/workflows/nws-nearby-ci.yml` runs tests, Ruff, compilation, dependency checks, and
+   national geography/source-adapter gates.
+2. `.github/workflows/deploy-nws-nearby-production.yml` accepts a successful same-repository main
+   CI run or main-only manual dispatch.
+3. The workflow builds an immutable image, resolves its digest, deploys with the Cloud SQL
+   attachment and numbered secrets, then probes `/health` and `/ready`.
+4. The standalone NWS workflow/path exclusions prevent an NWS-only change from redeploying the
+   unrelated `one` application.
 
-## Rotate the API key
+Proof must distinguish main SHA, CI success, image digest, deployed revision, traffic, probe
+success, national-source health, and authenticated business responses.
 
-1. Add a new version to the service's production API-key secret (exact command is in the private
-   platform runbook).
-2. Update `NWS_API_KEY_SECRET_VERSION` in
-   `.github/workflows/deploy-nws-nearby-production.yml`.
-3. Merge and let the workflow deploy a new revision.
-4. Verify each BFF has moved before retiring the old key version.
+## Production sign-off
 
-Do not replace a running revision's environment secret reference with `latest`.
+After each deploy, verify:
 
-## Release and rollback verification
+1. Intended SHA is on `main` and NWS CI/deploy workflows succeeded.
+2. Expected Cloud Run revision has 100% traffic and the dedicated runtime identity.
+3. `/health` and `/ready` return `200` with expected service/data mode.
+4. Missing/invalid key returns `401`.
+5. `60637` is `COVERED`, uses the national backend, and exposes SEC/NPPES source status without
+   Kirkland records.
+6. With the healthy release snapshots, `60637` and `top_n: 60` returns at least 60 results. This is
+   a release-health probe, not a universal ZIP guarantee.
+7. `98033` stays on the reviewed 60-record Kirkland release with manifest hashes.
+8. Additional US regions and one sparse/rural ZCTA route nationally and report truthful counts.
+9. An explicit India coordinate returns `NOT_COVERED` and no people.
+10. An unknown ZCTA returns `LOCATION_UNRESOLVED` and no people.
+11. Arbitrary-origin CORS preflight succeeds without credential support.
+12. `/internal/*` and `/v1/*` return `404`.
+13. Response/log inspection finds no raw request coordinate, secret, connection string, person
+    exact coordinate/address/phone, or financial position/value field.
 
-After every deployment, prove all of the following:
+Inspect revision/traffic explicitly:
 
-1. NWS CI is green and the source SHA is on HusshOne `main`.
-2. The new Cloud Run revision has 100% traffic, the dedicated runtime service account, and the
-   intended numbered secret reference.
-3. `/health` and `/ready` return `200`.
-4. Missing or invalid key returns `401`; a valid server-side key returns all 60 reviewed
-   public-association records for the covered Kirkland contract at `47.6715, -122.2133` and
-   for `98033` (with the default `B` confidence threshold).
-5. A valid India coordinate returns `200`, `coverage.status: "NOT_COVERED"`, and no results;
-   `110001` plus `IN` returns `LOCATION_UNRESOLVED` and no results until postal geography exists.
-6. An arbitrary-origin CORS preflight returns `Access-Control-Allow-Origin: *` and does not return
-   `Access-Control-Allow-Credentials`.
-7. `/internal/*` and `/v1/*` return `404`, and Cloud Run logs contain no raw coordinates or keys.
+```bash
+gcloud run services describe nws-nearby-intelligence \
+  --project=hushh-tech-prod \
+  --region=us-central1 \
+  --format='yaml(status.url,status.latestReadyRevisionName,status.traffic)'
+```
 
-Rollback a known-good revision without rebuilding source:
+## Secret rotation
+
+1. Add a new Secret Manager version through the private platform procedure.
+2. Update the corresponding numbered version constant in the NWS deployment workflow.
+3. Merge and deploy a new revision.
+4. Verify source/consumer cutover.
+5. Retire the old version only after all callers have moved.
+
+Do not switch a running environment reference to `latest`.
+
+## Source degradation
+
+SEC and NPPES fan out independently. An unavailable source may fail soft while the other returns
+results, but source status must disclose the degradation. Do not fill counts from Kirkland, lower
+privacy filters, enable BrokerCheck without terms clearance, or infer missing people.
+
+Escalate unexpected SEC ranking contract/value fields, NPPES role/grant drift, stale snapshots,
+large `60637` count regression, Cloud SQL saturation, or any prohibited response/log field.
+
+## Rollback
 
 ```bash
 gcloud run services update-traffic nws-nearby-intelligence \
-  --region=us-central1 --project=hushh-tech-prod \
+  --project=hushh-tech-prod \
+  --region=us-central1 \
   --to-revisions=<known-good-revision>=100
 ```
 
-## Accountable coverage expansion gate
-
-Do not advertise a country or postal area as complete merely because its location input validates.
-Before switching any new market to `COVERED`, the team must have a versioned canonical geography
-source, approved public-association records, privacy/suppression controls, an indexed retrieval
-snapshot, and negative-coverage tests proving that no Kirkland fallback data leaks into it.
+Repeat revision, probe, auth, `60637`, `98033`, non-US, and privacy checks. If the known-good
+revision is Kirkland-only, notify consumers that national availability is rolled back; do not keep
+advertising nationwide query coverage.

@@ -1,90 +1,119 @@
-# Implementation Status
+# Implementation status
 
-> **Deployed release boundary:** the public Cloud Run service exposes only `GET /health`,
-> `GET /ready`, and authenticated `POST /v2/nearby-network/discover`. It uses the 60-record
-> `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` market, explicit coverage states, coarse coordinate handling, and
-> server-held API-key protection. The reference modules listed below are source and roadmap
-> material; no legacy `/v1/*`, `/internal/*`, synthetic-demo, or PostGIS route is internet-exposed.
+> This file describes the national release implemented in source. A merged SHA, green CI, Cloud
+> Run revision, active traffic, live source health, and consumer integration are separate proof
+> layers; revalidate them from the production handoff rather than treating this file as live state.
 
-## Executable in this repository
+## Implemented national release
 
-### Query and ranking
+### Geography and routing
 
-- Public location-only endpoint: `/v2/nearby-network/discover`.
-- Country-qualified postal and coordinate request validation.
-- Coordinate coarsening and coverage-first market selection.
-- `COVERED`, `NOT_COVERED`, and `LOCATION_UNRESOLVED` response states with no fallback people.
-- In-memory demo and PostGIS repository implementations.
-- Public-profile and public-location policy gates.
-- Confidence-aware radius expansion.
-- Global NWS, local relevance, and Nearby Rank Score.
-- Lane-aware track-record scoring.
-- MMR diversification.
-- Public-safe result serialization.
-- Versioned 60-record Kirkland source release with manifest hashes, citation facts, source-family
-  counting, and revalidation flags.
-- Versioned, person-free Kirkland organization-anchor release covering the organizations in the
-  current market release; it is not a completed organization census.
-- Public association semantics (`BASED_HERE`, `CONNECTED_HERE`, and related context) without a
-  claim of physical presence or residence.
-- Executable financial-data boundary: named financial-profile output fails closed and is not a
-  field or ranking input in the public NWS route.
+- Immutable 2025 U.S. Census Gazetteer ZCTA geography with 33,791 records.
+- Readiness-time SHA-256 and record-count validation against
+  `data/geography/us/2025/manifest.json`.
+- Bare five-digit US ZIP and ZIP+4 normalization to the five-digit ZCTA base.
+- ZIP+4 input preservation in response query metadata.
+- Coordinate coarsening before coverage lookup and source retrieval.
+- Explicit US coordinate routing.
+- Labeled approximate US inference from the 2025 Census 1:500,000 state/territory boundary when
+  country context is absent, including privacy-coarsened-cell intersection at coastlines.
+- Explicit non-US and unresolved-country empty coverage states.
+- Hybrid routing: reviewed Kirkland backend for `98033`/Kirkland radius; national backend for other
+  resolved US queries.
+- No cross-market Kirkland fallback.
 
-### Graph and score logic
+### National people sources
 
-- Weighted PageRank.
-- K-core.
-- Community-neighbor entropy bridge score.
-- Cross-sector signal.
-- Role/institution/track/capital/reach/evidence components.
-- Evidence deduplication, age decay, log scaling, winsorization, lane/global percentile shrinkage, and source-diversity metrics.
-- Observation-to-graph/feature projection with a versioned role taxonomy.
-- Evidence coverage multiplier.
-- Source-concentration and suspicious-pattern penalties.
-- Confidence grades, reasons, and warnings.
+- SEC Section 16 natural-person Officer/Director adapter.
+- Required `ranking=professional` contract that excludes disclosed/market value ordering.
+- Legal-entity and owner-only rejection.
+- Whitelist projection of public role, issuer, filing date, and coarse issuer-office association.
+- Bounded server-to-server timeout, response-size guard, no credential forwarding on redirects,
+  and short-lived policy-safe cache.
+- CMS NPPES adapter for active individual public-practice associations.
+- Exact practice-ZIP-first retrieval with bounded PostGIS expansion for sparse postal input, and
+  direct PostGIS `ST_DWithin` retrieval for coordinates.
+- Restricted `public.nws_public_professionals` view and NWS read-only database role.
+- Fail-soft source status with non-secret error codes, source freshness, and truncation disclosure.
+- Source-verified NPPES records leave unsupported graph, outcome, reach, and financial features at
+  zero.
+- Per-source deduplication and public-safe candidate metadata.
 
-### Acquisition primitives
+### Reviewed market compatibility
 
-- Source contract data model.
-- YAML source-registry loader.
-- Robots-aware and rate-limited public fetcher.
-- SHA-256 content-addressed artifact store.
-- Deterministic observation IDs.
-- Parser registry.
-- Observation policy gate.
-- Official JSON-LD reference parser.
-- SEC Form 4 XML reference parser.
-- Organization-anchor URL/content scope guard for future workers.
-- Organization-first review-proposal compiler that requires a human-reviewed market release before
-  a candidate can be published.
+- Existing 60-record Kirkland public-association release and manifest hashes.
+- Existing 13-organization review-only anchor release.
+- Candidate citations, source-family counts, evidence flags, and revalidation fields.
+- Separate national model/data disclosure so national candidates are not presented as manually
+  reviewed Kirkland records.
 
-### Persistence and operations
+### API, ranking, and privacy
 
-- PostgreSQL/PostGIS schema.
-- Professional graph, location, feature, score, query-audit, and suppression tables.
-- Redpanda/Kafka event taxonomy and transactional-outbox schema.
-- Docker Compose development environment.
-- Source onboarding, graph rebuild, scoring, and incident runbook.
-- Synthetic 520-person demo dataset.
-- Automated tests.
+- Authenticated `POST /v2/nearby-network/discover`.
+- Public `GET /health`, `GET /ready`, `/docs`, and `/openapi.json`.
+- `COVERED`, `NOT_COVERED`, and `LOCATION_UNRESOLVED` states.
+- Sparse covered responses and fail-soft source outcomes without fabricated candidates.
+- Confidence-aware radius behavior, lane/tag filters, NWS scoring, diversity, and public-safe
+  serialization.
+- Coordinate/request-body log suppression, 32 KiB request limit, security headers, in-process rate
+  limiting, and wildcard non-cookie CORS.
+- Explicit `financial_context: NOT_PROFILED` boundary.
+- No private residence, exact person location, personal contact, family graph, raw source payload,
+  securities/value/liquidity/property/income/net-worth output or ranking input.
 
-## Defined by contract but requiring production adapters or infrastructure
+### Tests and delivery
 
-- National Census Gazetteer/TIGER ingestion job.
-- Full SEC daily-index/archive downloader and amendment reconciliation.
-- IRS 990 XML parser family.
-- USPTO PatentsView bulk-table parser.
-- OpenAlex snapshot/Parquet parser and author disambiguation pipeline.
-- Wikidata/Common Crawl discovery workers.
-- State-by-state corporation-registry adapters.
-- Scheduled organization-domain crawler discovery and sitemap scheduling.
-- GitHub public-profile/repository adapter.
-- Optional bounded verified-social adapter.
-- Large-scale Leiden/Louvain graph computation.
-- Redis/query cache and signed cursor service.
-- Analyst review UI, appeals, suppression UI, and model-promotion workflow.
-- National postal geography, country-specific coverage geometry, and approved market datasets.
-- Full PostGIS retrieval, production collectors/workers, caches, cursor pagination, WAF quotas,
-  monitoring, and analyst review UI.
+- National geography tests for record integrity, `60637`, ZIP+4, Kirkland routing, coordinate
+  country context/inference, and non-US behavior.
+- SEC adapter tests for value-free ordering, projection, entity/owner-only filtering, cache, and
+  privacy omissions.
+- NPPES tests for restricted-view SQL, exact-ZIP/PostGIS query paths, source freshness,
+  invalid/duplicate rejection, fail-soft behavior, and credential redaction.
+- Existing API, scoring, policy, source-release, security, and parser regression suites.
+- Path-scoped NWS CI on Python 3.13.
+- Protected production workflow using OIDC, an immutable image digest, dedicated service accounts,
+  numbered Secret Manager versions, a Cloud SQL attachment, and public probes.
 
-Those adapters share the same immutable-artifact, parser, observation-policy, identity-resolution, evidence, and graph contracts. A new scraper cannot directly change NWS.
+## Production dependencies
+
+The national response requires these resources to be healthy:
+
+| Dependency | Requirement |
+| --- | --- |
+| SEC source | `insider-holdings-api` exposes and honors value-free `professional` ranking over its current nationwide index. |
+| NPPES database | `hushh-directories-db`, database `healthcare`, contains a current active-individual snapshot and the restricted NWS view. |
+| Database grants | `nws_nearby_ro` can select the restricted view and cannot select underlying `providers`/`zips`. |
+| Runtime secrets | Numbered versions of `nws-nearby-api-key`, `insider-api-key`, and `nws-nearby-nppes-db-password`. |
+| Cloud Run identity | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` has only required Cloud SQL/secret access. |
+
+One national source may fail soft while another serves results, but source status must disclose the
+failure. If both national sources are unavailable, NWS must not synthesize, reuse Kirkland, or
+claim a complete result set.
+
+## Deliberately not claimed
+
+- A census of all people in the United States.
+- A guarantee of 60 results for every ZIP or coordinate.
+- Current physical presence, residence, or a live person location.
+- Global people coverage outside the US.
+- Complete USPS ZIP coverage; the geography is the 33,791-record 2025 Census ZCTA release.
+- A completed observed national professional graph or nationally calibrated final score.
+- Personal financial strength, net worth, income, assets, property, liquidity, or ability to pay.
+- Request-time crawling of SEC, CMS, social networks, or the open web.
+- BrokerCheck integration; it remains excluded pending written terms clearance.
+- Instagram, LinkedIn, Crunchbase, check-in, private-page, CAPTCHA-bypass, or data-broker sourcing.
+- A distributed per-consumer quota, analyst review UI, cursor service, or completed national
+  corrections/appeals workflow.
+
+## Acceptance boundary
+
+`60637` is the dense release-health probe. With both current national snapshots healthy, the
+standard `top_n: 60` request is expected to return at least 60 public-association results. That
+threshold tests deployment/source health for this release; it is not a per-ZIP API guarantee.
+
+Production sign-off still requires the exact source SHA on `main`, green NWS CI, deployed Cloud Run
+revision/traffic proof, `/health` and `/ready`, authenticated `60637` and `98033`, multi-region and
+sparse-ZIP checks, explicit non-US checks, and response/log privacy verification.
+
+See [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md) for the operational checklist
+and rollback procedure.

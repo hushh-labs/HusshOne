@@ -21,7 +21,7 @@ import { QueryError, parseQuery } from "./scripts/lib/query.mjs";
 import { RateLimiter, clientIp } from "./scripts/lib/rate-limit.mjs";
 import { getIssuer, getPerson, indexMeta, searchNearby } from "./scripts/lib/index-store.mjs";
 import { formDMeta, searchFormD } from "./scripts/lib/formd-store.mjs";
-import { collapseCoFiled, summarise } from "./scripts/lib/orchestrate.mjs";
+import { collapseCoFiled, subjectType, summarise } from "./scripts/lib/orchestrate.mjs";
 import { floridaMeta, searchFlorida } from "./scripts/lib/florida-store.mjs";
 import { form144Meta, liquidityFor, searchLiquidity } from "./scripts/lib/form144-store.mjs";
 import { cmsMeta, searchPhysicians } from "./scripts/lib/cms-store.mjs";
@@ -32,6 +32,68 @@ const DATA_DIR = path.resolve(config.dataDir);
 const limiter = new RateLimiter(config.rateLimit);
 
 const counters = { requests: 0, searches: 0, profiles: 0, rateLimited: 0, unauthorized: 0 };
+
+if (config.requireApiKey && config.apiKey.length < 32) {
+  throw new Error(
+    "INSIDER_API_KEY must be at least 32 characters when INSIDER_REQUIRE_API_KEY is enabled",
+  );
+}
+
+const PROFESSIONAL_RANKING = Object.freeze({
+  mode: "professional",
+  relationshipScope: "selected_position",
+  orderedBy: [
+    "officer_director_role_authority",
+    "filing_recency",
+    "issuer_office_distance",
+  ],
+  excludes: ["disclosed_value", "market_value"],
+  note:
+    "Professional ordering never reads position value. Location is the issuer's public office, not the filer's residence or physical presence.",
+});
+
+function requestedRanking(url) {
+  return (url.searchParams.get("ranking") || "").trim().toLowerCase() === "professional"
+    ? "professional"
+    : "financial";
+}
+
+function summariseProfessional(rows) {
+  const issuers = new Set();
+  let officers = 0;
+  let directors = 0;
+  let latestFilingAsOf = null;
+  let oldestFilingAsOf = null;
+
+  for (const row of rows) {
+    const roles = new Set((row.roles || []).map((role) => String(role).toLowerCase()));
+    if (roles.has("officer")) officers += 1;
+    if (roles.has("director")) directors += 1;
+    if (row.issuer?.cik) issuers.add(String(row.issuer.cik));
+    const asOf = row.professional?.filingAsOf || null;
+    if (asOf && (latestFilingAsOf == null || asOf > latestFilingAsOf)) latestFilingAsOf = asOf;
+    if (asOf && (oldestFilingAsOf == null || asOf < oldestFilingAsOf)) oldestFilingAsOf = asOf;
+  }
+
+  return {
+    filers: rows.length,
+    officers,
+    directors,
+    issuers: issuers.size,
+    latestFilingAsOf,
+    oldestFilingAsOf,
+    valueUsedForSelectionOrRanking: false,
+  };
+}
+
+function professionalIndexStatus() {
+  const meta = indexMeta(DATA_DIR);
+  return {
+    ...meta,
+    stale: meta.ageDays != null && meta.ageDays > config.staleAfterDays,
+    staleAfterDays: config.staleAfterDays,
+  };
+}
 
 function sendJson(response, status, body) {
   const payload = JSON.stringify(stripOwnerAddress(body));
@@ -102,7 +164,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     // Everything below names a person or reads the index. Gate it.
-    if (config.apiKey && url.pathname.startsWith("/v1/")) {
+    if (config.requireApiKey && url.pathname.startsWith("/v1/")) {
       if (String(request.headers.authorization || "") !== `Bearer ${config.apiKey}`) {
         counters.unauthorized += 1;
         return sendJson(response, 401, { ok: false, error: "Unauthorized" });
@@ -155,7 +217,9 @@ const server = http.createServer(async (request, response) => {
      * are deliberately absent from the ranking rather than missing by accident.
      */
     if (request.method === "GET" && url.pathname === "/v1/around") {
-      const query = parseQuery(url.searchParams, DATA_DIR);
+      const ranking = requestedRanking(url);
+      const query = { ...parseQuery(url.searchParams, DATA_DIR), ranking };
+      const professionalMode = ranking === "professional";
 
       /**
        * Collapse over the WHOLE radius, not over a page.
@@ -169,7 +233,9 @@ const server = http.createServer(async (request, response) => {
        * The index is in memory and a radius holds hundreds of rows, so this is cheap.
        */
       const all = searchNearby({ ...query, limit: Number.MAX_SAFE_INTEGER, offset: 0 }, DATA_DIR);
-      const collapsed = collapseCoFiled(all.rows);
+      const rankedRows = professionalMode
+        ? all.rows.map((row) => ({ ...row, subjectType: subjectType(row.name) }))
+        : collapseCoFiled(all.rows);
 
       /**
        * `?subjectType=person` drops corporate filers.
@@ -183,10 +249,11 @@ const server = http.createServer(async (request, response) => {
        */
       const wanted = (url.searchParams.get("subjectType") || "").trim().toLowerCase();
       const visible = ["person", "entity"].includes(wanted)
-        ? collapsed.filter((row) => row.subjectType === wanted)
-        : collapsed;
+        ? rankedRows.filter((row) => row.subjectType === wanted)
+        : rankedRows;
 
       const page = visible.slice(query.offset, query.offset + query.limit).map((row) => {
+        if (professionalMode) return row;
         // Enrich only the returned page: a Form 144 lookup per row across the whole
         // radius would be wasted on rows nobody sees.
         const liquidity = liquidityFor(row.cik, DATA_DIR);
@@ -198,8 +265,11 @@ const server = http.createServer(async (request, response) => {
         resolved: { lat: query.lat, lng: query.lng },
         resolvedFrom: query.resolvedFrom,
         radiusMi: query.radiusMi,
+        ...(professionalMode
+          ? { ranking: PROFESSIONAL_RANKING, index: professionalIndexStatus() }
+          : {}),
         // Describes the whole radius, before any subjectType filter.
-        summary: summarise(collapsed),
+        summary: professionalMode ? summariseProfessional(rankedRows) : summarise(rankedRows),
         subjectTypeFilter: ["person", "entity"].includes(wanted) ? wanted : null,
         // `holders`, not `people`: Section 16 names funds and holding companies
         // alongside human beings, and calling the array `people` asserted something
@@ -207,13 +277,15 @@ const server = http.createServer(async (request, response) => {
         holders: page,
         returned: page.length,
         total: visible.length,
-        totalBeforeFilter: collapsed.length,
+        totalBeforeFilter: rankedRows.length,
         hasMore: query.offset + page.length < visible.length,
         collapsedFrom: all.rows.length,
-        duplicatesRemoved: all.rows.length - collapsed.length,
+        duplicatesRemoved: professionalMode ? 0 : all.rows.length - rankedRows.length,
         sources: {
           section16: {
-            contributes: "Named officers, directors and 10%+ owners of public companies, ranked by disclosed position value and distance to their employer's office.",
+            contributes: professionalMode
+              ? "Named Section 16 filers ordered by Officer/Director authority, filing recency, and issuer-office distance; position value is excluded from selection and ranking."
+              : "Named officers, directors and 10%+ owners of public companies, ranked by disclosed position value and distance to their employer's office.",
             people: indexMeta(DATA_DIR).people,
           },
           formD: {
@@ -458,7 +530,9 @@ const server = http.createServer(async (request, response) => {
 
 function handleSearch(request, response, url, started) {
   counters.searches += 1;
-  const query = parseQuery(url.searchParams, DATA_DIR);
+  const ranking = requestedRanking(url);
+  const query = { ...parseQuery(url.searchParams, DATA_DIR), ranking };
+  const professionalMode = ranking === "professional";
   const result = searchNearby(query, DATA_DIR);
 
   const meta = {
@@ -475,6 +549,7 @@ function handleSearch(request, response, url, started) {
     issuersInRange: result.issuersInRange,
     index: indexMeta(DATA_DIR),
     attribution: ATTRIBUTION,
+    ...(professionalMode ? { ranking: PROFESSIONAL_RANKING } : {}),
   };
 
   if (query.stream === "json") {

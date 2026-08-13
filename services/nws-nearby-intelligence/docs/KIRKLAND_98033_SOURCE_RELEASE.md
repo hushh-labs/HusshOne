@@ -71,9 +71,11 @@ For a consented device location, send a latitude/longitude pair and optional cou
 service coarsens it before coverage lookup. For manual location, send `postal_code` with
 `country_code`; legacy `{"postal_code":"98033"}` remains US-compatible.
 
-Only `COVERED` currently returns people. Valid locations outside this approved market return a
-normal `200` with `NOT_COVERED` or `LOCATION_UNRESOLVED`, an empty `results` list, and no
-Kirkland fallback. Never display the results as people physically around the user.
+This reviewed release is now one branch of the hybrid US service. `98033` and coordinates within
+the configured Kirkland market radius use these 60 reviewed records. Other resolved US locations
+query the national SEC/NPPES public-professional snapshots; they never receive Kirkland fallback
+records. Non-US or unresolved inputs return an explicit empty coverage state. Never display any
+branch as people physically around the user.
 
 This release must not be used to make decisions about employment, housing, credit, insurance,
 healthcare, legal status, public benefits, or law enforcement.
@@ -91,6 +93,8 @@ healthcare, legal status, public benefits, or law enforcement.
 6. Merge to `main`. The path-scoped NWS workflow builds and deploys only this standalone Cloud Run
    service, then checks `/health` and `/ready`.
 
-For a new country, postal area, or coordinate market, add approved country-qualified geography and
-a separately reviewed market release first. Do not map a valid global coordinate to this Kirkland
-dataset just because it passes input validation.
+For the national routing and source contract, see
+[US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md). A separately reviewed future
+market may supersede the general national-source path only after geography, source, privacy,
+suppression, tests, and a versioned release are approved. Never map a location to this Kirkland
+dataset merely because it passes input validation.

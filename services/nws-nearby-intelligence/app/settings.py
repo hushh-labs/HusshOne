@@ -35,8 +35,22 @@ class Settings:
     query_location_decimals: int
     service_version: str
     model_version: str
+    national_model_version: str
     data_mode: str
     release_reviewed_at: str
+    national_policy_reviewed_at: str
+    national_sources_enabled: bool
+    sec_source_enabled: bool
+    sec_api_base_url: str
+    sec_api_key: str
+    sec_timeout_seconds: int
+    nppes_source_enabled: bool
+    nppes_db_host: str
+    nppes_db_port: int
+    nppes_db_name: str
+    nppes_db_user: str
+    nppes_db_password: str
+    nppes_statement_timeout_ms: int
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -46,14 +60,38 @@ class Settings:
 
         api_key = os.getenv("NWS_API_KEY", "local-development-only").strip()
         require_api_key = _read_bool("NWS_REQUIRE_API_KEY", True)
-        if environment == "production" and require_api_key and api_key == "local-development-only":
-            raise RuntimeError("NWS_API_KEY must be supplied in production")
+        if environment == "production" and require_api_key:
+            if len(api_key) < 32 or api_key == "local-development-only":
+                raise RuntimeError(
+                    "NWS_API_KEY must be a non-development secret of at least 32 characters"
+                )
 
-        data_mode = os.getenv("NWS_DATA_MODE", "REVIEWED_PUBLIC_ASSOCIATION_RELEASE").strip()
-        if data_mode != "REVIEWED_PUBLIC_ASSOCIATION_RELEASE":
+        data_mode = os.getenv("NWS_DATA_MODE", "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT").strip()
+        if data_mode not in {
+            "REVIEWED_PUBLIC_ASSOCIATION_RELEASE",
+            "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT",
+        }:
             raise RuntimeError(
-                "This release supports only REVIEWED_PUBLIC_ASSOCIATION_RELEASE data mode"
+                "NWS_DATA_MODE must be REVIEWED_PUBLIC_ASSOCIATION_RELEASE or "
+                "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
             )
+
+        national_sources_enabled = _read_bool(
+            "NWS_NATIONAL_SOURCES_ENABLED", environment == "production"
+        )
+        sec_source_enabled = _read_bool("NWS_SEC_SOURCE_ENABLED", national_sources_enabled)
+        nppes_source_enabled = _read_bool("NWS_NPPES_SOURCE_ENABLED", national_sources_enabled)
+        sec_api_key = os.getenv("NWS_SEC_API_KEY", "").strip()
+        nppes_db_password = os.getenv("NWS_NPPES_DB_PASSWORD", "").strip()
+        if environment == "production" and national_sources_enabled:
+            if sec_source_enabled and not sec_api_key:
+                raise RuntimeError(
+                    "NWS_SEC_API_KEY must be supplied when the SEC source is enabled"
+                )
+            if nppes_source_enabled and not nppes_db_password:
+                raise RuntimeError(
+                    "NWS_NPPES_DB_PASSWORD must be supplied when the NPPES source is enabled"
+                )
 
         return cls(
             environment=environment,
@@ -68,10 +106,34 @@ class Settings:
             query_location_decimals=_read_int(
                 "NWS_QUERY_LOCATION_DECIMALS", 2, minimum=0, maximum=4
             ),
-            service_version="2.5.0",
+            service_version="3.0.0",
             model_version="nws-v2.3.0-kirkland.2026-08-13",
+            national_model_version="nws-v3.0.0-us-public-professional.2026-08-14",
             data_mode=data_mode,
             release_reviewed_at="2026-08-13",
+            national_policy_reviewed_at="2026-08-14",
+            national_sources_enabled=national_sources_enabled,
+            sec_source_enabled=sec_source_enabled,
+            sec_api_base_url=os.getenv(
+                "NWS_SEC_API_BASE_URL",
+                "https://insider-holdings-api-fro3hygenq-uc.a.run.app",
+            )
+            .strip()
+            .rstrip("/"),
+            sec_api_key=sec_api_key,
+            sec_timeout_seconds=_read_int("NWS_SEC_TIMEOUT_SECONDS", 8, minimum=1, maximum=30),
+            nppes_source_enabled=nppes_source_enabled,
+            nppes_db_host=os.getenv(
+                "NWS_NPPES_DB_HOST",
+                "/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db",
+            ).strip(),
+            nppes_db_port=_read_int("NWS_NPPES_DB_PORT", 5432, minimum=1, maximum=65535),
+            nppes_db_name=os.getenv("NWS_NPPES_DB_NAME", "healthcare").strip(),
+            nppes_db_user=os.getenv("NWS_NPPES_DB_USER", "nws_nearby_ro").strip(),
+            nppes_db_password=nppes_db_password,
+            nppes_statement_timeout_ms=_read_int(
+                "NWS_NPPES_STATEMENT_TIMEOUT_MS", 4_000, minimum=500, maximum=30_000
+            ),
         )
 
 

@@ -73,8 +73,10 @@ def _diversified_select(
             )
             mmr = lambda_relevance * relevance - (1.0 - lambda_relevance) * redundancy
             # Stable deterministic tie breaking without an opaque numeric epsilon.
-            if best is None or mmr > best_mmr or (
-                mmr == best_mmr and item.candidate.person_id < best.candidate.person_id
+            if (
+                best is None
+                or mmr > best_mmr
+                or (mmr == best_mmr and item.candidate.person_id < best.candidate.person_id)
             ):
                 best_mmr = mmr
                 best = item
@@ -101,6 +103,7 @@ def discover_nearby_people(
     diversity: bool = True,
     minimum_confidence: float = 0.70,
     policy: NearbyPolicyEngine | None = None,
+    model_version: str | None = None,
 ) -> tuple[list[NearbyRankedPerson], NearbyDiscoverySummary]:
     """Filter, score and rank verified nearby public professionals.
 
@@ -119,18 +122,20 @@ def discover_nearby_people(
 
     policy = policy or NearbyPolicyEngine()
     candidate_list = list(candidates)
-    policy_eligible = [
-        item for item in candidate_list if policy.authorize_candidate(item).allowed
-    ]
+    policy_eligible = [item for item in candidate_list if policy.authorize_candidate(item).allowed]
     distances = {
-        item.person_id: haversine_km(query_point, item.location.point)
-        for item in policy_eligible
+        item.person_id: haversine_km(query_point, item.location.point) for item in policy_eligible
     }
 
     # Confidence and Global NWS do not depend on the effective search radius. A preliminary pass
     # lets radius expansion count only profiles that can actually be published at this threshold.
     preliminary = {
-        item.person_id: score_candidate(item, query_point=query_point, radius_km=max_radius_km)
+        item.person_id: score_candidate(
+            item,
+            query_point=query_point,
+            radius_km=max_radius_km,
+            **({"model_version": model_version} if model_version else {}),
+        )
         for item in policy_eligible
     }
     confidence_eligible = [
@@ -154,14 +159,17 @@ def discover_nearby_people(
         expansion_steps.append(effective_radius)
 
     in_radius = [
-        item
-        for item in confidence_eligible
-        if distances[item.person_id] <= effective_radius
+        item for item in confidence_eligible if distances[item.person_id] <= effective_radius
     ]
     scored = [
         _ScoredCandidate(
             candidate=item,
-            score=score_candidate(item, query_point=query_point, radius_km=effective_radius),
+            score=score_candidate(
+                item,
+                query_point=query_point,
+                radius_km=effective_radius,
+                **({"model_version": model_version} if model_version else {}),
+            ),
         )
         for item in in_radius
     ]
@@ -175,9 +183,7 @@ def discover_nearby_people(
     )
 
     chosen = (
-        _diversified_select(scored, count=min(top_n, len(scored)))
-        if diversity
-        else scored[:top_n]
+        _diversified_select(scored, count=min(top_n, len(scored))) if diversity else scored[:top_n]
     )
     results = [
         NearbyRankedPerson(rank=index + 1, candidate=item.candidate, score=item.score)

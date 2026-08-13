@@ -1,0 +1,17 @@
+{
+  "dataset": "2025 Census Gazetteer ZIP Code Tabulation Areas",
+  "publisher": "U.S. Census Bureau",
+  "source_url": "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2025_Gazetteer/2025_Gaz_zcta_national.zip",
+  "source_archive_sha256": "51516a4283bab5cd2376eec75609ddc4b363a18297e8adeeaac7b03cf7c84dbe",
+  "reduced_file": "zcta-centroids.tsv",
+  "reduced_file_sha256": "9cee29a5b5b6146fdb66dd22f497945e590b3bd68cea807161b20e04473e7a60",
+  "record_count": 33791,
+  "vintage": 2025,
+  "precision": "CENSUS_ZCTA_INTERNAL_POINT",
+  "boundary_file": "state-boundaries-500k.shp",
+  "boundary_file_sha256": "f97331a9d13d5cbf87bb93a5a12155b7ee9f8bad86f3d910a6c8d2b0ebf8841e",
+  "boundary_source_url": "https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_state_500k.zip",
+  "boundary_source_archive_sha256": "9cbfe171dad1555e11770c981d8f4db9e687a65c86f5bdae684eeb487e2e9b80",
+  "boundary_scale": "1:500,000",
+  "note": "ZCTAs are Census statistical approximations of ZIP service areas, not USPS delivery boundaries."
+}

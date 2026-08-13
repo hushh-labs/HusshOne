@@ -148,13 +148,12 @@ def score_candidate(
     *,
     query_point: GeoPoint,
     radius_km: float,
+    model_version: str = MODEL_VERSION,
 ) -> NwsScore:
     components = build_components(candidate)
     f = candidate.features
 
-    weighted = sum(
-        GLOBAL_NWS_WEIGHTS[name] * value for name, value in components.as_dict().items()
-    )
+    weighted = sum(GLOBAL_NWS_WEIGHTS[name] * value for name, value in components.as_dict().items())
     # A small balance term prevents one-dimensional profiles from winning on a single signal.
     balance = sqrt(
         max(0.02, components.graph_authority)
@@ -199,5 +198,5 @@ def score_candidate(
         evidence_count=f.evidence_count,
         reasons=_explanations(components, local, candidate),
         warnings=_warnings(candidate, confidence),
-        model_version=MODEL_VERSION,
+        model_version=model_version,
     )

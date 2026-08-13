@@ -17,6 +17,7 @@ COPY data ./data
 
 ENV NODE_ENV=production \
     PORT=8080 \
+    INSIDER_REQUIRE_API_KEY=true \
     INSIDER_DATA_DIR=/app/data
 
 # The index is baked into the image so a container serves immediately rather than

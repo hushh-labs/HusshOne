@@ -131,6 +131,53 @@ function summariseIssuer(issuer) {
 const rankValue = (position) => position?.marketValue ?? position?.value ?? -1;
 
 /**
+ * A deliberately small, explainable professional-role ordering.
+ *
+ * Section 16 also covers greater-than-10% owners. Ownership magnitude is not a
+ * professional-role signal, so it receives no authority here. The NWS adapter
+ * applies the stricter publication rule and excludes owner-only rows entirely.
+ */
+function professionalRoleAuthority(roles = []) {
+  const normalized = new Set(roles.map((role) => String(role).trim().toLowerCase()));
+  const officer = normalized.has("officer");
+  const director = normalized.has("director");
+  if (officer && director) return 3;
+  if (officer) return 2;
+  if (director) return 1;
+  return 0;
+}
+
+function professionalPositionRoles(position) {
+  const allowed = new Map([
+    ["officer", "Officer"],
+    ["director", "Director"],
+    ["tenpercentowner", "TenPercentOwner"],
+  ]);
+  const found = new Set(
+    String(position?.relationship || "")
+      .split(",")
+      .map((role) => allowed.get(role.trim().toLowerCase()))
+      .filter(Boolean),
+  );
+  return ["Officer", "Director", "TenPercentOwner"].filter((role) => found.has(role));
+}
+
+const filingRecency = (position) => String(position?.asOf || "");
+
+function compareProfessionalAssociation(left, right) {
+  if (left.roleAuthority !== right.roleAuthority) {
+    return left.roleAuthority - right.roleAuthority;
+  }
+  const leftAsOf = filingRecency(left.position);
+  const rightAsOf = filingRecency(right.position);
+  if (leftAsOf !== rightAsOf) return leftAsOf.localeCompare(rightAsOf);
+  if (left.miles !== right.miles) return right.miles - left.miles;
+  return String(right.position?.issuerCik || "").localeCompare(
+    String(left.position?.issuerCik || ""),
+  );
+}
+
+/**
  * Rank insiders near a point.
  *
  * The unit of ranking is a PERSON's single largest disclosed position within range,
@@ -139,8 +186,12 @@ const rankValue = (position) => position?.marketValue ?? position?.value ?? -1;
  * moment. And a person's companies can sit in different cities, so summing them would
  * attribute value to a location where it isn't.
  */
-export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue = 0 }, dataDir) {
+export function searchNearby(
+  { lat, lng, radiusMi, limit, offset = 0, minValue = 0, ranking = "financial" },
+  dataDir,
+) {
   const loaded = loadIndex(dataDir);
+  const professionalMode = ranking === "professional";
 
   // Which issuers fall inside the radius? Everything hangs off this.
   const nearby = new Map();
@@ -156,6 +207,9 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
     for (const position of person.positions) {
       const hit = nearby.get(position.issuerCik);
       if (!hit) continue;
+      const positionRoles = professionalMode ? professionalPositionRoles(position) : person.roles;
+      const roleAuthority = professionalRoleAuthority(positionRoles);
+      if (professionalMode && roleAuthority === 0) continue;
       /**
        * Rank on the MARKET value, not the filed one.
        *
@@ -167,15 +221,25 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
        * value when no market price exists for the security.
        */
       const value = rankValue(position);
-      if (!best || value > rankValue(best.position)) best = { position, ...hit };
+      const candidate = { position, positionRoles, roleAuthority, ...hit };
+      if (
+        !best ||
+        (professionalMode
+          ? compareProfessionalAssociation(candidate, best) > 0
+          : value > rankValue(best.position))
+      ) {
+        best = candidate;
+      }
     }
     if (!best) continue;
-    if (Math.max(rankValue(best.position), 0) < minValue) continue;
+    // A financial threshold is intentionally inapplicable in professional mode.
+    // Its presence must never change who appears or how they are ordered.
+    if (!professionalMode && Math.max(rankValue(best.position), 0) < minValue) continue;
 
     rows.push({
       cik: person.cik,
       name: person.name,
-      roles: person.roles,
+      roles: professionalMode ? best.positionRoles : person.roles,
       title: best.position.title || null,
       position: {
         issuerCik: best.position.issuerCik,
@@ -220,24 +284,61 @@ export function searchNearby({ lat, lng, radiusMi, limit, offset = 0, minValue =
       ...describeDistance(best.miles, best.issuer.geoTier),
       otherIssuersInRange: person.positions.filter((p) => nearby.has(p.issuerCik)).length,
       profileUrl: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${person.cik}&type=4`,
+      ...(professionalMode
+        ? {
+            professional: {
+              roleAuthority: best.roleAuthority,
+              relationshipSource: "selected_position",
+              filingAsOf: best.position.asOf || null,
+              issuerOffice: {
+                latitude: best.issuer.lat,
+                longitude: best.issuer.lng,
+                geoPrecision: best.issuer.geoTier || null,
+              },
+            },
+            _professionalDistanceMiles: best.miles,
+          }
+        : {}),
     });
   }
 
-  // Priced positions first, largest first; unpriced fall to the end by distance so they
-  // are still reachable rather than silently dropped.
-  rows.sort((a, b) => {
-    const av = a.position.marketValue ?? a.position.disclosedValue;
-    const bv = b.position.marketValue ?? b.position.disclosedValue;
-    if (av == null && bv == null) return a.distanceMiles - b.distanceMiles;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    return bv - av;
+  if (professionalMode) {
+    rows.sort((a, b) => {
+      if (a.professional.roleAuthority !== b.professional.roleAuthority) {
+        return b.professional.roleAuthority - a.professional.roleAuthority;
+      }
+      const recency = String(b.professional.filingAsOf || "").localeCompare(
+        String(a.professional.filingAsOf || ""),
+      );
+      if (recency !== 0) return recency;
+      if (a._professionalDistanceMiles !== b._professionalDistanceMiles) {
+        return a._professionalDistanceMiles - b._professionalDistanceMiles;
+      }
+      return String(a.cik).localeCompare(String(b.cik));
+    });
+  } else {
+    // Priced positions first, largest first; unpriced fall to the end by distance so they
+    // are still reachable rather than silently dropped.
+    rows.sort((a, b) => {
+      const av = a.position.marketValue ?? a.position.disclosedValue;
+      const bv = b.position.marketValue ?? b.position.disclosedValue;
+      if (av == null && bv == null) return a.distanceMiles - b.distanceMiles;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return bv - av;
+    });
+  }
+
+  const publicRows = rows.map((row) => {
+    if (!professionalMode) return row;
+    const { _professionalDistanceMiles, ...publicRow } = row;
+    return publicRow;
   });
 
   return {
-    total: rows.length,
+    total: publicRows.length,
     issuersInRange: nearby.size,
-    rows: rows.slice(offset, offset + limit).map(stripOwnerAddress),
+    rows: publicRows.slice(offset, offset + limit).map(stripOwnerAddress),
   };
 }
 
