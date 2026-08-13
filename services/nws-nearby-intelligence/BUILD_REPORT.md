@@ -1,12 +1,12 @@
 # Build and Validation Report
 
-Validation date: 2026-08-12
+Validation date: 2026-08-13
 
 ## Source validation
 
 ```text
 Python                           3.13.13
-pytest                           44 passed
+pytest                           58 passed
 compileall                       passed
 targeted Ruff gate               passed
 uv lock consistency              passed
@@ -21,7 +21,7 @@ repository lint.
 
 ## Verified release contract
 
-- `47.6715, -122.2133` is coarsened to `47.67, -122.21`, is `COVERED`, and returns the 11
+- `47.6715, -122.2133` is coarsened to `47.67, -122.21`, is `COVERED`, and returns the 60
   reviewed Kirkland public-association records.
 - Legacy `{"postal_code":"98033"}` and explicit `{"postal_code":"98033","country_code":"US"}`
   are compatible.
@@ -33,8 +33,8 @@ repository lint.
 
 ## Scope truthfulness
 
-The deployed public route is a finite `VERIFIED_PUBLIC_BOOTSTRAP` release, not a nationwide or
-global people directory. It contains 11 reviewed public-association records and marks scores as
+The deployed public route is a finite `REVIEWED_PUBLIC_ASSOCIATION_RELEASE`, not a nationwide or
+global people directory. It contains 60 reviewed public-association records and marks scores as
 provisional. Internal reference modules, synthetic demo data, PostGIS schema, collectors, and
 future graph architecture remain source material only; they are not exposed by the deployed route
 and do not constitute a live national data plane.

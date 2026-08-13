@@ -11,8 +11,7 @@ from app.nws_models import (
     ProfessionalLane,
 )
 
-
-MODEL_VERSION = "nws-v2.1.0"
+MODEL_VERSION = "nws-v2.3.0-kirkland.2026-08-13"
 
 # The published weighting of the seven components, declared once so the score
 # and any explanation of the score cannot drift apart. A consumer that renders
@@ -105,13 +104,15 @@ def _confidence_grade(confidence: float) -> str:
     return "D"
 
 
-def _explanations(components: NwsComponents, local: float, candidate: NearbyCandidate) -> tuple[str, ...]:
+def _explanations(
+    components: NwsComponents, local: float, candidate: NearbyCandidate
+) -> tuple[str, ...]:
     labels = {
-        "graph_authority": "Strong position in the verified professional graph",
-        "institutional_influence": "High-authority roles at influential institutions",
-        "verified_track_record": "Strong verified execution and achievement record",
-        "capital_access": "Strong access to company-building or investment networks",
-        "trusted_reach": "Meaningful reach through trusted public sources",
+        "graph_authority": "Provisional role-taxonomy estimate of professional-network authority",
+        "institutional_influence": "Current role at a cited public organization or institution",
+        "verified_track_record": "Reviewed public role and organization evidence",
+        "capital_access": "Contextual model signal, not a financial or wealth claim",
+        "trusted_reach": "Public-source reach signal with limited scoring weight",
         "freshness": "Recent evidence supports the current profile",
         "evidence_confidence": "Identity and evidence are well corroborated",
     }
@@ -131,6 +132,8 @@ def _warnings(candidate: NearbyCandidate, confidence: float) -> tuple[str, ...]:
         warnings.append("Limited evidence coverage; score is conservative.")
     if f.dominant_source_ratio > 0.75:
         warnings.append("Most evidence comes from one source family.")
+    if f.source_quality < 0.90:
+        warnings.append("A role claim requires an earlier revalidation than the market release.")
     if f.self_published_source_ratio > 0.60:
         warnings.append("A large share of evidence is self-published.")
     if f.suspicious_pattern_ratio > 0.25:

@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
 from app.coverage import QueryResolution, resolve_coordinate_query, resolve_postal_query
+from app.market_release import get_market_release
 from app.nearby import discover_nearby_people
 from app.nws import COMPONENT_LABELS, GLOBAL_NWS_WEIGHTS
 from app.nws_models import ProfessionalLane
@@ -83,6 +84,9 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
+    release = get_market_release()
+    if release.model_version != settings.model_version:
+        raise RuntimeError("Market release model version does not match service settings")
     logger.info(
         "service_started environment=%s data_mode=%s candidate_count=%s",
         settings.environment,
@@ -247,8 +251,21 @@ def _serialize_result(item) -> dict[str, object]:  # type: ignore[no-untyped-def
         "warnings": list(item.score.warnings),
         "tags": list(item.candidate.tags),
         "revalidation_required": metadata.revalidation_required,
+        "evidence": {
+            "citation_count": len(metadata.citations),
+            "source_family_count": metadata.source_family_count,
+            "evidence_fact_count": metadata.evidence_fact_count,
+            "independent_source_families": metadata.source_family_count >= 2,
+            "review_flags": list(metadata.review_flags),
+        },
         "sources": [
-            {"publisher": citation.publisher, "title": citation.title, "url": citation.url}
+            {
+                "publisher": citation.publisher,
+                "title": citation.title,
+                "url": citation.url,
+                "fact_types": list(citation.fact_types),
+                "retrieved_at": citation.retrieved_at,
+            }
             for citation in metadata.citations
         ],
         "model_version": get_settings().model_version,
@@ -294,7 +311,8 @@ def _serialize_breakdown(score) -> dict[str, object]:  # type: ignore[no-untyped
             "balance term that stops a single strong signal carrying a profile. That total "
             "is scaled by evidence coverage and reduced by any integrity penalty. The "
             "nearby rank is 90% of this score plus 10% for association strength to the "
-            "queried place."
+            "queried place. This release uses conservative public-role taxonomy priors, not "
+            "a completed observed regional graph."
         ),
     }
 
@@ -321,6 +339,7 @@ def _uncovered_summary(
     return {
         "requested_top_n": request.top_n,
         "verified_seed_candidate_count": 0,
+        "reviewed_public_association_candidate_count": 0,
         "returned_count": 0,
         "initial_radius_km": request.initial_radius_km,
         "effective_radius_km": 0,
@@ -367,10 +386,11 @@ def discover_network(
     request: NearbyDiscoveryRequest,
     _: Annotated[AccessContext, Depends(require_api_access)],
 ) -> dict[str, object]:
-    """Return public-professional bootstrap results; clients never submit people."""
+    """Return reviewed public-professional results; clients never submit people."""
 
     resolution = _resolve_query(request.query)
     settings = get_settings()
+    release = get_market_release()
     response: dict[str, object] = {
         "query": resolution.query,
         "coverage": resolution.coverage,
@@ -379,7 +399,20 @@ def discover_network(
             "score_status": "PROVISIONAL",
             "complete": False,
             "model_version": settings.model_version,
-            "verified_at": settings.bootstrap_verified_at,
+            # verified_at is retained for older clients; reviewed_at is the
+            # precise name for a curated market-release review date.
+            "verified_at": settings.release_reviewed_at,
+            "reviewed_at": settings.release_reviewed_at,
+        },
+        "release": {
+            "release_id": release.release_id,
+            "market_id": release.market_id,
+            "model_version": release.model_version,
+            "source_retrieved_at": release.source_retrieved_at,
+            "source_policy_version": release.source_policy_version,
+            "candidate_set_sha256": release.candidate_set_sha256,
+            "source_registry_sha256": release.source_registry_sha256,
+            "manifest_sha256": release.manifest_sha256,
         },
         "score_definition": (
             "NWS estimates public professional network strength and opportunity access. It is not "
@@ -415,6 +448,7 @@ def discover_network(
     response["summary"] = {
         "requested_top_n": request.top_n,
         "verified_seed_candidate_count": len(candidates),
+        "reviewed_public_association_candidate_count": len(candidates),
         "returned_count": summary.returned_count,
         "initial_radius_km": request.initial_radius_km,
         "effective_radius_km": summary.effective_radius_km,
@@ -423,9 +457,12 @@ def discover_network(
         "diversity_applied": summary.diversity_applied,
         "coverage_status": resolution.coverage["status"],
         "search_performed": True,
-        "candidate_backend": "verified-public-bootstrap",
-        "graph_mode": "bootstrap_proxy",
-        "data_freshness": "A regional graph and production PostGIS index are not yet populated.",
+        "candidate_backend": "reviewed-public-association-release",
+        "graph_mode": "role-taxonomy-proxy",
+        "data_freshness": (
+            "Versioned reviewed public-association release; a regional graph and production "
+            "PostGIS index are not yet populated."
+        ),
     }
     response["results"] = [_serialize_result(item) for item in results]
     return response

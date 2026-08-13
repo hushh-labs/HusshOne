@@ -51,10 +51,22 @@ class NearbyPolicyEngine:
                 "NWS-LOCATION-002",
                 "The public local association is below the publication confidence threshold.",
             )
-        if candidate.location.source_count < 2 and candidate.profile_class is not ProfileClass.OPTED_IN:
+        if (
+            candidate.location.source_count < 1
+            and candidate.profile_class is not ProfileClass.OPTED_IN
+        ):
             return NearbyPolicyDecision(
                 False,
                 "NWS-LOCATION-003",
-                "A non-opt-in local association needs at least two supporting public sources.",
+                "A non-opt-in local association needs at least one reviewed public source.",
+            )
+        if (
+            candidate.features.evidence_count < 4
+            and candidate.profile_class is not ProfileClass.OPTED_IN
+        ):
+            return NearbyPolicyDecision(
+                False,
+                "NWS-EVIDENCE-001",
+                "A non-opt-in public professional needs four reviewed evidence facts.",
             )
         return NearbyPolicyDecision(True, "NWS-ALLOW", "Verified public or opted-in professional.")

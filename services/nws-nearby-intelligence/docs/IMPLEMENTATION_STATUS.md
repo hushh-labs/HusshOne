@@ -1,8 +1,8 @@
 # Implementation Status
 
 > **Deployed release boundary:** the public Cloud Run service exposes only `GET /health`,
-> `GET /ready`, and authenticated `POST /v2/nearby-network/discover`. It uses the 11-record
-> `VERIFIED_PUBLIC_BOOTSTRAP` market, explicit coverage states, coarse coordinate handling, and
+> `GET /ready`, and authenticated `POST /v2/nearby-network/discover`. It uses the 60-record
+> `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` market, explicit coverage states, coarse coordinate handling, and
 > server-held API-key protection. The reference modules listed below are source and roadmap
 > material; no legacy `/v1/*`, `/internal/*`, synthetic-demo, or PostGIS route is internet-exposed.
 
@@ -21,6 +21,8 @@
 - Lane-aware track-record scoring.
 - MMR diversification.
 - Public-safe result serialization.
+- Versioned 60-record Kirkland source release with manifest hashes, citation facts, source-family
+  counting, and revalidation flags.
 
 ### Graph and score logic
 

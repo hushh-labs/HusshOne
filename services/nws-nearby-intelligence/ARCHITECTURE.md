@@ -13,7 +13,7 @@ The service first returns explicit market coverage. Only a `COVERED` location ca
 **verified public or opted-in professionals**, ordered by a query-specific Nearby Rank Score and
 accompanied by a stable Global Network Worth Score (NWS), confidence, public professional location,
 and explanation. Valid but non-covered and unresolvable locations return an empty result set; they
-are never redirected to the Kirkland bootstrap market.
+are never redirected to the Kirkland public-association market.
 
 ### What “nearby” means
 

@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from app.geospatial import haversine_km, quantize_location
 from app.nws_models import GeoPoint
 
-_BOOTSTRAP_DATA_MODE = "VERIFIED_PUBLIC_BOOTSTRAP"
+_MARKET_RELEASE_DATA_MODE = "REVIEWED_PUBLIC_ASSOCIATION_RELEASE"
 _KIRKLAND_POSTAL_CENTROID = GeoPoint(47.6720, -122.1910)
 _KIRKLAND_COVERAGE_RADIUS_KM = 35.0
-_KIRKLAND_MARKET_ID = "us-wa-kirkland-bootstrap"
-_KIRKLAND_MARKET_LABEL = "Kirkland public-association bootstrap"
+_KIRKLAND_MARKET_ID = "us-wa-kirkland-public-association"
+_KIRKLAND_MARKET_LABEL = "Kirkland public-association market"
 
 
 @dataclass(frozen=True)
@@ -44,10 +44,10 @@ def resolve_postal_query(
                 "country_code": "US",
                 "source_note": (
                     "This release has an approved postal centroid and public-association "
-                    "dataset for the Kirkland bootstrap market."
+                    "dataset for the Kirkland reviewed public-association market."
                 ),
             },
-            coverage=_covered_bootstrap_market(),
+            coverage=_covered_market_release(),
         )
 
     assert country_code is not None
@@ -68,7 +68,7 @@ def resolve_postal_query(
             "reason_code": "POSTAL_CODE_NOT_IN_GEOGRAPHY_INDEX",
             "country_code": country_code,
             "complete": False,
-            "data_mode": _BOOTSTRAP_DATA_MODE,
+            "data_mode": _MARKET_RELEASE_DATA_MODE,
             "message": (
                 "The postal code was accepted, but this release has no canonical postal "
                 "geography for it. Send an approximate coordinate when available, or wait for "
@@ -107,18 +107,18 @@ def resolve_coordinate_query(
                     "reason_code": "COUNTRY_CONTEXT_DOES_NOT_MATCH_APPROVED_MARKET",
                     "country_code": country_code,
                     "complete": False,
-                    "data_mode": _BOOTSTRAP_DATA_MODE,
+                    "data_mode": _MARKET_RELEASE_DATA_MODE,
                     "message": (
                         "The supplied country context does not match the approved Kirkland "
-                        "bootstrap market. No people were selected."
+                        "reviewed public-association market. No people were selected."
                     ),
                 },
             )
-        query["label"] = "Kirkland public-association bootstrap query area"
+        query["label"] = "Kirkland public-association market query area"
         return QueryResolution(
             point=coarse,
             query=query,
-            coverage=_covered_bootstrap_market(),
+            coverage=_covered_market_release(),
         )
 
     return QueryResolution(
@@ -129,7 +129,7 @@ def resolve_coordinate_query(
             "reason_code": "NO_APPROVED_MARKET_DATA",
             "country_code": country_code,
             "complete": False,
-            "data_mode": _BOOTSTRAP_DATA_MODE,
+            "data_mode": _MARKET_RELEASE_DATA_MODE,
             "message": (
                 "The location was accepted, but this release has no approved public-association "
                 "dataset for that market. No people were selected."
@@ -138,17 +138,17 @@ def resolve_coordinate_query(
     )
 
 
-def _covered_bootstrap_market() -> dict[str, object]:
+def _covered_market_release() -> dict[str, object]:
     return {
         "status": "COVERED",
-        "reason_code": "APPROVED_BOOTSTRAP_MARKET",
+        "reason_code": "APPROVED_MARKET_RELEASE",
         "market_id": _KIRKLAND_MARKET_ID,
         "market_label": _KIRKLAND_MARKET_LABEL,
         "country_code": "US",
         "complete": False,
-        "data_mode": _BOOTSTRAP_DATA_MODE,
+        "data_mode": _MARKET_RELEASE_DATA_MODE,
         "message": (
             "Results are limited to reviewed public-association records in the Kirkland "
-            "bootstrap market."
+            "reviewed public-association market."
         ),
     }

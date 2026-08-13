@@ -1,6 +1,6 @@
 # NWS Nearby Operations Runbook
 
-> The currently deployed public service is the finite `VERIFIED_PUBLIC_BOOTSTRAP` route described
+> The currently deployed public service is the finite `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` route described
 > in `PRODUCTION_HANDOFF.md`. The broader ingestion, graph, and PostGIS steps below are future
 > production-data-plane runbook material, not a description of the live query path.
 
@@ -16,8 +16,8 @@ uvicorn app.main:app --reload --port 8080
 Expected:
 
 ```text
-44 tests passed (current release baseline)
-health endpoint returns service version 2.3.0
+58 tests passed (current release baseline)
+health endpoint returns service version 2.4.0
 the corrected Kirkland coordinate is COVERED; India input returns an explicit empty coverage state
 ```
 

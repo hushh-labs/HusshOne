@@ -36,7 +36,7 @@ class Settings:
     service_version: str
     model_version: str
     data_mode: str
-    bootstrap_verified_at: str
+    release_reviewed_at: str
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -49,9 +49,11 @@ class Settings:
         if environment == "production" and require_api_key and api_key == "local-development-only":
             raise RuntimeError("NWS_API_KEY must be supplied in production")
 
-        data_mode = os.getenv("NWS_DATA_MODE", "VERIFIED_PUBLIC_BOOTSTRAP").strip()
-        if data_mode != "VERIFIED_PUBLIC_BOOTSTRAP":
-            raise RuntimeError("This release supports only VERIFIED_PUBLIC_BOOTSTRAP data mode")
+        data_mode = os.getenv("NWS_DATA_MODE", "REVIEWED_PUBLIC_ASSOCIATION_RELEASE").strip()
+        if data_mode != "REVIEWED_PUBLIC_ASSOCIATION_RELEASE":
+            raise RuntimeError(
+                "This release supports only REVIEWED_PUBLIC_ASSOCIATION_RELEASE data mode"
+            )
 
         return cls(
             environment=environment,
@@ -66,10 +68,10 @@ class Settings:
             query_location_decimals=_read_int(
                 "NWS_QUERY_LOCATION_DECIMALS", 2, minimum=0, maximum=4
             ),
-            service_version="2.3.0",
-            model_version="nws-v2.2.0-bootstrap.2026-08-12",
+            service_version="2.4.0",
+            model_version="nws-v2.3.0-kirkland.2026-08-13",
             data_mode=data_mode,
-            bootstrap_verified_at="2026-08-12",
+            release_reviewed_at="2026-08-13",
         )
 
 

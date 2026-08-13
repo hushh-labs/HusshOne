@@ -22,7 +22,7 @@ def test_public_discovery_requires_an_api_key() -> None:
     assert response.json()["detail"]["code"] == "API_KEY_REQUIRED"
 
 
-def test_bootstrap_discovery_returns_only_verified_seed_records() -> None:
+def test_market_release_discovery_returns_reviewed_public_association_records() -> None:
     client = TestClient(app)
     response = client.post(
         "/v2/nearby-network/discover",
@@ -38,21 +38,25 @@ def test_bootstrap_discovery_returns_only_verified_seed_records() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["snapshot"] == {
-        "data_mode": "VERIFIED_PUBLIC_BOOTSTRAP",
+        "data_mode": "REVIEWED_PUBLIC_ASSOCIATION_RELEASE",
         "score_status": "PROVISIONAL",
         "complete": False,
-        "model_version": "nws-v2.2.0-bootstrap.2026-08-12",
-        "verified_at": "2026-08-12",
+        "model_version": "nws-v2.3.0-kirkland.2026-08-13",
+        "verified_at": "2026-08-13",
+        "reviewed_at": "2026-08-13",
     }
-    assert body["summary"]["verified_seed_candidate_count"] == 11
-    assert body["summary"]["returned_count"] == 11
+    assert body["summary"]["verified_seed_candidate_count"] == 60
+    assert body["summary"]["reviewed_public_association_candidate_count"] == 60
+    assert body["summary"]["returned_count"] == 60
     assert body["coverage"]["status"] == "COVERED"
-    assert body["coverage"]["market_id"] == "us-wa-kirkland-bootstrap"
+    assert body["coverage"]["market_id"] == "us-wa-kirkland-public-association"
     assert body["summary"]["search_performed"] is True
-    assert body["summary"]["candidate_backend"] == "verified-public-bootstrap"
+    assert body["summary"]["candidate_backend"] == "reviewed-public-association-release"
     assert all(item["score_status"] == "PROVISIONAL" for item in body["results"])
     assert all("distance_km" not in item for item in body["results"])
     assert all(item["sources"] for item in body["results"])
+    assert body["release"]["release_id"] == "us-wa-kirkland-public-association-2026-08-13"
+    assert len(body["release"]["candidate_set_sha256"]) == 64
 
 
 def test_corrected_kirkland_coordinate_is_coarsened_and_covered() -> None:
@@ -73,7 +77,7 @@ def test_corrected_kirkland_coordinate_is_coarsened_and_covered() -> None:
         "longitude": -122.21,
     }
     assert body["coverage"]["status"] == "COVERED"
-    assert body["summary"]["returned_count"] == 11
+    assert body["summary"]["returned_count"] == 60
 
 
 def test_legacy_and_explicit_us_kirkland_postal_requests_are_compatible() -> None:
@@ -211,7 +215,7 @@ def test_health_and_readiness_are_public_but_discovery_is_the_only_business_rout
     assert client.get("/health").status_code == 200
     ready = client.get("/ready")
     assert ready.status_code == 200
-    assert ready.json()["candidate_count"] == 11
+    assert ready.json()["candidate_count"] == 60
     preview = client.post("/internal/v2/nearby-network/score-preview", headers=API_HEADERS)
     assert preview.status_code == 404
     assert client.post("/v1/anonymous-affluence/rank", headers=API_HEADERS).status_code == 404

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from math import ceil
-from typing import Iterable
 
 from app.geospatial import haversine_km
 from app.nearby_policy import NearbyPolicyEngine
@@ -64,7 +64,7 @@ def _diversified_select(
         # Relax caps rather than silently returning fewer results when the local graph is sparse.
         pool = eligible or remaining
         best: _ScoredCandidate | None = None
-        best_value = float("-inf")
+        best_mmr = float("-inf")
         for item in pool:
             relevance = item.score.nearby_rank_score / 100.0
             redundancy = max(
@@ -72,10 +72,11 @@ def _diversified_select(
                 default=0.0,
             )
             mmr = lambda_relevance * relevance - (1.0 - lambda_relevance) * redundancy
-            # Stable deterministic tie breaking.
-            mmr += 1e-12 * (1.0 / (1 + sum(ord(ch) for ch in item.candidate.person_id)))
-            if mmr > best_value:
-                best_value = mmr
+            # Stable deterministic tie breaking without an opaque numeric epsilon.
+            if best is None or mmr > best_mmr or (
+                mmr == best_mmr and item.candidate.person_id < best.candidate.person_id
+            ):
+                best_mmr = mmr
                 best = item
 
         assert best is not None
