@@ -228,7 +228,8 @@ Do not collapse these proof layers:
 
 1. Intended source SHA merged to `main`.
 2. NWS CI green for that SHA.
-3. SEC professional endpoint and NPPES restricted view healthy.
+3. SEC professional endpoint is healthy; NPPES fixed-function probes and the execute-only
+   privilege verifier pass.
 4. Cloud Run latest-ready revision and 100% traffic match the intended image digest.
 5. `/health` and `/ready` return expected service/model state.
 6. Authenticated business probes pass for `60637`, `98033`, multiple regions, a sparse ZCTA, and an

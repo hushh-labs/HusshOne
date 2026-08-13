@@ -68,7 +68,7 @@
   country context/inference, and non-US behavior.
 - SEC adapter tests for value-free ordering, projection, entity/owner-only filtering, cache, and
   privacy omissions.
-- NPPES tests for restricted-view SQL, exact-ZIP/PostGIS query paths, source freshness,
+- NPPES tests for fixed-function calls, exact-ZIP/PostGIS query paths, source freshness,
   invalid/duplicate rejection, fail-soft behavior, and credential redaction.
 - Existing API, scoring, policy, source-release, security, and parser regression suites.
 - Path-scoped NWS CI on Python 3.13.
