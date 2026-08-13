@@ -23,6 +23,12 @@
 - Public-safe result serialization.
 - Versioned 60-record Kirkland source release with manifest hashes, citation facts, source-family
   counting, and revalidation flags.
+- Versioned, person-free Kirkland organization-anchor release covering the organizations in the
+  current market release; it is not a completed organization census.
+- Public association semantics (`BASED_HERE`, `CONNECTED_HERE`, and related context) without a
+  claim of physical presence or residence.
+- Executable financial-data boundary: named financial-profile output fails closed and is not a
+  field or ranking input in the public NWS route.
 
 ### Graph and score logic
 
@@ -48,6 +54,9 @@
 - Observation policy gate.
 - Official JSON-LD reference parser.
 - SEC Form 4 XML reference parser.
+- Organization-anchor URL/content scope guard for future workers.
+- Organization-first review-proposal compiler that requires a human-reviewed market release before
+  a candidate can be published.
 
 ### Persistence and operations
 
@@ -68,7 +77,7 @@
 - OpenAlex snapshot/Parquet parser and author disambiguation pipeline.
 - Wikidata/Common Crawl discovery workers.
 - State-by-state corporation-registry adapters.
-- Organization-domain crawler discovery and sitemap scheduling.
+- Scheduled organization-domain crawler discovery and sitemap scheduling.
 - GitHub public-profile/repository adapter.
 - Optional bounded verified-social adapter.
 - Large-scale Leiden/Louvain graph computation.

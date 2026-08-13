@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import yaml
 
-from app.collectors.contracts import AcquisitionMode, SourceContract, SourceTrustTier
-
+from app.collectors.contracts import (
+    AcquisitionMode,
+    CandidateProposalMode,
+    SourceContract,
+    SourceTrustTier,
+)
 
 _RELIABILITY_BY_TIER = {
     SourceTrustTier.AUTHORITATIVE: 0.98,
@@ -45,12 +49,37 @@ def _trust_tier(value: str) -> SourceTrustTier:
 
 
 def _metadata(source: Mapping[str, object]) -> dict[str, str]:
+    """Retain review-relevant YAML settings instead of discarding them.
+
+    The earlier loader kept only four display fields.  That made a source's
+    publication boundary, terms-review note, and crawler scope invisible to
+    an intake worker.  Contract fields are typed separately; the rest stays
+    machine-readable metadata for an analyst/reviewer.
+    """
+
+    contract_keys = {
+        "authority",
+        "acquisition",
+        "trust_tier",
+        "base_reliability",
+        "allowed_fact_types",
+        "forbidden_fact_types",
+        "source_family",
+        "candidate_proposal_mode",
+    }
     result: dict[str, str] = {}
-    for key in ("cadence", "purpose", "policy", "enabled"):
-        if key in source:
-            value = source[key]
-            result[key] = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    for key, value in source.items():
+        if key in contract_keys:
+            continue
+        result[str(key)] = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
     return result
+
+
+def _candidate_proposal_mode(value: object) -> CandidateProposalMode:
+    try:
+        return CandidateProposalMode(str(value).strip().upper())
+    except ValueError as exc:
+        raise ValueError(f"unsupported candidate proposal mode {value!r}") from exc
 
 
 class SourceRegistry:
@@ -65,7 +94,7 @@ class SourceRegistry:
         path: str | Path,
         *,
         user_agent: str = "NWSResearchBot/2.1 contact@example.invalid",
-    ) -> "SourceRegistry":
+    ) -> SourceRegistry:
         payload = yaml.safe_load(Path(path).read_text())
         if not isinstance(payload, dict) or not isinstance(payload.get("sources"), dict):
             raise ValueError("source YAML must contain a sources mapping")
@@ -98,6 +127,10 @@ class SourceRegistry:
                     requests_per_second=requests_per_second,
                     obey_robots_txt=obey_robots,
                     user_agent=user_agent,
+                    source_family=str(raw.get("source_family", source_id)),
+                    candidate_proposal_mode=_candidate_proposal_mode(
+                        raw.get("candidate_proposal_mode", "REVIEW_REQUIRED")
+                    ),
                     metadata=_metadata(raw),
                 )
             )

@@ -49,6 +49,23 @@ reviewed public-association data before `COVERED` can be returned. See the
 [Kirkland 98033 source release](docs/KIRKLAND_98033_SOURCE_RELEASE.md) for the exact source
 families, release hash, refresh requirements, and safe expansion process.
 
+## Organization-first discovery
+
+The service now has an O1 organization-anchor intake foundation: a reviewed
+organization/page scope can create a **human-review proposal**, but it cannot
+write people directly into NWS or the active market release. The current
+Kirkland anchor release contains 13 organizations that support the reviewed
+60-record release; it is not a completed census. See
+[Organization Discovery O1](docs/ORGANIZATION_DISCOVERY_O1.md).
+
+## Financial-data boundary
+
+NWS does not create or rank personal financial strength, net worth, property,
+compensation, assets, or liquidity. A response includes an explicit
+`financial_context: NOT_PROFILED` boundary, and the public `capital_access`
+component remains a professional-relationship signal only. See
+[Financial Context Boundary](docs/FINANCIAL_CONTEXT_BOUNDARY.md).
+
 ## API
 
 `POST /v2/nearby-network/discover` requires `X-NWS-API-Key` from a trusted server-side caller.
@@ -90,6 +107,8 @@ Copy `.env.example` to `.env` only for local development. Never commit a real pr
 
 - [API contract](docs/API_CONTRACT.md)
 - [Kirkland 98033 source release](docs/KIRKLAND_98033_SOURCE_RELEASE.md)
+- [Organization discovery O1](docs/ORGANIZATION_DISCOVERY_O1.md)
+- [Financial context boundary](docs/FINANCIAL_CONTEXT_BOUNDARY.md)
 - [Production handoff and integration guide](docs/PRODUCTION_HANDOFF.md)
 - [Architecture roadmap](ARCHITECTURE.md)
 - [Source catalog](docs/SCRAPER_CATALOG.md)

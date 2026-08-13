@@ -37,6 +37,39 @@ sources:
       REPORTING_OWNER_OF: 0.85
       DIRECTOR_OF: 0.90
       OFFICER_OF: 0.85
+    source_family: sec.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
+
+  sec_form_d:
+    authority: U.S. Securities and Exchange Commission
+    acquisition: filing_archives
+    trust_tier: authoritative
+    cadence: daily
+    forms: ["D", "D/A"]
+    allowed_fact_types: [issuer_identity, issuer_offering_filing, organization_relationship]
+    forbidden_fact_types:
+      - offering_amount_as_personal_wealth
+      - private_residence
+      - investor_identity_inference
+      - direct_score_input
+    policy: Discovery of issuer and official-source relationships only; a Form D offering is not a person's wealth, address, or local-presence signal.
+    source_family: sec.gov
+    candidate_proposal_mode: DISCOVERY_ONLY
+
+  sec_iapd_adv:
+    authority: U.S. Securities and Exchange Commission / Investment Adviser Public Disclosure
+    acquisition: public_bulk_or_filing_archive
+    trust_tier: authoritative
+    cadence: release_driven
+    allowed_fact_types: [adviser_firm_identity, adviser_business_role, firm_office_location, control_person_role]
+    forbidden_fact_types:
+      - aum_as_personal_wealth
+      - client_information
+      - private_residence
+      - direct_score_input
+    policy: Firm and licensed-role verification only; firm AUM, client counts, and control roles are not personal financial-capacity claims.
+    source_family: iapd.sec.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   sec_proxy_and_company_filings:
     authority: U.S. Securities and Exchange Commission
@@ -88,6 +121,8 @@ sources:
     allowed_fact_types: [identity_alias, occupation, organization_relation, official_website, city_level_affiliation]
     forbidden_fact_types: [unreferenced_wealth, unreferenced_residence]
     policy: Discovery and corroboration only; material facts require a primary source.
+    source_family: wikidata.org
+    candidate_proposal_mode: DISCOVERY_ONLY
 
   common_crawl:
     authority: Common Crawl
@@ -97,6 +132,24 @@ sources:
     allowed_fact_types: [source_discovery, public_page_history, official_domain_candidate]
     forbidden_fact_types: [direct_identity_merge, direct_score_input, private_residence]
     policy: Extract URLs and claims, then corroborate against primary sources.
+    source_family: commoncrawl.org
+    candidate_proposal_mode: DISCOVERY_ONLY
+
+  local_business_directory_discovery:
+    authority: Public chamber, business, or professional directory
+    acquisition: respectful_public_crawl
+    trust_tier: discovery_only
+    cadence: monthly
+    allowed_fact_types: [source_discovery, official_domain_candidate, organization_identity]
+    forbidden_fact_types:
+      - direct_identity_merge
+      - direct_candidate_publication
+      - direct_score_input
+      - personal_contact_enrichment
+      - private_residence
+    policy: Find organization anchors and official pages only. Directory entries cannot independently establish a person's current role or local association.
+    source_family: local-directory
+    candidate_proposal_mode: DISCOVERY_ONLY
 
   official_company_pages:
     authority: Issuer or organization
@@ -109,6 +162,8 @@ sources:
       obey_robots_txt: true
       declared_user_agent: true
       centralized_rate_limit: true
+    source_family: official-organization-domain
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   official_fund_and_portfolio_pages:
     authority: Investment firm or portfolio company
@@ -119,6 +174,8 @@ sources:
     graph_edges:
       PARTNER_AT: 0.86
       PUBLICLY_INVESTED_IN: 0.62
+    source_family: official-fund-domain
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   state_business_registries:
     authority: State secretary of state or corporations division
@@ -127,6 +184,8 @@ sources:
     cadence: weekly
     allowed_fact_types: [entity_existence, filing_role, formation_date, public_business_location]
     forbidden_fact_types: [economic_ownership_without_support, registered_agent_as_owner]
+    source_family: state-corporations-registry
+    candidate_proposal_mode: DISCOVERY_ONLY
 
   official_government_directories:
     authority: Federal, state, county, or municipal government
@@ -135,6 +194,8 @@ sources:
     cadence: weekly
     allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, public_official_role, agency_leadership, public_service_jurisdiction, official_bio]
     forbidden_fact_types: [political_affiliation_inference, personal_contact_enrichment]
+    source_family: official-government-domain
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   university_and_research_bios:
     authority: Accredited university or research institution
@@ -142,6 +203,8 @@ sources:
     trust_tier: primary
     cadence: monthly
     allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, faculty_role, lab_leadership, public_bio, institution_location, awards]
+    source_family: official-institution-domain
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   public_event_agendas:
     authority: Event organizer or host institution
@@ -152,6 +215,8 @@ sources:
     forbidden_fact_types: [stable_local_affiliation_from_single_event]
     graph_edges:
       SPOKE_AT: 0.18
+    source_family: official-event-organizer
+    candidate_proposal_mode: DISCOVERY_ONLY
 
   official_press_releases:
     authority: Company, government, university, or nonprofit
@@ -159,6 +224,8 @@ sources:
     trust_tier: primary
     cadence: daily
     allowed_fact_types: [identity_alias, organization_identity, current_role, official_profile_link, office_location, appointment, funding_event, acquisition, award, board_change, public_partnership]
+    source_family: official-organization-domain
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   github_public_claimed_profiles:
     authority: Public GitHub profile and repository metadata
@@ -170,6 +237,8 @@ sources:
     graph_edges:
       MAINTAINS: 0.32
       COLLABORATED_WITH: 0.18
+    source_family: github.com
+    candidate_proposal_mode: DISCOVERY_ONLY
 
   public_social_verified:
     authority: Public verified or officially linked social profile
@@ -188,6 +257,38 @@ sources:
     scoring_cap:
       maximum_share_of_total_nws: 0.0105
       maximum_share_of_reach_component: 0.15
+    source_family: verified-public-social
+    candidate_proposal_mode: DISCOVERY_ONLY
+
+  usaspending_awards:
+    authority: USAspending.gov
+    acquisition: public_api_or_bulk_download
+    trust_tier: authoritative
+    cadence: daily
+    allowed_fact_types: [awardee_organization_identity, public_award, organization_activity]
+    forbidden_fact_types:
+      - award_amount_as_personal_wealth
+      - personal_residence
+      - direct_candidate_publication
+      - direct_score_input
+    policy: Organization discovery and public activity context only; award amounts do not establish a person's wealth or current role.
+    source_family: usaspending.gov
+    candidate_proposal_mode: DISCOVERY_ONLY
+
+  sbir_awards:
+    authority: SBIR.gov
+    acquisition: public_api_or_bulk_download
+    trust_tier: authoritative
+    cadence: release_driven
+    allowed_fact_types: [awardee_organization_identity, public_award, research_activity]
+    forbidden_fact_types:
+      - award_amount_as_personal_wealth
+      - private_residence
+      - direct_candidate_publication
+      - direct_score_input
+    policy: Organization and public-research discovery only; it cannot create a named professional profile without current first-party role evidence.
+    source_family: sbir.gov
+    candidate_proposal_mode: DISCOVERY_ONLY
 
 relation_half_lives_days:
   CURRENT_EXECUTIVE_ROLE: 365

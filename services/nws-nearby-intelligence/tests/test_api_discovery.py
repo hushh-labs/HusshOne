@@ -52,9 +52,17 @@ def test_market_release_discovery_returns_reviewed_public_association_records() 
     assert body["coverage"]["market_id"] == "us-wa-kirkland-public-association"
     assert body["summary"]["search_performed"] is True
     assert body["summary"]["candidate_backend"] == "reviewed-public-association-release"
+    assert body["discovery"]["mode"] == "ORGANIZATION_ANCHOR_REVIEW_PIPELINE_O1"
+    assert body["discovery"]["organization_anchor_count"] == 13
+    assert body["discovery"]["market_census_complete"] is False
+    assert body["discovery"]["automatic_candidate_publication"] is False
+    assert body["financial_context"]["status"] == "NOT_PROFILED"
+    assert body["financial_context"]["personal_financial_strength"] == "NOT_PROVIDED"
     assert all(item["score_status"] == "PROVISIONAL" for item in body["results"])
     assert all("distance_km" not in item for item in body["results"])
     assert all(item["sources"] for item in body["results"])
+    assert all(item["public_association_context"]["category"] for item in body["results"])
+    assert all("financial_strength" not in item for item in body["results"])
     assert body["release"]["release_id"] == "us-wa-kirkland-public-association-2026-08-13"
     assert len(body["release"]["candidate_set_sha256"]) == 64
 

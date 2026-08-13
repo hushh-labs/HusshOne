@@ -14,10 +14,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
 from app.coverage import QueryResolution, resolve_coordinate_query, resolve_postal_query
+from app.financial_context import public_financial_context_policy
 from app.market_release import get_market_release
 from app.nearby import discover_nearby_people
 from app.nws import COMPONENT_LABELS, GLOBAL_NWS_WEIGHTS
 from app.nws_models import ProfessionalLane
+from app.organization_discovery import (
+    get_organization_anchor_release,
+    public_association_context,
+    validate_anchor_coverage,
+)
 from app.security import AccessContext, require_api_access
 from app.settings import get_settings
 
@@ -87,6 +93,12 @@ async def lifespan(_: FastAPI):
     release = get_market_release()
     if release.model_version != settings.model_version:
         raise RuntimeError("Market release model version does not match service settings")
+    anchor_release = get_organization_anchor_release()
+    validate_anchor_coverage(
+        anchor_release,
+        market_id=release.market_id,
+        organization_ids=(candidate.organization_id for candidate in BOOTSTRAP_CANDIDATES),
+    )
     logger.info(
         "service_started environment=%s data_mode=%s candidate_count=%s",
         settings.environment,
@@ -246,6 +258,7 @@ def _serialize_result(item) -> dict[str, object]:  # type: ignore[no-untyped-def
                 "residence."
             ),
         },
+        "public_association_context": public_association_context(item.candidate.location.kind),
         "score_breakdown": _serialize_breakdown(item.score),
         "reasons": list(item.score.reasons),
         "warnings": list(item.score.warnings),
@@ -391,6 +404,7 @@ def discover_network(
     resolution = _resolve_query(request.query)
     settings = get_settings()
     release = get_market_release()
+    anchor_release = get_organization_anchor_release()
     response: dict[str, object] = {
         "query": resolution.query,
         "coverage": resolution.coverage,
@@ -414,6 +428,8 @@ def discover_network(
             "source_registry_sha256": release.source_registry_sha256,
             "manifest_sha256": release.manifest_sha256,
         },
+        "discovery": anchor_release.api_summary(),
+        "financial_context": public_financial_context_policy(),
         "score_definition": (
             "NWS estimates public professional network strength and opportunity access. It is not "
             "financial net worth, and nearby means a public professional, institutional, civic, or "

@@ -26,16 +26,6 @@ class PolicyDecision:
 class PolicyEngine:
     """Hard gates that keep the analytical service inside its declared purpose."""
 
-    _PERSONAL_WEALTH_EVIDENCE = {
-        EvidenceKind.SEC_OWNERSHIP,
-        EvidenceKind.SEC_PROXY,
-        EvidenceKind.SEC_MAJOR_HOLDER,
-        EvidenceKind.MARKET_PRICE,
-        EvidenceKind.PRIVATE_COMPANY_DISCLOSURE,
-        EvidenceKind.SELF_DISCLOSED_REAL_ESTATE,
-        EvidenceKind.DISCLOSED_LIABILITY,
-    }
-
     _SOCIAL_OR_GENERAL_WEB = {
         EvidenceKind.PUBLIC_WEB,
         EvidenceKind.PUBLIC_SOCIAL,
@@ -55,7 +45,11 @@ class PolicyEngine:
                 "SUBJECT-002",
                 "The public-figure classification has not passed human verification.",
             )
-        return PolicyDecision(True, "SUBJECT-ALLOW", "Verified public figure.")
+        return PolicyDecision(
+            False,
+            "SUBJECT-003",
+            "Named financial-profile output is disabled; public-figure status is not consent.",
+        )
 
     def authorize_evidence(self, evidence: Evidence, requested_use: EvidenceUse) -> PolicyDecision:
         if requested_use not in evidence.allowed_uses:
@@ -76,7 +70,8 @@ class PolicyEngine:
             return PolicyDecision(
                 False,
                 "EVIDENCE-003",
-                "Public web or social content may support identity/affiliation, not a wealth amount.",
+                "Public web or social content may support identity/affiliation, not a wealth "
+                "amount.",
             )
 
         if evidence.kind is EvidenceKind.IRS_990 and requested_use is EvidenceUse.WEALTH:
@@ -89,7 +84,9 @@ class PolicyEngine:
         if evidence.kind in {EvidenceKind.PROPERTY_ASSESSMENT, EvidenceKind.PROPERTY_SALE}:
             if evidence.subject_type is SubjectType.ANONYMOUS_ASSET_CLUSTER:
                 if requested_use is EvidenceUse.AFFLUENCE:
-                    return PolicyDecision(True, "EVIDENCE-ALLOW-ANON-PROPERTY", "Anonymous use allowed.")
+                    return PolicyDecision(
+                        True, "EVIDENCE-ALLOW-ANON-PROPERTY", "Anonymous use allowed."
+                    )
                 return PolicyDecision(
                     False,
                     "EVIDENCE-005",
@@ -103,14 +100,11 @@ class PolicyEngine:
                 )
 
         if requested_use is EvidenceUse.WEALTH:
-            if evidence.subject_type is not SubjectType.PUBLIC_FIGURE:
-                return PolicyDecision(False, "EVIDENCE-007", "Wealth use requires a public figure.")
-            if evidence.kind not in self._PERSONAL_WEALTH_EVIDENCE:
-                return PolicyDecision(
-                    False,
-                    "EVIDENCE-008",
-                    f"Evidence kind {evidence.kind.value} cannot create a personal asset amount.",
-                )
+            return PolicyDecision(
+                False,
+                "EVIDENCE-009",
+                "Named financial-profile output is disabled; NWS does not publish or rank wealth.",
+            )
 
         return PolicyDecision(True, "EVIDENCE-ALLOW", "Evidence use is allowed.")
 

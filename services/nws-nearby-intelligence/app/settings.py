@@ -68,7 +68,7 @@ class Settings:
             query_location_decimals=_read_int(
                 "NWS_QUERY_LOCATION_DECIMALS", 2, minimum=0, maximum=4
             ),
-            service_version="2.4.0",
+            service_version="2.5.0",
             model_version="nws-v2.3.0-kirkland.2026-08-13",
             data_mode=data_mode,
             release_reviewed_at="2026-08-13",

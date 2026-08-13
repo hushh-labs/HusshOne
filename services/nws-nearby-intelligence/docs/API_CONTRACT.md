@@ -114,6 +114,16 @@ otherwise Kirkland coordinate, the service returns `NOT_COVERED` with
     "model_version": "nws-v2.3.0-kirkland.2026-08-13",
     "reviewed_at": "2026-08-13"
   },
+  "discovery": {
+    "mode": "ORGANIZATION_ANCHOR_REVIEW_PIPELINE_O1",
+    "organization_anchor_count": 13,
+    "market_census_complete": false,
+    "automatic_candidate_publication": false
+  },
+  "financial_context": {
+    "status": "NOT_PROFILED",
+    "personal_financial_strength": "NOT_PROVIDED"
+  },
   "summary": {
     "reviewed_public_association_candidate_count": 60,
     "returned_count": 60,
@@ -128,6 +138,15 @@ Result fields include only public-association labels, coarse public-association 
 source links, score confidence, and provisional/revalidation indicators. They never contain a
 private home, exact person coordinate, personal contact data, family graph, asset/net-worth claim,
 or raw evidence document.
+
+`public_association_context` labels the semantics of the association (`BASED_HERE`,
+`CONNECTED_HERE`, `APPEARING_NEARBY`, or `OPTED_IN_LOCATION`) without asserting physical presence
+or residence. `APPEARING_NEARBY` is not returned by the current stable nearby release.
+
+`discovery` describes the organization-first intake boundary. A reviewed anchor may create only a
+review proposal; it does not automatically create a result. `financial_context` is a deliberate
+non-profiled boundary: NWS never produces a named financial-strength, property, wealth, income, or
+liquidity signal.
 
 ## Ranking and privacy invariant
 
