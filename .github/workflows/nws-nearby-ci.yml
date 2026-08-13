@@ -31,5 +31,7 @@ jobs:
       - run: python -m pytest -q
       - run: >-
           python -m ruff check app/main.py app/coverage.py app/settings.py app/security.py
-          app/bootstrap_data.py tests/test_api_discovery.py tests/test_security.py
+          app/bootstrap_data.py app/market_release.py app/nearby.py app/nearby_policy.py app/nws.py
+          tests/test_api_discovery.py tests/test_market_release.py tests/test_nearby.py
+          tests/test_score_breakdown.py tests/test_security.py
       - run: python -m compileall -q app tests

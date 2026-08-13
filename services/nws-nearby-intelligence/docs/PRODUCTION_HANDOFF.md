@@ -14,8 +14,8 @@ This document is the integration and operations handoff for the standalone NWS N
 | Public base URL | `https://nws-nearby-intelligence-fro3hygenq-uc.a.run.app` |
 | Discovery route | `POST /v2/nearby-network/discover` |
 | Public probes | `GET /health`, `GET /ready` |
-| Current data mode | `VERIFIED_PUBLIC_BOOTSTRAP` |
-| Current approved market | Kirkland, Washington / US `98033`, 11 reviewed public-association records |
+| Current data mode | `REVIEWED_PUBLIC_ASSOCIATION_RELEASE` |
+| Current approved market | Kirkland, Washington / US `98033`, 60 reviewed public-association records |
 
 This Cloud Run service remains separate from HusshOne's `one` web application. Moving the source
 into HusshOne does not share its runtime identity, secret, container image, data, or deployment
@@ -46,7 +46,9 @@ curl --fail-with-body -X POST \
 
 The historical `{"postal_code":"98033"}` request remains compatible. Global postal and
 coordinate inputs are accepted safely, but only approved markets receive people. See
-[the API contract](API_CONTRACT.md) for exact response semantics.
+[the API contract](API_CONTRACT.md) and the
+[Kirkland 98033 source release](KIRKLAND_98033_SOURCE_RELEASE.md) for exact response and source
+semantics.
 
 ## Authentication, CORS, and privacy boundary
 
@@ -103,8 +105,9 @@ After every deployment, prove all of the following:
 2. The new Cloud Run revision has 100% traffic, the dedicated runtime service account, and the
    intended numbered secret reference.
 3. `/health` and `/ready` return `200`.
-4. Missing or invalid key returns `401`; a valid server-side key returns the covered Kirkland
-   contract for `47.6715, -122.2133` and for `98033`.
+4. Missing or invalid key returns `401`; a valid server-side key returns all 60 reviewed
+   public-association records for the covered Kirkland contract at `47.6715, -122.2133` and
+   for `98033` (with the default `B` confidence threshold).
 5. A valid India coordinate returns `200`, `coverage.status: "NOT_COVERED"`, and no results;
    `110001` plus `IN` returns `LOCATION_UNRESOLVED` and no results until postal geography exists.
 6. An arbitrary-origin CORS preflight returns `Access-Control-Allow-Origin: *` and does not return

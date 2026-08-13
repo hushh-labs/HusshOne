@@ -87,7 +87,7 @@ jobs:
             --service-account="$RUNTIME_SA" \
             --ingress=all --allow-unauthenticated \
             --cpu=1 --memory=256Mi --concurrency=8 --timeout=15s --max-instances=2 \
-            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=VERIFIED_PUBLIC_BOOTSTRAP,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
+            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=REVIEWED_PUBLIC_ASSOCIATION_RELEASE,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
             --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION}" \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=6 \
             --liveness-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=10,failureThreshold=3

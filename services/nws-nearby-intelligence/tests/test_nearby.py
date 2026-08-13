@@ -1,6 +1,7 @@
 from datetime import date
 
 from app.nearby import discover_nearby_people
+from app.nearby_policy import NearbyPolicyEngine
 from app.nws_models import (
     GeoPoint,
     LocationAssociationKind,
@@ -112,3 +113,20 @@ def test_radius_auto_expands() -> None:
     )
     assert summary.effective_radius_km > 5
     assert results
+
+
+def test_policy_rejects_thin_non_opt_in_evidence() -> None:
+    candidate = make_candidate(1, org="evidence", score=0.8)
+    thin = NearbyCandidate(
+        **{
+            **candidate.__dict__,
+            "features": NwsFeatureVector(
+                **{**candidate.features.__dict__, "evidence_count": 3}
+            ),
+        }
+    )
+
+    decision = NearbyPolicyEngine().authorize_candidate(thin)
+
+    assert decision.allowed is False
+    assert decision.rule_id == "NWS-EVIDENCE-001"

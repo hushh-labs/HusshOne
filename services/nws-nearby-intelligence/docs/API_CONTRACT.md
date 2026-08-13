@@ -1,8 +1,8 @@
 # NWS Nearby API and Product Contract
 
-> **Current release:** `VERIFIED_PUBLIC_BOOTSTRAP`. The query interface accepts global
+> **Current release:** `REVIEWED_PUBLIC_ASSOCIATION_RELEASE`. The query interface accepts global
 > coordinates and country-qualified postal input, but the only approved people dataset is the
-> Kirkland, Washington bootstrap market. A valid global input must never be relabelled as Kirkland
+> Kirkland, Washington public-association market. A valid global input must never be relabelled as Kirkland
 > or filled with Kirkland candidates.
 
 ## Endpoint and authentication
@@ -71,7 +71,7 @@ Every successful response includes:
     "status": "COVERED | NOT_COVERED | LOCATION_UNRESOLVED",
     "reason_code": "...",
     "complete": false,
-    "data_mode": "VERIFIED_PUBLIC_BOOTSTRAP",
+    "data_mode": "REVIEWED_PUBLIC_ASSOCIATION_RELEASE",
     "message": "..."
   }
 }
@@ -88,7 +88,7 @@ claim that the postal input was geocoded.
 | `LOCATION_UNRESOLVED` | Postal input was valid but is absent from the canonical geography index. `results` and candidate counts are zero. |
 
 The current `COVERED` condition is US `98033` or a coarse coordinate within the declared
-Kirkland public-association bootstrap boundary. If a caller sends a non-US country context for an
+Kirkland public-association market boundary. If a caller sends a non-US country context for an
 otherwise Kirkland coordinate, the service returns `NOT_COVERED` with
 `COUNTRY_CONTEXT_DOES_NOT_MATCH_APPROVED_MARKET` rather than returning people.
 
@@ -97,27 +97,28 @@ otherwise Kirkland coordinate, the service returns `NOT_COVERED` with
 ```json
 {
   "query": {
-    "label": "Kirkland public-association bootstrap query area",
+    "label": "Kirkland public-association market query area",
     "mode": "COARSE_COORDINATE",
     "normalized_coordinate": {"latitude": 47.67, "longitude": -122.21}
   },
   "coverage": {
     "status": "COVERED",
-    "reason_code": "APPROVED_BOOTSTRAP_MARKET",
-    "market_id": "us-wa-kirkland-bootstrap",
+    "reason_code": "APPROVED_MARKET_RELEASE",
+    "market_id": "us-wa-kirkland-public-association",
     "complete": false,
-    "data_mode": "VERIFIED_PUBLIC_BOOTSTRAP"
+    "data_mode": "REVIEWED_PUBLIC_ASSOCIATION_RELEASE"
   },
   "snapshot": {
     "score_status": "PROVISIONAL",
     "complete": false,
-    "model_version": "nws-v2.2.0-bootstrap.2026-08-12"
+    "model_version": "nws-v2.3.0-kirkland.2026-08-13",
+    "reviewed_at": "2026-08-13"
   },
   "summary": {
-    "verified_seed_candidate_count": 11,
-    "returned_count": 11,
+    "reviewed_public_association_candidate_count": 60,
+    "returned_count": 60,
     "search_performed": true,
-    "candidate_backend": "verified-public-bootstrap"
+    "candidate_backend": "reviewed-public-association-release"
   },
   "results": []
 }
@@ -134,9 +135,12 @@ NWS estimates public professional network strength and opportunity access. It is
 worth. “Nearby” refers to a public professional, institutional, civic, or opt-in association; it
 does not mean physical presence near the user.
 
-The current bootstrap has 11 reviewed public-association records, not a synthetic top-100 list.
+The current release has 60 reviewed public-association records, not a synthetic top-100 list.
 Each response declares `score_status: "PROVISIONAL"` and `complete: false` until approved
-PostGIS/graph snapshots and market-specific source coverage are available.
+PostGIS/graph snapshots and market-specific source coverage are available. The response also
+contains the versioned release identifier, public manifest hashes, citation/source-family counts,
+and refresh flags. Two URLs from one organization domain are never presented as independent
+source families.
 
 ## Future market enablement gate
 

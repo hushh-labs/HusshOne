@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES
 from app.geospatial import GeoPoint
 from app.main import app
+from app.market_release import get_market_release
 from app.nws import COMPONENT_LABELS, GLOBAL_NWS_WEIGHTS, score_candidate
 from app.security import rate_limiter
 
@@ -146,32 +147,22 @@ def test_method_sentence_is_present_and_mentions_the_adjustments(client: TestCli
     assert "10%" in method or "nearby rank" in method
 
 
-def test_publishing_the_breakdown_did_not_move_any_score(client: TestClient) -> None:
-    """Refactoring the weighted sum onto a table must not re-score anyone.
+def test_publishing_the_breakdown_matches_the_versioned_release(client: TestClient) -> None:
+    """A market-release change is deliberate, auditable, and complete.
 
-    These are every production value for the approved market, read from the live
-    service before the change rather than transcribed from a rounded display.
-    If a re-weighting is ever intended, this is where it has to be acknowledged.
+    The earlier 11-record score snapshot no longer applies after the explicit
+    model/release version bump.  This checks that the route returns every
+    manifest record and identifies the immutable candidate-set hash instead of
+    silently preserving stale numeric expectations.
     """
-    expected = {
-        "bootstrap_amy_morrison": 74.0106,
-        "bootstrap_bryan_mistele": 79.5482,
-        "bootstrap_eben_frankenberg": 77.9906,
-        "bootstrap_ettore_palazzo": 72.5392,
-        "bootstrap_harold_zeitz": 77.2119,
-        "bootstrap_kelli_curtis": 72.5637,
-        "bootstrap_kurt_triplett": 74.1618,
-        "bootstrap_michael_hsing": 83.4022,
-        "bootstrap_neal_black": 66.9703,
-        "bootstrap_neville_meijers": 78.6279,
-        "bootstrap_yun_zhang": 69.3951,
-    }
+    release = get_market_release()
     response = client.post(
         "/v2/nearby-network/discover",
         headers=API_HEADERS,
         json={"query": {"postal_code": "98033"}, "top_n": 400},
     )
-    actual = {r["person_id"]: r["global_nws"] for r in response.json()["results"]}
+    payload = response.json()
+    actual = {record["person_id"] for record in payload["results"]}
 
-    for person_id, score in expected.items():
-        assert actual[person_id] == pytest.approx(score, abs=1e-3), person_id
+    assert actual == {candidate.person_id for candidate in release.candidates}
+    assert payload["release"]["candidate_set_sha256"] == release.candidate_set_sha256

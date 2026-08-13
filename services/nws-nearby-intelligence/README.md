@@ -41,11 +41,13 @@ Every successful request includes `coverage`:
 | `NOT_COVERED` | The coordinate is valid, but there is no approved market dataset there. | Empty; no fallback market is used. |
 | `LOCATION_UNRESOLVED` | The postal input is valid but absent from the canonical postal-geography index. | Empty; no guessed centroid is used. |
 
-The current approved data is the Kirkland, Washington bootstrap market: 11 reviewed,
+The current approved data is the Kirkland, Washington reviewed market release: 60
 public-association records for US postal code `98033`. The coordinate `47.6715, -122.2133` is
 inside that market. A globally valid coordinate or postal code is therefore handled safely today,
 but it does **not** imply worldwide people coverage. New markets need approved geography plus
-reviewed public-association data before `COVERED` can be returned.
+reviewed public-association data before `COVERED` can be returned. See the
+[Kirkland 98033 source release](docs/KIRKLAND_98033_SOURCE_RELEASE.md) for the exact source
+families, release hash, refresh requirements, and safe expansion process.
 
 ## API
 
@@ -87,6 +89,7 @@ Copy `.env.example` to `.env` only for local development. Never commit a real pr
 ## Operations
 
 - [API contract](docs/API_CONTRACT.md)
+- [Kirkland 98033 source release](docs/KIRKLAND_98033_SOURCE_RELEASE.md)
 - [Production handoff and integration guide](docs/PRODUCTION_HANDOFF.md)
 - [Architecture roadmap](ARCHITECTURE.md)
 - [Source catalog](docs/SCRAPER_CATALOG.md)
