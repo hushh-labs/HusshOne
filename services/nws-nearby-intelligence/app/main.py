@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
 from app.coverage import QueryResolution, resolve_coordinate_query, resolve_postal_query
 from app.nearby import discover_nearby_people
+from app.nws import COMPONENT_LABELS, GLOBAL_NWS_WEIGHTS
 from app.nws_models import ProfessionalLane
 from app.security import AccessContext, require_api_access
 from app.settings import get_settings
@@ -241,6 +242,7 @@ def _serialize_result(item) -> dict[str, object]:  # type: ignore[no-untyped-def
                 "residence."
             ),
         },
+        "score_breakdown": _serialize_breakdown(item.score),
         "reasons": list(item.score.reasons),
         "warnings": list(item.score.warnings),
         "tags": list(item.candidate.tags),
@@ -250,6 +252,50 @@ def _serialize_result(item) -> dict[str, object]:  # type: ignore[no-untyped-def
             for citation in metadata.citations
         ],
         "model_version": get_settings().model_version,
+    }
+
+
+def _serialize_breakdown(score) -> dict[str, object]:  # type: ignore[no-untyped-def]
+    """Publish how the score was reached, not only what it is.
+
+    The seven components were always computed and never returned, so the number
+    arrived with four sentences of prose and no arithmetic behind it. A reader
+    could not tell a strong profile from a well-sourced one.
+
+    Weights come from the scoring module rather than being restated here, so a
+    re-weighting cannot leave a stale explanation behind. Contributions are
+    published because the weighted sum alone does not reproduce the score —
+    coverage and integrity adjust it afterwards, and both are shown.
+    """
+    components = score.components.as_dict()
+    return {
+        "components": [
+            {
+                "key": name,
+                "label": COMPONENT_LABELS[name],
+                "value": round(value, 4),
+                "weight": GLOBAL_NWS_WEIGHTS[name],
+                "contribution": round(GLOBAL_NWS_WEIGHTS[name] * value, 4),
+            }
+            for name, value in sorted(
+                components.items(), key=lambda item: -GLOBAL_NWS_WEIGHTS[item[0]]
+            )
+        ],
+        # Scores rise with corroboration: a thinly evidenced profile is held
+        # back rather than trusted, so this is part of the answer to "why".
+        "evidence_count": score.evidence_count,
+        "coverage_multiplier": score.coverage_multiplier,
+        # Discount applied for promotional, self-published, or single-source
+        # evidence patterns. Zero for a clean profile.
+        "integrity_penalty": score.integrity_penalty,
+        "local_relevance": score.local_relevance,
+        "method": (
+            "Each component is scored 0-1, multiplied by its weight and summed, with a "
+            "balance term that stops a single strong signal carrying a profile. That total "
+            "is scaled by evidence coverage and reduced by any integrity penalty. The "
+            "nearby rank is 90% of this score plus 10% for association strength to the "
+            "queried place."
+        ),
     }
 
 
