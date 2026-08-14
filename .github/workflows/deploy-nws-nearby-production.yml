@@ -52,6 +52,18 @@ env:
   PROFESSIONAL_API_KEY_SECRET_VERSION: '2'
   FORM6_API_KEY_SECRET_VERSION: '1'
   NPPES_DB_PASSWORD_SECRET_VERSION: '1'
+  # What the promotion gate requires /ready to report about the consumer
+  # registry. Declared here rather than written into the jq expression so that
+  # registering a consumer is one contiguous edit — secret version, SHA-256,
+  # expected registry version and expected consumer count all move together.
+  # Splitting them is how a registry bump passes review while the gate that is
+  # supposed to police it still asserts the state before the change.
+  #
+  # An exact consumer count, not a floor: a registry that gained a consumer
+  # nobody reviewed is precisely what this gate exists to catch, and ">= 1"
+  # cannot see it.
+  CONSUMER_REGISTRY_EXPECTED_VERSION: '2'
+  CONSUMER_REGISTRY_EXPECTED_CONSUMERS: '3'
 
 jobs:
   deploy:
@@ -289,15 +301,17 @@ jobs:
           READY="$(curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready")"
           jq -e \
             --arg snapshot_id '${{ steps.snapshot.outputs.id }}' \
-            --arg snapshot_sha256 '${{ steps.snapshot.outputs.sha256 }}' '
+            --arg snapshot_sha256 '${{ steps.snapshot.outputs.sha256 }}' \
+            --arg consumer_registry_version "$CONSUMER_REGISTRY_EXPECTED_VERSION" \
+            --arg consumer_count "$CONSUMER_REGISTRY_EXPECTED_CONSUMERS" '
             .status == "ok" and
             .geography_record_count == 33791 and
             .public_jurisdiction_record_count == 33791 and
             .national_sources_enabled == true and
             .form6_source_enabled == true and
             .v4_enabled == true and
-            .consumer_registry_version == 1 and
-            .consumer_count >= 1 and
+            .consumer_registry_version == ($consumer_registry_version | tonumber) and
+            .consumer_count == ($consumer_count | tonumber) and
             .net_worth_snapshot_id == $snapshot_id and
             .net_worth_snapshot_sha256 == $snapshot_sha256 and
             .net_worth_model_version == "net-worth-v1.0.0" and
