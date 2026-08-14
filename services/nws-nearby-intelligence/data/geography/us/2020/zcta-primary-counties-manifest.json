@@ -1,0 +1,12 @@
+{
+  "dataset": "2020 ZCTA to 2020 County Relationship File",
+  "publisher": "U.S. Census Bureau",
+  "source_url": "https://www2.census.gov/geo/docs/maps-data/data/rel2020/zcta520/tab20_zcta520_county20_natl.txt",
+  "source_sha256": "3ed41278d637dc249e0323306f68be8a6c234e3090f4de88ef328dee71aeaaaf",
+  "reduced_file": "zcta-primary-counties.tsv",
+  "reduced_file_sha256": "0846b4eb92c25876dff2974ef958e3c804d2a52a955771c2246f6a981d98ee81",
+  "record_count": 33791,
+  "vintage": 2020,
+  "selection_method": "largest combined land-and-water intersection per ZCTA",
+  "note": "This is a statistical ZCTA-to-county relationship for public jurisdiction matching, not a residence claim or USPS delivery boundary. A ZCTA can intersect multiple counties; the primary county is an approximation."
+}

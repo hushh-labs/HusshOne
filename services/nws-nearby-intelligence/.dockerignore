@@ -14,3 +14,11 @@ docker-compose.yml
 BUILD_REPORT.md
 ARCHITECTURE.md
 Makefile
+
+# Legacy research-only finance/property prototypes are excluded from the
+# production image. The versioned net-worth engine is a separate reviewed module.
+app/affluence.py
+app/domain
+app/policy.py
+app/ranking.py
+app/valuation.py

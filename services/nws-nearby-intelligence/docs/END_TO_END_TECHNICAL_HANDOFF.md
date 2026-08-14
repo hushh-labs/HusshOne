@@ -1,5 +1,10 @@
 # NWS Nearby Intelligence — end-to-end technical handoff
 
+> **Legacy professional route:** this document covers `/v2/nearby-network/discover` only. The
+> canonical Net Worth Score integration is `/v3/nearby-net-worth/discover`; use
+> [Net Worth Score technical handoff](NET_WORTH_SCORE_HANDOFF.md) for financial behavior,
+> sources, edge cases, operations, and rollback.
+>
 > This is the short integration handoff. The authoritative national source, infrastructure,
 > acceptance, and rollback details are in
 > [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md).

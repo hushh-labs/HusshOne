@@ -1,5 +1,10 @@
 # NWS Nearby Intelligence — Complete Architecture
 
+> **Legacy professional-plane document.** References below to Global/Network Worth Score describe
+> the compatibility `/v2/nearby-network/discover` model, not financial NWS. NWS now means Net Worth
+> Score on `/v3/nearby-net-worth/discover`; see
+> [`docs/NET_WORTH_SCORE_HANDOFF.md`](docs/NET_WORTH_SCORE_HANDOFF.md).
+
 > **Implementation status (2026-08-14):** the synchronous API now has national US Census ZCTA
 > resolution plus governed CMS NPPES and SEC Section 16 professional-association adapters. The
 > later graph, collector, review-console, and distributed-compute sections remain target

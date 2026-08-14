@@ -1,14 +1,19 @@
 # NWS Nearby Intelligence Service
 
-Standalone, privacy-safe US public-professional discovery API in the
+Standalone, privacy-safe US Net Worth Score and legacy public-professional discovery API in the
 [`hushh-labs/HusshOne`](https://github.com/hushh-labs/HusshOne) monorepo. It runs independently of
 the HusshOne `one` application so multiple Hushh products can integrate through their own
 server-side BFF.
 
-The API accepts a consented coordinate or US ZIP and returns ranked public professional
-associations. “Nearby” means relevance to a public issuer office, public practice area,
-institution, civic office, or other reviewed public association. It never means current physical
-presence or residence.
+The primary API accepts a consented coordinate or US ZIP and returns only financially eligible
+public or opted-in profiles ranked by estimated net worth. NWS means **Net Worth Score** on this
+route. “Nearby” selects a public office, issuer, practice, institution, or opted-in association; it
+never changes a person's NWS and never means current physical presence or residence.
+
+`POST /v3/nearby-net-worth/discover` is the financial contract. The older
+`POST /v2/nearby-network/discover` remains available for compatibility and is explicitly a
+provisional professional-network response; its historical `global_nws` field must not be shown as
+Net Worth Score.
 
 ## National release
 
@@ -16,7 +21,7 @@ The geography layer loads the complete packaged **2025 Census Gazetteer ZCTA rel
 records**. This is national query geography, not a promise that every USPS delivery ZIP exists or
 that every covered ZIP has a fixed number of people.
 
-The candidate path is hybrid:
+Candidate geography is hybrid:
 
 - `98033` and coordinates in the Kirkland market use the 60-record reviewed Kirkland release.
 - Other resolved US locations query natural-person SEC Section 16 Officers/Directors with public
@@ -25,13 +30,16 @@ The candidate path is hybrid:
 - Non-US or unresolved locations return an explicit empty coverage state. Kirkland people are
   never copied into another market.
 
-The national sources are queried live over current source snapshots. This is not request-time web
-crawling or a real-time person-location system. Every response remains `complete: false`, and a
-covered sparse ZIP may correctly return fewer results or zero.
+The service keeps candidate coverage and financial coverage separate. Nationwide geography can
+resolve a query without producing a named NWS. Current positive financial coverage is a bounded,
+partial roster of Florida officials with a sworn Form 6 whole-net-worth declaration. Other nearby
+profiles return `FINANCIAL_COVERAGE_INSUFFICIENT` until a complete attributable asset-and-liability
+ledger exists. SEC holdings, Form D, compensation, AUM, company revenue, and funding are not total
+personal net worth.
 
 ## Requests
 
-`POST /v2/nearby-network/discover` requires `X-NWS-API-Key` from a trusted server-side caller.
+`POST /v3/nearby-net-worth/discover` requires `X-NWS-API-Key` from a trusted server-side caller.
 `GET /health` and `GET /ready` are public; OpenAPI is at `/docs` and `/openapi.json`.
 
 US ZIP and ZIP+4 are accepted with or without `country_code: "US"`; ZIP+4 is searched by its
@@ -72,12 +80,30 @@ Every `200` response includes coverage:
 | `LOCATION_UNRESOLVED` | Postal syntax was accepted but the ZIP is absent from canonical packaged geography. No fallback is used. |
 | `NOT_COVERED` | The coordinate is non-US or country context could not be established. No people are selected. |
 
+## Net Worth Score contract
+
+The engine estimates:
+
+```text
+cash + public securities + private-business equity + real-estate equity
++ other supported assets - liabilities
+```
+
+Every component requires attributable evidence, all unknown categories remain unknown, and
+liabilities are mandatory. The dollar range is primary. Its median maps to a versioned fixed
+national 0–100 logarithmic scale; confidence remains separate and never multiplies NWS. A sworn
+whole total is already net of liabilities and is never added to itemized assets.
+
+See [Net Worth Score handoff](docs/NET_WORTH_SCORE_HANDOFF.md) for the full API, source, edge-case,
+privacy, test, and operational contract.
+
 ## Privacy and source boundary
 
 The public response omits raw/exact person coordinates, private residence, street or mailing
-address, phone/email, family graph, raw source documents, securities, shares, market/disclosed
-value, liquidity, property, income, and inferred net worth. `financial_context` is explicitly
-`NOT_PROFILED`.
+address, phone/email, family graph, raw source documents, and filing schedules. The v3 response
+contains only the allowed derived estimate, NWS, component statuses/ranges, confidence, public
+jurisdiction relationship, freshness, and official citations. The v2 response remains
+`financial_context: NOT_PROFILED`.
 
 SEC selection uses a value-free professional ordering and excludes owner-only/legal-entity
 records. NPPES is read through fixed, least-privilege Cloud SQL functions over active individual
@@ -92,7 +118,8 @@ API key is public. Keep `NWS_API_KEY` in each consumer's BFF/server secret store
 `NEXT_PUBLIC_*`, client JavaScript, a mobile bundle, source control, logs, or DevTools.
 
 Consumer UI must branch on `coverage.status`, preserve public-association/freshness language, and
-never label results as people physically around the user.
+never label results as people physically around the user. It must also distinguish no candidates,
+insufficient financial evidence, and a source outage.
 
 ## Local development
 
@@ -110,7 +137,9 @@ Copy `.env.example` only for local development. Never commit a real API or datab
 
 ## Developer handoff
 
-- [US national coverage handoff](docs/US_NATIONAL_COVERAGE_HANDOFF.md) — canonical source,
+- [Net Worth Score handoff](docs/NET_WORTH_SCORE_HANDOFF.md) — canonical financial model, v3 API,
+  source eligibility, edge cases, and rollout boundary.
+- [US national coverage handoff](docs/US_NATIONAL_COVERAGE_HANDOFF.md) — legacy v2 candidate-source,
   infrastructure, freshness, test, acceptance, and rollback guide.
 - [End-to-end technical handoff](docs/END_TO_END_TECHNICAL_HANDOFF.md)
 - [API contract](docs/API_CONTRACT.md)

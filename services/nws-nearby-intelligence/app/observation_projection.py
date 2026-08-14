@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping, Sequence
+from math import isfinite
 
 from app.collectors.contracts import ParsedObservation
 from app.feature_engineering import EvidenceSignal, FeatureSignalKind
@@ -18,6 +19,17 @@ class ProjectedObservationBatch:
 
 def _normalized_title(attributes: Mapping[str, object]) -> str:
     return str(attributes.get("title") or attributes.get("officer_title") or "").casefold()
+
+
+def _finite_number(attributes: Mapping[str, object], key: str, *, default: float) -> float:
+    raw = attributes.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if isfinite(value) else default
 
 
 def _role_authority(title: str, fact_type: str) -> float:
@@ -119,6 +131,27 @@ class ObservationProjector:
             fact = observation.fact_type.casefold()
             title = _normalized_title(observation.attributes)
 
+            # Ownership filings are retained as source evidence, not NWS score inputs.  A
+            # reporting owner can be a passive holder, trust, or other owner with no verified
+            # professional role at the issuer.  The parser emits separate ``director_role`` and
+            # ``public_role`` observations when the filing actually supports those roles, so
+            # projecting the broad relationship or transaction again would both double count the
+            # filing and let ownership affect a public-professional ranking.
+            if fact in {"beneficial_ownership", "issuer_relationship"}:
+                ignored.append(observation.observation_id)
+                continue
+
+            # SEC officer/director facts are publishable only when the issuer resolved to the
+            # canonical graph.  Without that object scope, the title is not a verified
+            # person-to-issuer professional relationship.
+            if (
+                observation.source_id == "sec_edgar_ownership"
+                and fact in {"director_role", "public_role"}
+                and object_id is None
+            ):
+                ignored.append(observation.observation_id)
+                continue
+
             if fact in {
                 "current_role",
                 "public_role",
@@ -200,29 +233,27 @@ class ObservationProjector:
                     )
                 continue
 
-            if fact in {"issuer_relationship", "beneficial_ownership", "investor_role"}:
-                if object_id:
-                    graph_edges.append(
-                        GraphEdge(
-                            source=person_id,
-                            target=object_id,
-                            relation=(
-                                "PUBLICLY_INVESTED_IN"
-                                if fact == "investor_role"
-                                else "REPORTING_OWNER_OF"
-                            ),
-                            base_weight=0.62 if fact == "investor_role" else 0.55,
-                            source_confidence=combined_confidence,
-                            age_days=max(0, (default_observed_on - observed_on).days),
-                            half_life_days=730,
-                        )
+            if fact == "investor_role":
+                if object_id is None:
+                    ignored.append(observation.observation_id)
+                    continue
+                graph_edges.append(
+                    GraphEdge(
+                        source=person_id,
+                        target=object_id,
+                        relation="PUBLICLY_INVESTED_IN",
+                        base_weight=0.62,
+                        source_confidence=combined_confidence,
+                        age_days=max(0, (default_observed_on - observed_on).days),
+                        half_life_days=730,
                     )
+                )
                 feature_signals.append(
                     self._signal(
                         observation,
                         person_id=person_id,
                         kind=FeatureSignalKind.CAPITAL_ACCESS,
-                        magnitude=0.65 if fact == "investor_role" else 0.50,
+                        magnitude=0.65,
                         source_family=source_family,
                         source_quality=source_quality,
                         observed_on=observed_on,
@@ -244,7 +275,9 @@ class ObservationProjector:
                             half_life_days=1825,
                         )
                     )
-                magnitude = float(observation.attributes.get("normalized_impact") or 1.0)
+                magnitude = _finite_number(
+                    observation.attributes, "normalized_impact", default=1.0
+                )
                 feature_signals.append(
                     self._signal(
                         observation,
@@ -267,7 +300,10 @@ class ObservationProjector:
                 "company_event",
                 "public_partnership",
             }:
-                magnitude = float(observation.attributes.get("normalized_magnitude") or 1.0)
+                # A funding, acquisition, award, or contract amount belongs to the organization
+                # or event. It is not the person's money and cannot make that person rank higher.
+                # The verified event contributes only a fixed presence signal.
+                magnitude = 1.0
                 feature_signals.append(
                     self._signal(
                         observation,
@@ -300,7 +336,12 @@ class ObservationProjector:
             if fact == "bounded_public_reach":
                 normalized_reach = min(
                     1.0,
-                    max(0.0, float(observation.attributes.get("normalized_reach") or 0.0)),
+                    max(
+                        0.0,
+                        _finite_number(
+                            observation.attributes, "normalized_reach", default=0.0
+                        ),
+                    ),
                 )
                 feature_signals.append(
                     self._signal(
