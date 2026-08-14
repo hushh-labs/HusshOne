@@ -90,6 +90,21 @@
   margin-top: 28px;
 }
 
+.authStatus,
+.authGate {
+  margin-top: 28px;
+}
+
+.authStatus,
+.authGate p {
+  color: var(--nearby-muted);
+  font-size: 14px;
+}
+
+.authGate p {
+  margin: 10px 0 0;
+}
+
 .searchRow {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto auto;
@@ -271,7 +286,7 @@
 
 .rowSummary {
   display: grid;
-  grid-template-columns: 28px minmax(180px, 1.25fr) minmax(145px, 0.9fr) 132px minmax(135px, 0.8fr) auto auto;
+  grid-template-columns: 28px minmax(220px, 1.35fr) minmax(155px, 0.85fr) 150px auto;
   gap: clamp(12px, 2vw, 24px);
   align-items: center;
   min-height: 116px;
@@ -287,9 +302,7 @@
 }
 
 .identity,
-.worth,
-.relationship,
-.update {
+.worth {
   min-width: 0;
 }
 
@@ -304,8 +317,7 @@
   white-space: nowrap;
 }
 
-.identity p,
-.relationship p {
+.identity p {
   margin: 5px 0 0;
   color: var(--nearby-muted);
   font-size: 13px;
@@ -313,8 +325,7 @@
 }
 
 .worth,
-.scorePair > div,
-.update {
+.scorePair > div {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -329,9 +340,7 @@
 }
 
 .worth span,
-.scorePair span,
-.relationship span,
-.update span {
+.scorePair span {
   color: var(--nearby-muted);
   font-size: 11px;
   line-height: 1.25;
@@ -350,25 +359,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.relationship p {
-  display: -webkit-box;
-  margin-top: 0;
-  overflow: hidden;
-  color: var(--nearby-ink);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.relationship span {
-  display: block;
-  margin-top: 4px;
-}
-
-.update strong {
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .detailToggle {
   justify-self: end;
 }
@@ -380,101 +370,41 @@
   padding: 22px;
 }
 
-.declaredNote {
-  margin: 0 0 18px;
-  color: var(--nearby-muted);
-  font-size: 13px;
-}
-
-.componentList {
+.detailGrid {
+  margin: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 28px;
+  gap: 18px 28px;
 }
 
-.componentRow {
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  border-bottom: 1px solid var(--nearby-line);
-  color: var(--nearby-muted);
-  font-size: 13px;
+.detailGrid > div {
+  min-width: 0;
 }
 
-.componentMeasure {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  color: var(--nearby-ink);
-  font-weight: 600;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.componentMeasure small {
-  margin-top: 2px;
-  color: var(--nearby-muted);
-  font-size: 10px;
-  font-weight: 400;
-}
-
-.liquidityRow {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 28px;
-  border-bottom: 1px solid var(--nearby-line);
-  padding: 20px 0;
-}
-
-.liquidityRow > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  color: var(--nearby-muted);
-  font-size: 13px;
-}
-
-.liquidityRow strong {
-  color: var(--nearby-ink);
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
-
-.citations {
-  padding-top: 20px;
-}
-
-.citations > p {
-  margin: 0 0 12px;
-  color: var(--nearby-muted);
-  font-size: 12px;
-}
-
-.citations ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.citations li + li {
-  margin-top: 12px;
-}
-
-.citations a {
-  color: var(--nearby-ink);
-  font-size: 13px;
-  font-weight: 600;
-  text-underline-offset: 3px;
-}
-
-.citations li span {
-  display: block;
-  margin-top: 3px;
+.detailGrid dt {
   color: var(--nearby-muted);
   font-size: 11px;
+}
+
+.detailGrid dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--nearby-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sourceLine,
+.associationNote {
+  margin: 18px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--nearby-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.associationNote {
+  margin-top: 6px;
 }
 
 .state,
@@ -537,20 +467,8 @@
 
 @media (max-width: 940px) {
   .rowSummary {
-    grid-template-columns: 28px minmax(180px, 1.3fr) minmax(145px, 0.9fr) 130px auto;
-    grid-template-areas:
-      "rank identity worth score toggle"
-      ". relationship relationship update toggle";
-    row-gap: 15px;
+    grid-template-columns: 28px minmax(180px, 1.2fr) minmax(145px, 0.9fr) 140px auto;
   }
-
-  .rank { grid-area: rank; }
-  .identity { grid-area: identity; }
-  .worth { grid-area: worth; }
-  .scorePair { grid-area: score; }
-  .relationship { grid-area: relationship; }
-  .update { grid-area: update; }
-  .detailToggle { grid-area: toggle; }
 }
 
 @media (max-width: 680px) {
@@ -594,16 +512,21 @@
     grid-template-areas:
       "rank identity toggle"
       ". worth worth"
-      ". score relationship"
-      ". update update";
+      ". score score";
     gap: 14px;
     min-height: 0;
     padding: 22px 0;
   }
 
   .rank {
+    grid-area: rank;
     padding-top: 2px;
   }
+
+  .identity { grid-area: identity; }
+  .worth { grid-area: worth; }
+  .scorePair { grid-area: score; }
+  .detailToggle { grid-area: toggle; }
 
   .identity h3 {
     white-space: normal;
@@ -617,12 +540,6 @@
     font-size: 20px;
   }
 
-  .relationship {
-    justify-self: end;
-    max-width: 150px;
-    text-align: right;
-  }
-
   .detailToggle {
     min-height: 34px;
     align-self: start;
@@ -634,13 +551,8 @@
     padding: 18px;
   }
 
-  .componentList,
-  .liquidityRow {
+  .detailGrid {
     grid-template-columns: 1fr;
-  }
-
-  .liquidityRow {
-    gap: 14px;
   }
 
   .notice {

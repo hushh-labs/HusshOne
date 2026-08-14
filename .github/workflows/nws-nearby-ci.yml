@@ -35,7 +35,9 @@ jobs:
           app/postal.py app/us_boundary.py app/national_sec.py app/national_nppes.py
           app/policy.py app/financial_context.py app/organization_discovery.py
           app/net_worth.py app/florida_net_worth.py app/jurisdiction.py
-          app/observation_projection.py
+          app/net_worth_v4.py app/consumer_access.py app/coordinate_consent.py
+          app/observation_projection.py app/source_plane/contracts.py
+          app/source_plane/cms_open_payments.py
           app/collectors/contracts.py app/collectors/fetcher.py app/collectors/registry.py
           app/jobs/refresh_net_worth.py app/snapshots/contracts.py
           app/snapshots/form6_refresh.py app/snapshots/gcs_store.py
@@ -46,6 +48,8 @@ jobs:
           tests/test_national_geography.py tests/test_national_sec.py tests/test_national_nppes.py
           tests/test_national_request_path.py tests/test_net_worth.py
           tests/test_florida_net_worth.py tests/test_jurisdiction.py tests/test_net_worth_api.py
-          tests/test_snapshot_data_plane.py
+          tests/test_net_worth_v4.py tests/test_net_worth_v4_api.py
+          tests/test_consumer_access.py tests/test_coordinate_consent.py
+          tests/test_cms_open_payments_source_plane.py tests/test_snapshot_data_plane.py
           tests/test_financial_safety_boundary.py tests/test_observation_projection.py
       - run: python -m compileall -q app tests

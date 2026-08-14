@@ -38,6 +38,7 @@ class SourceBindingError(PermissionError):
 
 
 class SourceOperation(StrEnum):
+    ACQUIRE = "ACQUIRE"
     SNAPSHOT_PUBLISHER = "SNAPSHOT_PUBLISHER"
     QUERY = "QUERY"
 
@@ -60,6 +61,25 @@ class SourceSnapshotBinding:
     source_id: str
     snapshot_id: str
     snapshot_sha256: str
+    operation: SourceOperation
+    purpose: str
+    product: str
+    registry_id: str
+    registry_version: int
+    registry_sha256: str
+
+
+@dataclass(frozen=True)
+class SourceUseBinding:
+    """Reviewed permission for one non-snapshot source operation.
+
+    A :class:`SourceContract` describes how a source may be handled.  It is not
+    itself permission to run a collector.  Runtime code receives this binding
+    only after the verified registry, kill switch, purpose, product, and
+    operation gates all pass.
+    """
+
+    source_id: str
     operation: SourceOperation
     purpose: str
     product: str
@@ -265,12 +285,20 @@ class SourceRegistry:
         if not isinstance(payload, dict) or not isinstance(payload.get("sources"), dict):
             raise ValueError("source YAML must contain a sources mapping")
 
+        raw_defaults = payload.get("source_contract_defaults") or {}
+        if not isinstance(raw_defaults, dict):
+            raise ValueError("source_contract_defaults must be a mapping")
+
         contracts: list[SourceContract] = []
         for source_id, raw in payload["sources"].items():
             if not isinstance(raw, dict):
                 raise ValueError(f"source {source_id!r} must be a mapping")
-            tier = _trust_tier(str(raw.get("trust_tier", "discovery_only")))
-            crawl_policy = raw.get("crawl_policy") or {}
+            # Defaults are security controls, not documentation.  A source that
+            # omits ``enabled`` or ``kill_switch`` must inherit the registry's
+            # fail-closed values.
+            effective = {**raw_defaults, **raw}
+            tier = _trust_tier(str(effective.get("trust_tier", "discovery_only")))
+            crawl_policy = effective.get("crawl_policy") or {}
             if not isinstance(crawl_policy, dict):
                 crawl_policy = {}
             requests_per_second = float(crawl_policy.get("requests_per_second", 1.0))
@@ -278,26 +306,28 @@ class SourceRegistry:
             contracts.append(
                 SourceContract(
                     source_id=str(source_id),
-                    authority=str(raw.get("authority", source_id)),
-                    acquisition_mode=_acquisition_mode(str(raw.get("acquisition", "public_page"))),
+                    authority=str(effective.get("authority", source_id)),
+                    acquisition_mode=_acquisition_mode(
+                        str(effective.get("acquisition", "public_page"))
+                    ),
                     trust_tier=tier,
                     base_reliability=float(
-                        raw.get("base_reliability", _RELIABILITY_BY_TIER[tier])
+                        effective.get("base_reliability", _RELIABILITY_BY_TIER[tier])
                     ),
                     allowed_fact_types=frozenset(
-                        str(item) for item in raw.get("allowed_fact_types", ())
+                        str(item) for item in effective.get("allowed_fact_types", ())
                     ),
                     forbidden_fact_types=frozenset(
-                        str(item) for item in raw.get("forbidden_fact_types", ())
+                        str(item) for item in effective.get("forbidden_fact_types", ())
                     ),
                     requests_per_second=requests_per_second,
                     obey_robots_txt=obey_robots,
                     user_agent=user_agent,
-                    source_family=str(raw.get("source_family", source_id)),
+                    source_family=str(effective.get("source_family", source_id)),
                     candidate_proposal_mode=_candidate_proposal_mode(
-                        raw.get("candidate_proposal_mode", "REVIEW_REQUIRED")
+                        effective.get("candidate_proposal_mode", "REVIEW_REQUIRED")
                     ),
-                    metadata=_metadata(raw),
+                    metadata=_metadata(effective),
                 )
             )
         return cls(contracts, manifest=manifest)
@@ -314,6 +344,58 @@ class SourceRegistry:
     @property
     def verified(self) -> bool:
         return self._manifest is not None
+
+    def authorize_source_use(
+        self,
+        source_id: str,
+        *,
+        operation: SourceOperation,
+        purpose: str,
+        product: str,
+    ) -> SourceUseBinding:
+        """Authorize one exact runtime use or fail closed.
+
+        Broad source accessibility is never permission.  Every active worker
+        must name the reviewed operation, product, and purpose, and a source
+        must opt in to all three while its kill switch is disengaged.
+        """
+
+        manifest = self._manifest
+        if manifest is None:
+            raise SourceRegistryIntegrityError(
+                "source use requires a verified source registry"
+            )
+        contract = self.get(source_id)
+        if _metadata_value(contract, "enabled") is not True:
+            raise SourceBindingError(f"source {source_id!r} is disabled")
+        if _metadata_value(contract, "kill_switch") is not False:
+            raise SourceBindingError(f"source {source_id!r} kill switch is engaged")
+
+        allowed_operations = _string_set(_metadata_value(contract, "allowed_operations"))
+        if operation.value not in allowed_operations:
+            raise SourceBindingError(
+                f"source {source_id!r} does not permit {operation.value}"
+            )
+        normalized_purpose = purpose.strip().upper()
+        if normalized_purpose not in _string_set(
+            _metadata_value(contract, "allowed_purposes")
+        ):
+            raise SourceBindingError(f"source {source_id!r} does not permit this purpose")
+        normalized_product = product.strip().upper()
+        if normalized_product not in _string_set(
+            _metadata_value(contract, "allowed_products")
+        ):
+            raise SourceBindingError(f"source {source_id!r} does not permit this product")
+
+        return SourceUseBinding(
+            source_id=source_id,
+            operation=operation,
+            purpose=normalized_purpose,
+            product=normalized_product,
+            registry_id=manifest.registry_id,
+            registry_version=manifest.registry_version,
+            registry_sha256=manifest.catalog_sha256,
+        )
 
     def bind_reviewed_snapshot(
         self,

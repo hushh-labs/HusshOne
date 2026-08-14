@@ -1,4 +1,4 @@
-version: 3
+version: 4
 registry_id: nws-nearby-source-registry
 product: nws_nearby
 source_contract_defaults:
@@ -38,7 +38,7 @@ sources:
     kill_switch: false
     publication_mode: REVIEWED_SNAPSHOT_ONLY
     allowed_operations: [SNAPSHOT_PUBLISHER, QUERY]
-    allowed_products: [NET_WORTH_V3]
+    allowed_products: [NET_WORTH_V3, NET_WORTH_V4]
     allowed_purposes: [FINANCIAL_EVIDENCE]
     allowed_fact_types:
       - sworn_whole_declared_net_worth
@@ -94,6 +94,99 @@ sources:
       DIRECTOR_OF: 0.90
       OFFICER_OF: 0.85
     source_family: sec.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
+
+  sec_section16_professional_associations:
+    authority: U.S. Securities and Exchange Commission
+    acquisition: reviewed_server_snapshot
+    trust_tier: authoritative
+    cadence: quarterly_base_and_filing_deltas
+    enabled: true
+    kill_switch: false
+    publication_mode: PUBLIC_SAFE_QUERY_PROJECTION_ONLY
+    allowed_operations: [QUERY]
+    allowed_products: [NWS_CANDIDATE_QUERY_V1]
+    allowed_purposes: [CANDIDATE_DISCOVERY]
+    allowed_fact_types:
+      - reporting_owner_cik
+      - public_name
+      - officer_or_director_role
+      - issuer_cik
+      - issuer_name
+      - issuer_public_office_association
+      - filing_recency
+    forbidden_fact_types:
+      - disclosed_value
+      - market_value
+      - shares
+      - transaction_price
+      - personal_net_worth
+      - private_residence
+      - street_address
+      - phone
+      - email
+    policy: Candidate identity and issuer public-office association only. Position values and ownership amounts are excluded from candidate ranking and all public responses.
+    source_family: sec.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
+
+  cms_nppes_public_professionals:
+    authority: Centers for Medicare & Medicaid Services NPPES
+    acquisition: reviewed_database_snapshot
+    trust_tier: authoritative
+    cadence: monthly_full_and_weekly_delta
+    enabled: true
+    kill_switch: false
+    publication_mode: PUBLIC_SAFE_QUERY_PROJECTION_ONLY
+    allowed_operations: [QUERY]
+    allowed_products: [NWS_CANDIDATE_QUERY_V1]
+    allowed_purposes: [CANDIDATE_DISCOVERY]
+    allowed_fact_types:
+      - npi
+      - public_name
+      - professional_credential
+      - taxonomy
+      - practice_postal_association
+      - source_recency
+    forbidden_fact_types:
+      - street_address
+      - phone
+      - email
+      - personal_net_worth
+      - direct_financial_score_input
+    policy: Active individual professional discovery and coarse public-practice association only. NPPES is not financial evidence.
+    source_family: nppes.cms.hhs.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
+
+  cms_open_payments_ownership:
+    authority: Centers for Medicare & Medicaid Services Open Payments
+    acquisition: annual_bulk_zip
+    trust_tier: authoritative
+    cadence: annual_release
+    enabled: false
+    kill_switch: true
+    publication_mode: REVIEWED_EVIDENCE_SNAPSHOT_ONLY
+    allowed_operations: [ACQUIRE, SNAPSHOT_PUBLISHER, QUERY]
+    allowed_products: [NET_WORTH_EVIDENCE_V1]
+    allowed_purposes: [FINANCIAL_EVIDENCE]
+    allowed_fact_types:
+      - npi
+      - public_name
+      - reporting_entity_identity
+      - observed_business_interest_value
+      - reported_ownership_percentage
+      - program_year
+      - filing_provenance
+    forbidden_fact_types:
+      - immediate_family_interest
+      - street_address
+      - phone
+      - email
+      - private_residence
+      - total_net_worth
+      - direct_nws
+      - liabilities_as_zero
+    policy: Disabled until a reviewed immutable bulk snapshot is published. A reported physician ownership interest is one observed asset component, never total net worth; immediate-family rows and contact/location fields are excluded.
+    source_family: openpaymentsdata.cms.gov
     candidate_proposal_mode: REVIEW_REQUIRED
 
   sec_form_d:

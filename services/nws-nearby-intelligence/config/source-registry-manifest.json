@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "registry_id": "nws-nearby-source-registry",
-  "registry_version": 3,
+  "registry_version": 4,
   "catalog_file": "sources.yaml",
-  "catalog_sha256": "fb97b845e41998e2d1cdf6c832751605a6285940d885c632883979980511038a",
-  "source_count": 24,
+  "catalog_sha256": "bc87c8b8a3484e401871c43b2b79ee5b943877dca5c7a046f9da750bb525aaed",
+  "source_count": 27,
   "review_status": "APPROVED",
   "reviewed_at": "2026-08-14"
 }

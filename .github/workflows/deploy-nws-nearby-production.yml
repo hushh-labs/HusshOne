@@ -24,21 +24,31 @@ env:
   BUILD_LOG_DIR: gs://hushh-tech-prod-nws-nearby-build-logs/logs
   BUILD_SA: projects/hushh-tech-prod/serviceAccounts/nws-nearby-build@hushh-tech-prod.iam.gserviceaccount.com
   RUNTIME_SA: nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com
-  SNAPSHOT_JOB: nws-net-worth-refresh
-  SNAPSHOT_RUNTIME_SA: nws-net-worth-collector@hushh-tech-prod.iam.gserviceaccount.com
+  # Blue/green data plane: registry-v4 publishes to its own pointer while the
+  # v3 job/pointer remains healthy for immediate Cloud Run rollback.
+  SNAPSHOT_JOB: nws-net-worth-refresh-v4
+  LEGACY_SNAPSHOT_JOB: nws-net-worth-refresh
+  SNAPSHOT_RUNTIME_SA: nws-net-worth-collector-v4@hushh-tech-prod.iam.gserviceaccount.com
   SNAPSHOT_BUCKET: hushh-tech-prod-nws-published-snapshots
-  SNAPSHOT_PREFIX: published/net-worth-v1.0.0
+  SNAPSHOT_PREFIX: published/net-worth-v1.0.0/registry-v4
+  LEGACY_SNAPSHOT_PREFIX: published/net-worth-v1.0.0
+  CONSENT_RECEIPT_BUCKET: hushh-tech-prod-nws-consent-receipts
   SOURCE_REGISTRY_PATH: /app/config/sources.yaml
   SOURCE_REGISTRY_MANIFEST_PATH: /app/config/source-registry-manifest.json
-  SOURCE_REGISTRY_SHA256: fb97b845e41998e2d1cdf6c832751605a6285940d885c632883979980511038a
-  SOURCE_REGISTRY_VERSION: '3'
+  SOURCE_REGISTRY_SHA256: bc87c8b8a3484e401871c43b2b79ee5b943877dca5c7a046f9da750bb525aaed
+  SOURCE_REGISTRY_VERSION: '4'
   SECRET_NAME: nws-nearby-api-key
+  V4_API_KEY_SECRET_NAME: nws-husshone-v4-api-key
+  CONSUMER_REGISTRY_SECRET_NAME: nws-consumer-access-registry
+  CONSUMER_REGISTRY_SHA256: df2f5ec0e458db9b92ac937b3b98e9d0b2f335dabffdeb2f19a3b01e272660c0
   PROFESSIONAL_SECRET_NAME: insider-professional-api-key
   FORM6_SECRET_NAME: nws-form6-api-key
   NPPES_DB_SECRET_NAME: nws-nearby-nppes-db-password
   CLOUD_SQL_INSTANCE: hushh-tech-prod:us-central1:hushh-directories-db
   # Advance deliberately after adding a Secret Manager version; do not use latest.
   NWS_API_KEY_SECRET_VERSION: '1'
+  V4_API_KEY_SECRET_VERSION: '2'
+  CONSUMER_REGISTRY_SECRET_VERSION: '2'
   PROFESSIONAL_API_KEY_SECRET_VERSION: '2'
   FORM6_API_KEY_SECRET_VERSION: '1'
   NPPES_DB_PASSWORD_SECRET_VERSION: '1'
@@ -100,6 +110,24 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE='${{ steps.image.outputs.uri }}'
+          test "$SNAPSHOT_JOB" != "$LEGACY_SNAPSHOT_JOB"
+          LEGACY_JOB="$(gcloud run jobs describe "$LEGACY_SNAPSHOT_JOB" \
+            --project="$PROJECT_ID" --region="$REGION" --format=json)"
+          jq -e --arg prefix "$LEGACY_SNAPSHOT_PREFIX" '
+            def task_template:
+              (.template?.template? // .spec?.template?.spec?.template?.spec?);
+            task_template as $task |
+            $task.containers[0].command == ["python"] and
+            $task.containers[0].args == ["-m", "app.jobs.refresh_net_worth"] and
+            any($task.containers[0].env[]?;
+              .name == "NWS_SNAPSHOT_PREFIX" and .value == $prefix) and
+            any($task.containers[0].env[]?;
+              .name == "NWS_SOURCE_REGISTRY_VERSION" and .value == "3")
+          ' <<<"$LEGACY_JOB" >/dev/null
+          LEGACY_POINTER_BEFORE="$(gcloud storage objects describe \
+            "gs://${SNAPSHOT_BUCKET}/${LEGACY_SNAPSHOT_PREFIX}/active.json" \
+            --project="$PROJECT_ID" --format='value(generation)')"
+          test -n "$LEGACY_POINTER_BEFORE"
           JOB_BEFORE="$(gcloud run jobs describe "$SNAPSHOT_JOB" \
             --project="$PROJECT_ID" --region="$REGION" --format=json)"
           jq -e --arg runtime_sa "$SNAPSHOT_RUNTIME_SA" '
@@ -164,6 +192,10 @@ jobs:
           gcloud run jobs execute "$SNAPSHOT_JOB" \
             --project="$PROJECT_ID" --region="$REGION" \
             --wait --quiet
+          LEGACY_POINTER_AFTER="$(gcloud storage objects describe \
+            "gs://${SNAPSHOT_BUCKET}/${LEGACY_SNAPSHOT_PREFIX}/active.json" \
+            --project="$PROJECT_ID" --format='value(generation)')"
+          test "$LEGACY_POINTER_AFTER" = "$LEGACY_POINTER_BEFORE"
 
           TMP_DIR="$(mktemp -d)"
           trap 'rm -rf "$TMP_DIR"' EXIT
@@ -230,12 +262,13 @@ jobs:
             --image='${{ steps.image.outputs.uri }}' \
             --service-account="$RUNTIME_SA" \
             --ingress=all --allow-unauthenticated \
-            --cpu=1 --memory=512Mi --concurrency=8 --timeout=30s --max-instances=4 \
+            --cpu=1 --memory=512Mi --concurrency=8 --timeout=30s \
+            --min-instances=1 --max-instances=1 \
             --no-traffic --tag="$TAG" \
             --add-cloudsql-instances="$CLOUD_SQL_INSTANCE" \
-            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT,NWS_NATIONAL_SOURCES_ENABLED=true,NWS_SEC_SOURCE_ENABLED=true,NWS_SEC_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_FORM6_SOURCE_ENABLED=true,NWS_SNAPSHOT_BUCKET=${SNAPSHOT_BUCKET},NWS_SNAPSHOT_PREFIX=${SNAPSHOT_PREFIX},NWS_SNAPSHOT_MAX_AGE_HOURS=24,NWS_SNAPSHOT_MAX_SOURCE_AGE_HOURS=720,NWS_SOURCE_REGISTRY_PATH=${SOURCE_REGISTRY_PATH},NWS_SOURCE_REGISTRY_MANIFEST_PATH=${SOURCE_REGISTRY_MANIFEST_PATH},NWS_SOURCE_REGISTRY_SHA256=${SOURCE_REGISTRY_SHA256},NWS_SOURCE_REGISTRY_VERSION=${SOURCE_REGISTRY_VERSION},NWS_NPPES_SOURCE_ENABLED=true,NWS_NPPES_DB_HOST=/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db,NWS_NPPES_DB_PORT=5432,NWS_NPPES_DB_NAME=healthcare,NWS_NPPES_DB_USER=nws_nearby_ro,NWS_NPPES_STATEMENT_TIMEOUT_MS=4000,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
+            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT,NWS_NATIONAL_SOURCES_ENABLED=true,NWS_SEC_SOURCE_ENABLED=true,NWS_SEC_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_FORM6_SOURCE_ENABLED=true,NWS_SNAPSHOT_BUCKET=${SNAPSHOT_BUCKET},NWS_SNAPSHOT_PREFIX=${SNAPSHOT_PREFIX},NWS_SNAPSHOT_MAX_AGE_HOURS=24,NWS_SNAPSHOT_MAX_SOURCE_AGE_HOURS=720,NWS_SOURCE_REGISTRY_PATH=${SOURCE_REGISTRY_PATH},NWS_SOURCE_REGISTRY_MANIFEST_PATH=${SOURCE_REGISTRY_MANIFEST_PATH},NWS_SOURCE_REGISTRY_SHA256=${SOURCE_REGISTRY_SHA256},NWS_SOURCE_REGISTRY_VERSION=${SOURCE_REGISTRY_VERSION},NWS_V4_ENABLED=true,NWS_CONSUMER_REGISTRY_SHA256=${CONSUMER_REGISTRY_SHA256},NWS_CONSENT_RECEIPT_BUCKET=${CONSENT_RECEIPT_BUCKET},NWS_NPPES_SOURCE_ENABLED=true,NWS_NPPES_DB_HOST=/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db,NWS_NPPES_DB_PORT=5432,NWS_NPPES_DB_NAME=healthcare,NWS_NPPES_DB_USER=nws_nearby_ro,NWS_NPPES_STATEMENT_TIMEOUT_MS=4000,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
             --remove-secrets=NWS_FORM6_API_KEY \
-            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION},NWS_SEC_API_KEY=${PROFESSIONAL_SECRET_NAME}:${PROFESSIONAL_API_KEY_SECRET_VERSION},NWS_NPPES_DB_PASSWORD=${NPPES_DB_SECRET_NAME}:${NPPES_DB_PASSWORD_SECRET_VERSION}" \
+            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION},NWS_CONSUMER_REGISTRY_JSON=${CONSUMER_REGISTRY_SECRET_NAME}:${CONSUMER_REGISTRY_SECRET_VERSION},NWS_SEC_API_KEY=${PROFESSIONAL_SECRET_NAME}:${PROFESSIONAL_API_KEY_SECRET_VERSION},NWS_NPPES_DB_PASSWORD=${NPPES_DB_SECRET_NAME}:${NPPES_DB_PASSWORD_SECRET_VERSION}" \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=6 \
             --liveness-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=10,failureThreshold=3
           AFTER="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json)"
@@ -262,6 +295,9 @@ jobs:
             .public_jurisdiction_record_count == 33791 and
             .national_sources_enabled == true and
             .form6_source_enabled == true and
+            .v4_enabled == true and
+            .consumer_registry_version == 1 and
+            .consumer_count >= 1 and
             .net_worth_snapshot_id == $snapshot_id and
             .net_worth_snapshot_sha256 == $snapshot_sha256 and
             .net_worth_model_version == "net-worth-v1.0.0" and
@@ -294,6 +330,44 @@ jobs:
             any(.source_status[]; .source == "FLORIDA_FORM_6_DECLARED_TOTALS" and .status == "OK")
           ' <<<"$NET_WORTH_BODY" >/dev/null
           jq '{financialCoverage:.financial_coverage.status,returned:(.results|length),scoreKind:.snapshot.score_kind}' <<<"$NET_WORTH_BODY"
+          V4_KEY="$(gcloud secrets versions access "$V4_API_KEY_SECRET_VERSION" \
+            --secret="$V4_API_KEY_SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$V4_KEY"
+          V4_BODY="$(curl --fail-with-body --retry 3 --retry-all-errors \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $V4_KEY" \
+            -d '{"query":{"postal_code":"33130","country_code":"US"},"selection":{"count":100,"financial_mode":"estimated","geography_mode":"nearest-count"},"filters":{"minimum_confidence":"C","minimum_coverage":0.55,"asset_families":[]},"caller_context":{"project_id":"hushone-app","purpose_id":"NET_WORTH_LOOKUP","authorization_scope":"PUBLIC_SAFE","requested_data_tier":"PUBLIC_SAFE","audit_actor":"service-account:nws-production-smoke","model_version":"net-worth-v1.0.0"}}' \
+            "$URL/v4/net-worth/discover")"
+          jq -e '
+            .contract_version == "nws-nearby-net-worth-v4-preview-1" and
+            .data_tier == "PUBLIC_SAFE" and
+            .request_policy.project_id == "hushone-app" and
+            .result_set.requested_count == 100 and
+            .result_set.shortfall_count == (100 - .result_set.returned_count) and
+            (.results | length) == .result_set.returned_count and
+            (.results | length) > 0 and
+            all(.results[]; (.confidence.grade == "A" or .confidence.grade == "B" or .confidence.grade == "C")) and
+            (.disclosures | index("FINANCIAL_COVERAGE_NOT_NATIONWIDE")) != null
+          ' <<<"$V4_BODY" >/dev/null
+          CONSENT="$(curl --fail-with-body --retry 3 --retry-all-errors \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $V4_KEY" \
+            -d '{"project_id":"hushone-app","purpose_id":"NET_WORTH_LOOKUP","audit_actor":"service-account:nws-production-smoke","scope":"APPROXIMATE_LOCATION_QUERY","consent_granted":true}' \
+            "$URL/v4/location-consent/receipt")"
+          COORDINATE_REQUEST="$(jq -cn --argjson consent "$CONSENT" '{query:{latitude:25.7617,longitude:-80.1918,country_code:"US"},selection:{count:100,financial_mode:"estimated",geography_mode:"nearest-count"},filters:{minimum_confidence:"C",minimum_coverage:0.55,asset_families:[]},caller_context:{project_id:"hushone-app",purpose_id:"NET_WORTH_LOOKUP",authorization_scope:"PUBLIC_SAFE",requested_data_tier:"PUBLIC_SAFE",audit_actor:"service-account:nws-production-smoke",model_version:"net-worth-v1.0.0"},coordinate_consent:$consent}')"
+          COORDINATE_BODY="$(curl --fail-with-body \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $V4_KEY" \
+            -d "$COORDINATE_REQUEST" "$URL/v4/net-worth/discover")"
+          jq -e '
+            .query.mode == "COARSE_COORDINATE" and
+            .data_tier == "PUBLIC_SAFE" and
+            (.results | length) == .result_set.returned_count
+          ' <<<"$COORDINATE_BODY" >/dev/null
+          REPLAY_BODY="$(mktemp)"
+          REPLAY_STATUS="$(curl --silent --output "$REPLAY_BODY" --write-out '%{http_code}' \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $V4_KEY" \
+            -d "$COORDINATE_REQUEST" "$URL/v4/net-worth/discover")"
+          test "$REPLAY_STATUS" = 403
+          jq -e '.detail.code == "INVALID_COORDINATE_CONSENT"' "$REPLAY_BODY" >/dev/null
+          rm -f "$REPLAY_BODY"
       - name: Promote candidate and retain automatic rollback
         run: |
           set -euo pipefail
@@ -332,6 +406,19 @@ jobs:
             (.results | length) == 1 and
             .results[0].nws.status == "AVAILABLE"
           ' <<<"$LIVE_NET_WORTH" >/dev/null
+          LIVE_V4_KEY="$(gcloud secrets versions access "$V4_API_KEY_SECRET_VERSION" \
+            --secret="$V4_API_KEY_SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$LIVE_V4_KEY"
+          LIVE_V4="$(curl --fail-with-body --retry 3 --retry-all-errors \
+            -H 'Content-Type: application/json' -H "X-NWS-API-Key: $LIVE_V4_KEY" \
+            -d '{"query":{"postal_code":"33130","country_code":"US"},"selection":{"count":100,"financial_mode":"verified","geography_mode":"nearest-count"},"filters":{"minimum_confidence":"B","minimum_coverage":0.7,"asset_families":[]},"caller_context":{"project_id":"hushone-app","purpose_id":"NET_WORTH_LOOKUP","authorization_scope":"PUBLIC_SAFE","requested_data_tier":"PUBLIC_SAFE","audit_actor":"service-account:nws-production-smoke","model_version":"net-worth-v1.0.0"}}' \
+            "$URL/v4/net-worth/discover")"
+          jq -e '
+            .contract_version == "nws-nearby-net-worth-v4-preview-1" and
+            .request_policy.financial_mode == "verified" and
+            .result_set.returned_count > 0 and
+            all(.results[]; (.confidence.grade == "A" or .confidence.grade == "B"))
+          ' <<<"$LIVE_V4" >/dev/null
           LIVE_REVISION="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
             --format=json | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')"
           test "$LIVE_REVISION" = "$CANDIDATE"

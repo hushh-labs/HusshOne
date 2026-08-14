@@ -1,194 +1,166 @@
-# NWS nearby UI handoff
+# NWS v4 One consumer handoff
 
-## Meaning and boundary
+## What ships
 
-NWS means **Net Worth Score**. It is a 0–100 national log-scale representation of an estimated
-total net-worth range derived from supported public financial evidence. Confidence is separate.
+`/nearby` is the calm One UI for public Net Worth Score signals by U.S. area. The browser uses an
+additive, same-origin v4 BFF:
 
-Location has one job: choose the public candidate pool or public jurisdiction searched. It never
-raises, lowers, or otherwise affects NWS. A location relationship is a public-office or public
-professional association, not a residence, live location, or claim of physical presence.
-
-Missing evidence is unavailable, never zero. A person is returned only when the service has enough
-public evidence to publish an estimate. Nearby candidates without enough evidence are accounted for
-in `financial_coverage`; they do not receive zero-dollar estimates or zero scores.
-
-## Surfaces
-
-| Surface | Purpose |
+| Surface | Role |
 | --- | --- |
-| `/nearby` | Quiet ZIP/device-location UI for nearby public financial disclosures. |
-| `POST /api/nws/nearby` | Same-origin server boundary. Validates the request, adds the server-held key, and returns the strict curated contract. |
-| `POST /v3/nearby-net-worth/discover` | Authenticated FastAPI endpoint used by trusted server integrations. |
+| `GET /nearby` | ZIP or approximate-location UI. |
+| `POST /api/nws/v4/nearby` | Authenticated One BFF and browser-safe response curator. |
+| `POST /v4/location-consent/receipt` | NWS consent receipt issuer, called only by the BFF. |
+| `POST /v4/net-worth/discover` | NWS v4 discovery endpoint, called only by the BFF. |
 
-The UI copy is intentionally short:
+Compatibility is deliberate: `POST /api/nws/nearby` and `src/lib/nws/contracts.ts` remain the
+legacy v3 contract. Existing v3 consumers do not receive a response-shape change. New work should
+use `/api/nws/v4/nearby` and `src/lib/nws/v4-contracts.ts`.
 
-- Headline: `Net worth nearby`
-- Support: `Verified public financial disclosures.`
-- Primary action: `Find people`
-- Secondary action: `Use location`
-- Privacy: `Approximate location. Public filings only.`
+NWS is a 0–100 fixed-scale representation of a supported public net-worth estimate. Location
+selects a public candidate area; it does not change a person's score. Associations are not a claim
+of residence or live presence.
 
-## Request contract
+## Authentication and privacy
+
+The UI sends its existing Firebase bearer token to the BFF. The BFF verifies that token and fails
+closed with `401 authentication_required` if no signed-in subject is available.
+
+The verified Firebase UID, email, name, and token are never sent to NWS. The BFF derives a stable,
+product-scoped opaque actor (`one-user:<32 hex>`) with HMAC-SHA256 over the verified UID and a
+dedicated One-only pseudonymization key. ZIP and
+coordinate calls therefore bind to the same user without a shared service-wide audit actor.
+
+The BFF also:
+
+- keeps the NWS API key server-only;
+- pins the NWS origin to the approved Cloud Run host;
+- adds no permissive CORS headers;
+- coarsens coordinates to two decimals;
+- never sends coordinates to the consent receipt endpoint;
+- never returns coordinates, receipts, raw UID, policy/audit internals, components, raw citations,
+  contact data, or street-level data to the browser; and
+- returns `Cache-Control: private, no-store`.
+
+`X-Request-ID` is minted by One as `nwsbff_<uuid>`. A validated NWS-generated ID may be returned
+separately as `X-NWS-Request-ID`; caller-supplied or malformed upstream IDs are ignored.
+
+## Requests
+
+ZIP and ZIP+4:
 
 ```json
 {
-  "query": { "postal_code": "32301", "country_code": "US" },
-  "top_n": 100,
-  "initial_radius_km": 20,
-  "max_radius_km": 100,
-  "auto_expand": true
+  "query": { "postal_code": "60637", "country_code": "US" },
+  "count": 100
 }
 ```
 
-Coordinates use the same endpoint:
+Approximate device location:
 
 ```json
 {
-  "query": { "latitude": 30.44, "longitude": -84.28 },
-  "top_n": 100,
-  "initial_radius_km": 20,
-  "max_radius_km": 100,
-  "auto_expand": true
+  "query": { "latitude": 47.67, "longitude": -122.21 },
+  "count": 100,
+  "consent_granted": true
 }
 ```
 
 Rules:
 
-- Send exactly one location form: `postal_code`, or both `latitude` and `longitude`.
-- US ZIP and ZIP+4 are accepted. Client coordinates are rounded to two decimals.
-- `top_n` is `1..200`; initial radius is `>0..250`; maximum radius is `>0..500` and cannot
-  be lower than the initial radius.
-- Unknown keys, partial or mixed coordinates, legacy professional-network filters, stringified
-  numbers/booleans, and malformed input fail closed.
+- `count` is exactly `100`, `150`, or `200`; the UI currently requests `100`.
+- Send either a U.S. postal code or both coordinates, never a mixed/partial location.
+- Coordinates require literal `consent_granted: true`; ZIP requests must omit it.
+- Stringified numbers, non-finite coordinates, unknown fields, invalid ZIPs, and oversized bodies
+  fail before NWS is called.
 
-## Curated response contract
+For coordinates, the BFF first calls the receipt endpoint with the opaque actor, purpose, scope,
+and consent decision. It validates the signed receipt (up to 512 bytes), verifies actor binding,
+then attaches the receipt to discovery. The browser never handles the receipt.
 
-`NearbyClientResponseSchema` mirrors the v3 public response and permits only:
+## Curated response
 
-- `query`
-- `coverage`
-- `snapshot`
-- `financial_coverage`
-- `result_set`
-- `search`
-- `source_status`
-- `generated_at`
-- `results`
+The v4 browser response contains only:
 
-The snapshot must identify `score_kind: NET_WORTH_SCORE` and carries independent scale/model
-versions, as-of date, completeness, and semantics. Financial coverage reports discovered,
-evaluated, unevaluated, scored, and insufficient-evidence counts. `candidate_count` remains the
-discovered-count compatibility field. Search declares whether it ran and whether it used
-`NOT_SEARCHED`, `ASSOCIATION_RADIUS`, or `PUBLIC_JURISDICTION` scope.
+- contract and coverage contract identifiers;
+- coarse query/coverage labels;
+- snapshot date;
+- discovered, evaluated, and eligible counts;
+- expansion status without raw steps;
+- requested, returned, eligible, and shortfall counts;
+- explicit limitations; and
+- ranked public profiles with estimate range, NWS uncertainty, confidence, observed floor, coarse
+  public association, date, and source-family domains.
 
-Each result permits only:
+`result_set.shortfall_count` is always explicit. A valid response may discover people but return no
+eligible NWS profiles; for example, `60 discovered`, `0 eligible`, and `100 short` is distinct from
+an unresolved location or outage. The UI labels all incomplete states as partial public coverage.
 
-- rank and public person identity/headline/organization;
-- profile status;
-- estimated net-worth p10/median/p90 range, method, currency, and as-of date;
-- NWS value and scale version;
-- confidence score and grade, separately from balance-sheet or declared-total coverage and NWS;
-- six financial component states;
-- liquid-wealth range and separately calibrated liquidity score when available;
-- coarse public jurisdiction/association relationship;
-- last financial update; and
-- explicit financial-update precision (`DAY` or `YEAR`); and
-- bounded HTTPS public citations.
+The contract always discloses that nationwide financial coverage and geographic hierarchy are not
+complete, and that public association is not live presence. It does not imply that 100 results are
+available for every ZIP.
 
-Every nested object is strict. Unknown fields cause the BFF curation step to fail rather than being
-forwarded. Coordinates, exact distances, street or home addresses, phone numbers, email addresses,
-contact enrichment, private data, and raw source rows are not browser fields.
+## Error behavior
 
-## Component truthfulness
+| Status | Client code | UI |
+| --- | --- | --- |
+| `401` | `authentication_required` | Sign in required |
+| `409` | `coverage_unavailable` | Coverage unavailable |
+| `422` | `invalid_request` | Check location |
+| `429` | `rate_limited` | Too many searches |
+| `503` | `service_unavailable` | Source unavailable |
+| `504` | `upstream_timeout` | Search timed out |
+| `502` | `invalid_upstream_response` | Invalid/drifted upstream response, not forwarded |
 
-The component keys are:
+Location denial, timeout, or unavailable geolocation stays in the UI and offers ZIP fallback.
 
-1. `cash_and_near_cash`
-2. `public_securities`
-3. `private_business_equity`
-4. `real_estate_equity`
-5. `other_assets`
-6. `liabilities`
+## Runtime configuration
 
-`SUPPORTED` and `MODELED_RANGE` require an ordered range and confidence. `UNKNOWN`,
-`NOT_PROVIDED`, `NOT_APPLICABLE`, and `INCLUDED_IN_DECLARED_TOTAL` require null amounts and null
-confidence.
+Cloud Run service `one` in project `hushone-app` needs:
 
-For a whole declared total, `method` is `DECLARED_TOTAL_SIMULATION`. All six components must say
-`INCLUDED_IN_DECLARED_TOTAL`; the UI renders `Included, not itemized`. It also states that the
-disclosed total was not decomposed. The six categories must never receive invented allocations or
-appear individually verified from a whole total.
+| Environment name | Required | Value/source |
+| --- | --- | --- |
+| `NWS_NEARBY_V4_API_KEY` | Yes | Secret reference `projects/hushh-tech-prod/secrets/nws-husshone-v4-api-key:2` |
+| `NWS_NEARBY_V4_ACTOR_HMAC_KEY` | Yes | `projects/hushone-app/secrets/nws-husshone-v4-actor-hmac-key:1`; dedicated random actor pseudonymization key, pinned to a numbered version |
+| `NWS_NEARBY_V4_BASE_URL` | No | Defaults to and only accepts `https://nws-nearby-intelligence-fro3hygenq-uc.a.run.app` |
 
-Annual disclosures preserve year-only dates such as `2025`. The response marks them with
-`financial_update_precision: YEAR`, and the UI renders `2025`; it must not invent `2025-01-01`.
-Day-precision records require `YYYY-MM-DD` and use `financial_update_precision: DAY`. The BFF also
-rejects score/scale drift, a last update that is not the newest citation, inconsistent coverage counts,
-and declared-total responses that imply a range, itemization, or liquidity.
+Never use a `NEXT_PUBLIC_` name for the NWS key. Existing Firebase client/admin configuration stays
+unchanged. Production must keep `NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH` and `ONE_ENABLE_DEV_AUTH` false.
 
-## UI state priority
+The current root deployment entrypoints deploy a new image while preserving service configuration:
 
-| Condition | UI state |
-| --- | --- |
-| `coverage.status: NOT_COVERED` | `Location not covered` |
-| `coverage.status: LOCATION_UNRESOLVED` | `Location unresolved` |
-| financial-evidence source `UNAVAILABLE` | `Financial source unavailable`; this outranks candidate-count empty states |
-| covered with `candidate_count: 0` | `No public candidates nearby` |
-| candidates exist with `FINANCIAL_COVERAGE_INSUFFICIENT` | `Financial evidence unavailable` plus the nearby candidate count |
-| `financial_coverage.status: PARTIAL` | Results remain visible with the insufficient-evidence count |
-| financial-evidence source `EMPTY` | Valid searched state; not treated as an outage |
-| HTTP `429` | `Too many searches` |
-| upstream timeout / HTTP `504` | `Search timed out` |
-| service/source failure / HTTP `503` | `Source unavailable` |
-| geolocation denied or unavailable | ZIP fallback without an API request |
+- `cloudbuild.yaml`
+- `.github/workflows/deploy-prod.yml`
+- `scripts/deploy-prod.sh`
 
-Positive rows show the person, public office/headline, estimated net-worth range, NWS, confidence,
-public jurisdiction relationship, and update date. Details reveal the six components, liquidity,
-and public citations.
+Before the first v4 UI deploy, bind both secrets on `one`. Create the actor HMAC secret in One's
+security boundary, keep it independent of the NWS API key, pin a numbered version, and retain it
+across API-key rotations so audit identity remains stable. Confirm the active runtime service
+account has `roles/secretmanager.secretAccessor` only on those specific secrets. Do not copy either
+value into source or GitHub Actions.
 
-## Security and privacy
-
-- `NWS_NEARBY_API_KEY` remains server-side and must never use a `NEXT_PUBLIC_` name.
-- The browser calls only the same-origin BFF. The BFF uses a fixed upstream and sends `no-store`.
-- The request contains a query location, never a person, address, contact, or private record.
-- The response may describe a coarse public jurisdiction relationship only. Never render exact
-  coordinates, exact person distance, street/home address, phone, email, or contact/private data.
-- Source URLs are limited to HTTPS and open with `noopener noreferrer`.
-
-## Focused verification
+## Verification
 
 ```bash
-npx vitest run src/lib/nws/contracts.test.ts src/app/nearby/NearbyPeople.test.tsx
-npx eslint src/lib/nws/contracts.ts src/lib/nws/contracts.test.ts \
-  src/app/nearby/page.tsx src/app/nearby/NearbyPeople.tsx \
-  src/app/nearby/NearbyPeople.test.tsx src/app/nearby/error.tsx
+npx vitest run \
+  src/lib/nws/contracts.test.ts \
+  src/app/api/nws/nearby/route.test.ts \
+  src/lib/nws/v4-contracts.test.ts \
+  src/app/api/nws/v4/nearby/route.test.ts \
+  src/app/nearby/NearbyPeople.test.tsx
+
+npx eslint \
+  src/lib/nws/v4-contracts.ts \
+  src/lib/nws/v4-contracts.test.ts \
+  src/test/nws-v4-fixtures.ts \
+  src/app/api/nws/v4/nearby/route.ts \
+  src/app/api/nws/v4/nearby/route.test.ts \
+  src/app/nearby/NearbyPeople.tsx \
+  src/app/nearby/NearbyPeople.test.tsx \
+  src/app/nearby/page.tsx
+
 npx tsc --noEmit
 ```
 
-## Production cutover
-
-Deploy the API before the UI. The independent production surfaces are:
-
-| Surface | Target |
-| --- | --- |
-| NWS API | `hushh-tech-prod/us-central1/nws-nearby-intelligence` |
-| One UI/BFF | `hushone-app/us-central1/one` at `https://intelligence.hushh.ai` |
-
-The One runtime needs `NWS_NEARBY_API_KEY` as a server-only, numbered cross-project Secret Manager
-reference to `hushh-tech-prod/nws-nearby-api-key`. Grant `roles/secretmanager.secretAccessor` only
-on that secret to the active One runtime service account. Do not copy the value into GitHub, source,
-`NEXT_PUBLIC_*`, or a second secret.
-
-Acceptance order:
-
-1. Promote and verify the NWS candidate revision, including authenticated Florida v3,
-   nationwide-insufficient, non-US, and legacy v2 probes.
-2. Bind the pinned NWS key to One and deploy the root app without changing unrelated secrets.
-3. Verify `GET https://intelligence.hushh.ai/nearby` is `200`.
-4. Verify same-origin `POST /api/nws/nearby` returns the curated Miami-Dade partial result, a
-   truthful financially-insufficient non-Florida state, and no raw coordinates/contact/private
-   fields.
-5. Inspect Cloud Run traffic and keep the prior API and UI revisions available for rollback.
-
-These checks prove source behavior only. Merge, CI, deployed revision/traffic, live route probes,
-and real-browser/device behavior remain separate release evidence.
+For live acceptance, separately prove the merged source, CI, Cloud Run revision/traffic, authenticated
+v4 route behavior, and a signed-in real browser/device flow. A deployed NWS revision alone does not
+prove that One has the secret binding or that `/nearby` is using v4.

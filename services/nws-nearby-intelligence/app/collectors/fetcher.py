@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from threading import Lock
 from typing import Protocol
 
-from app.collectors.contracts import ArtifactManifest, SourceContract
+from app.collectors.contracts import ArtifactManifest
+from app.collectors.registry import SourceOperation, SourceRegistry
 
 
 class FetchError(RuntimeError):
@@ -27,7 +28,7 @@ class DnsResolver(Protocol):
 def _system_resolver(host: str, port: int) -> set[str]:
     try:
         return {
-            result[4][0]
+            str(result[4][0])
             for result in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
     except socket.gaierror as exc:
@@ -169,12 +170,27 @@ class ControlledPublicFetcher:
 
     def __init__(
         self,
-        contract: SourceContract,
+        registry: SourceRegistry,
         *,
+        source_id: str,
+        purpose: str,
+        product: str,
         timeout_seconds: int = 30,
         resolver: DnsResolver = _system_resolver,
     ) -> None:
+        # A caller-supplied SourceUseBinding is not authority.  Re-run the
+        # verified registry gates at the network boundary so a forged or stale
+        # dataclass cannot bypass enablement, kill-switch, purpose, or product
+        # policy.
+        authorization = registry.authorize_source_use(
+            source_id,
+            operation=SourceOperation.ACQUIRE,
+            purpose=purpose,
+            product=product,
+        )
+        contract = registry.get(source_id)
         self.contract = contract
+        self.authorization = authorization
         self.timeout_seconds = timeout_seconds
         self._resolver = resolver
         self._opener = urllib.request.build_opener(_RejectRedirects())
