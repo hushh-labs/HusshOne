@@ -138,9 +138,12 @@ Requires Python 3.13.
 python3.13 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q
-.venv/bin/python -m ruff check app tests
 .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
+
+The protected NWS workflow runs a production path-scoped Ruff gate. Reproduce the exact command
+from [NWS Nearby CI](../../.github/workflows/nws-nearby-ci.yml); a repository-wide
+`ruff check app tests` is not the release gate for the separate experimental modules.
 
 Copy `.env.example` only for local development. Never commit a real API or database credential.
 

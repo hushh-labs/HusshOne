@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -103,6 +104,19 @@ from app.snapshots.repository import NetWorthSnapshotRepository, SnapshotUnavail
 from app.us_boundary import get_us_boundary_index
 
 logger = logging.getLogger("nws_nearby_intelligence")
+# Uvicorn leaves application loggers at the root WARNING threshold. Keep the
+# general service logger unchanged, but explicitly emit the allowlisted audit
+# records that production accountability depends on.
+audit_logger = logging.getLogger("nws_nearby_intelligence.audit")
+audit_logger.setLevel(logging.INFO)
+audit_logger.propagate = False
+_AUDIT_HANDLER_NAME = "nws_nearby_intelligence_audit_stdout"
+if not any(handler.get_name() == _AUDIT_HANDLER_NAME for handler in audit_logger.handlers):
+    audit_handler = logging.StreamHandler(sys.stdout)
+    audit_handler.set_name(_AUDIT_HANDLER_NAME)
+    audit_handler.setLevel(logging.INFO)
+    audit_handler.setFormatter(logging.Formatter("%(message)s"))
+    audit_logger.addHandler(audit_handler)
 _V4_ROUTE = "/v4/net-worth/discover"
 _V4_CONSENT_ROUTE = "/v4/location-consent/receipt"
 
@@ -2683,7 +2697,7 @@ def _log_v4_audit(
         snapshot_sha256=snapshot_sha256,
         model_version=NET_WORTH_MODEL_VERSION,
     )
-    logger.info("consumer_access_audit %s", json.dumps(event, sort_keys=True))
+    audit_logger.info("consumer_access_audit %s", json.dumps(event, sort_keys=True))
 
 
 @app.post(
@@ -2771,7 +2785,7 @@ def issue_v4_coordinate_consent(
             principal=principal,
             purpose=request.purpose_id,
         )
-        logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
+        audit_logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
         raise _access_policy_http_error(exc) from exc
 
     http_request.state.rate_limit_remaining = limit_result.remaining
@@ -2794,7 +2808,7 @@ def issue_v4_coordinate_consent(
             :16
         ]
     )
-    logger.info(
+    audit_logger.info(
         "coordinate_consent_issued %s",
         json.dumps(
             {
@@ -2914,7 +2928,7 @@ def discover_net_worth_v4(
             purpose=request.caller_context.purpose_id,
             location_mode=location_mode,
         )
-        logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
+        audit_logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
         raise _access_policy_http_error(exc) from exc
 
     http_request.state.rate_limit_remaining = access.rate_limit_remaining

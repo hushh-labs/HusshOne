@@ -171,6 +171,7 @@ describe("NearbyPeople v4", () => {
     [401, "authentication_required", "Sign in required", "Sign in to search."],
     [409, "coverage_unavailable", "Coverage unavailable", "Try another U.S. ZIP."],
     [429, "rate_limited", "Too many searches", "Try again shortly."],
+    [502, "invalid_upstream_response", "Source response unavailable", "Try again soon."],
     [503, "service_unavailable", "Source unavailable", "Try again soon."],
     [504, "upstream_timeout", "Search timed out", "Try again."],
   ])("maps %s to calm recovery copy", async (status, code, title, detail) => {

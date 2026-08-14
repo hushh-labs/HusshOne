@@ -413,11 +413,18 @@ Release verification:
 
 ```bash
 .venv/bin/python -m pytest -q
-.venv/bin/python -m ruff check app tests
+.venv/bin/python -m ruff check \
+  app/main.py app/settings.py app/security.py app/net_worth_v4.py \
+  app/consumer_access.py app/coordinate_consent.py app/source_plane \
+  tests/test_net_worth_v4.py tests/test_net_worth_v4_api.py \
+  tests/test_consumer_access.py tests/test_coordinate_consent.py \
+  tests/test_cms_open_payments_source_plane.py
 .venv/bin/python -m mypy --follow-imports=skip \
   app/consumer_access.py app/coordinate_consent.py app/net_worth_v4.py \
   app/collectors/registry.py app/collectors/fetcher.py
 ```
+
+The protected workflow contains the complete production path-scoped Ruff list.
 
 Then verify the exact merged SHA, green CI, Cloud Run revision and traffic, `/health`, `/ready`, a
 postal v4 request, consent issuance plus one successful coordinate request, receipt replay denial,

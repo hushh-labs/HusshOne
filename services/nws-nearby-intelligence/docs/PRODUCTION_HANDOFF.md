@@ -1,9 +1,10 @@
 # NWS Nearby Intelligence — production handoff
 
-> **Route boundary:** the identity and infrastructure below are shared, but the table documents the
-> legacy professional `/v2` route. The canonical financial route is
-> `/v3/nearby-net-worth/discover`; its source gates, probes, and rollback checklist are in
-> [Net Worth Score technical handoff](NET_WORTH_SCORE_HANDOFF.md).
+> **Route boundary:** the identity and infrastructure below are shared. The legacy professional
+> route is `/v2/nearby-network/discover`, the stable financial route is
+> `/v3/nearby-net-worth/discover`, and the hardened per-project preview is
+> `/v4/net-worth/discover`. Use [Net Worth Score technical handoff](NET_WORTH_SCORE_HANDOFF.md) for
+> v3 and [NWS v4 developer handoff](NWS_V4_DEVELOPER_HANDOFF.md) for v4.
 
 This document is the operator checklist for the standalone US national NWS service. Read the
 canonical [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md) before operating it.
@@ -17,7 +18,7 @@ canonical [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md) before
 | Cloud Run service | `nws-nearby-intelligence` |
 | Project / region | `hushh-tech-prod` / `us-central1` |
 | Public base URL | `https://nws-nearby-intelligence-fro3hygenq-uc.a.run.app` |
-| Discovery route | `POST /v2/nearby-network/discover` |
+| Business routes | `POST /v2/nearby-network/discover`, `POST /v3/nearby-net-worth/discover`, `POST /v4/net-worth/discover` |
 | Public probes | `GET /health`, `GET /ready` |
 | Data mode | `NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT` with reviewed Kirkland compatibility |
 | Geography | 33,791-record 2025 Census Gazetteer ZCTA package |
@@ -52,9 +53,13 @@ other resolved US locations use the national fan-out.
 | Deploy identity | `nws-nearby-deployer@hushh-tech-prod.iam.gserviceaccount.com` |
 | Cloud SQL instance | `hushh-tech-prod:us-central1:hushh-directories-db` |
 | NPPES database / role | `healthcare` / `nws_nearby_ro` |
-| Discovery secret | `nws-nearby-api-key` |
-| SEC source secret | `insider-api-key` |
+| v2/v3 discovery secret | `nws-nearby-api-key` |
+| v4 consumer registry | `nws-consumer-access-registry` |
+| v4 HusshOne BFF secret | `nws-husshone-v4-api-key`; the raw key is not mounted in the NWS service |
+| SEC source secret | `insider-professional-api-key` |
+| Form 6 publisher secret | `nws-form6-api-key`; job only |
 | NPPES database secret | `nws-nearby-nppes-db-password` |
+| Consent receipt bucket | `hushh-tech-prod-nws-consent-receipts` |
 
 These are resource names only. Never put values in source, docs, command output, screenshots, or
 browser storage. The deployment workflow references explicit numbered versions, not `latest`.
@@ -77,8 +82,8 @@ NWS SSH key or persistent application VM login.
    national geography/source-adapter gates.
 2. `.github/workflows/deploy-nws-nearby-production.yml` accepts a successful same-repository main
    CI run or main-only manual dispatch.
-3. The workflow builds an immutable image, resolves its digest, deploys with the Cloud SQL
-   attachment and numbered secrets, then probes `/health` and `/ready`.
+3. The workflow builds an immutable image, refreshes and verifies the registry-v4 snapshot lane,
+   deploys with the Cloud SQL attachment and numbered secrets, then probes `/health` and `/ready`.
 4. The standalone NWS workflow/path exclusions prevent an NWS-only change from redeploying the
    unrelated `one` application.
 
@@ -103,7 +108,8 @@ After each deploy, verify:
 10. An unknown ZCTA returns `LOCATION_UNRESOLVED` and no people.
 11. Arbitrary-origin CORS preflight succeeds without credential support.
 12. `/internal/*` and `/v1/*` return `404`.
-13. Response/log inspection finds no raw request coordinate, secret, connection string, person
+13. A v4 postal request passes; coordinate consent succeeds once and replay is denied.
+14. Response/log inspection finds no raw request coordinate, secret, connection string, person
     exact coordinate/address/phone, or financial position/value field.
 
 Inspect revision/traffic explicitly:

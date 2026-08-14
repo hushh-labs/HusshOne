@@ -2,9 +2,10 @@
 
 Status: production infrastructure contract, 2026-08-14.
 
-This document covers the background publisher and publication lane for `POST
-/v3/nearby-net-worth/discover`. The query API remains a standalone, low-latency read plane. It
-does not start crawlers, hold an SSH credential, or write evidence.
+This document covers the background publisher and publication lane used by `POST
+/v3/nearby-net-worth/discover` and `POST /v4/net-worth/discover`. The query API remains a
+standalone, low-latency read plane. It does not start crawlers, hold an SSH credential, or write
+evidence.
 
 ## Architecture
 
@@ -12,7 +13,7 @@ does not start crawlers, hold an SSH credential, or write evidence.
 Cloud Scheduler (OAuth)
         |
         v
-Cloud Run Job: nws-net-worth-refresh
+Cloud Run Job: nws-net-worth-refresh-v4
         |
         +--> current reviewed upstream snapshot adapter
         +--> policy and source-registry validation
@@ -20,8 +21,8 @@ Cloud Run Job: nws-net-worth-refresh
         |
         v
 gs://hushh-tech-prod-nws-published-snapshots
-  published/net-worth-v1.0.0/releases/<snapshot-id>.json  (immutable)
-  published/net-worth-v1.0.0/active.json                   (CAS pointer)
+  published/net-worth-v1.0.0/registry-v4/releases/<snapshot-id>.json  (immutable)
+  published/net-worth-v1.0.0/registry-v4/active.json                   (CAS pointer)
         |
         v
 FastAPI query service (objectViewer only)
@@ -31,6 +32,11 @@ The job writes an immutable release first. It advances `active.json` only with a
 generation precondition. A concurrent or stale writer fails instead of overwriting a newer
 release. The active pointer contains the snapshot object generation and SHA-256; the reader
 verifies both before accepting the snapshot.
+
+The older `nws-net-worth-refresh` job and `published/net-worth-v1.0.0/active.json` pointer are a
+separate registry-v3 rollback lane. The current production API reads only the `registry-v4`
+prefix. Operators must not execute, inspect, or roll back the legacy lane as if it were the active
+v4 data plane.
 
 The initial production source remains the partial Florida Form 6 declared-net-worth roster. The
 job transforms the current reviewed artifact already exposed by the server-side upstream API. It
@@ -50,8 +56,8 @@ cannot publish a financial claim or NWS value.
 
 | Identity | Access |
 | --- | --- |
-| `nws-net-worth-collector@hushh-tech-prod.iam.gserviceaccount.com` | Write release objects and CAS pointer; read the numbered Form 6 upstream secret. |
-| `nws-net-worth-scheduler@hushh-tech-prod.iam.gserviceaccount.com` | Invoke only `nws-net-worth-refresh`. |
+| `nws-net-worth-collector-v4@hushh-tech-prod.iam.gserviceaccount.com` | Write registry-v4 release objects and CAS pointer; read the numbered Form 6 upstream secret. |
+| `nws-net-worth-scheduler@hushh-tech-prod.iam.gserviceaccount.com` | Invoke the active `nws-net-worth-refresh-v4` job; a separate legacy-job grant remains for the rollback lane. |
 | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` | Read published snapshot objects; existing API dependencies only. |
 | `nws-nearby-deployer@hushh-tech-prod.iam.gserviceaccount.com` | Update and execute the preprovisioned job during a governed release. |
 
@@ -67,7 +73,7 @@ defaults to a dry run.
 
 A secret administrator must first provision a numbered `nws-form6-api-key` version and configure
 the upstream Form 6 route to accept that dedicated credential. The script deliberately neither
-creates the secret nor copies a value from the broader `insider-api-key` secret.
+creates the secret nor copies a value from the legacy shared `insider-api-key` secret.
 
 ```bash
 cd services/nws-nearby-intelligence
@@ -105,7 +111,7 @@ Required bucket controls:
 
 ## Job interface
 
-The Cloud Run Job is named `nws-net-worth-refresh` and runs:
+The active Cloud Run Job is named `nws-net-worth-refresh-v4` and runs:
 
 ```text
 python -m app.jobs.refresh_net_worth
@@ -116,11 +122,11 @@ Production configuration:
 | Variable | Value |
 | --- | --- |
 | `NWS_SNAPSHOT_BUCKET` | `hushh-tech-prod-nws-published-snapshots` |
-| `NWS_SNAPSHOT_PREFIX` | `published/net-worth-v1.0.0` |
+| `NWS_SNAPSHOT_PREFIX` | `published/net-worth-v1.0.0/registry-v4` |
 | `NWS_SOURCE_REGISTRY_PATH` | `/app/config/sources.yaml` |
 | `NWS_SOURCE_REGISTRY_MANIFEST_PATH` | `/app/config/source-registry-manifest.json` |
 | `NWS_SOURCE_REGISTRY_SHA256` | Reviewed SHA-256 of `sources.yaml`; pinned in setup and CI. |
-| `NWS_SOURCE_REGISTRY_VERSION` | Reviewed registry version; currently `3`. |
+| `NWS_SOURCE_REGISTRY_VERSION` | Reviewed registry version; currently `4`. |
 | `NWS_FORM6_API_BASE_URL` | Existing server-side `insider-holdings-api` URL |
 | `NWS_FORM6_API_KEY` | Numbered `nws-form6-api-key` secret mount, job only. |
 | `NWS_FORM6_TIMEOUT_SECONDS` | `8` |
@@ -152,7 +158,7 @@ The production workflow performs these gates in order:
 6. Verify `active.json` references a release object with the expected schema and matching hash.
 7. Deploy the FastAPI candidate at zero traffic with bucket/prefix read configuration.
 8. Require `/ready` to expose a loaded snapshot ID and SHA-256.
-9. Smoke the v2 and v3 contracts.
+9. Smoke the v2, v3, and v4 contracts, including coordinate-consent single use and replay denial.
 10. Promote the candidate; any post-promotion failure restores the previous API revision.
 
 An infrastructure administrator must run setup before the first workflow. CI does not create
@@ -180,7 +186,7 @@ create credential isolation.
 Run and wait:
 
 ```bash
-gcloud run jobs execute nws-net-worth-refresh \
+gcloud run jobs execute nws-net-worth-refresh-v4 \
   --project=hushh-tech-prod \
   --region=us-central1 \
   --wait
@@ -192,7 +198,7 @@ Inspect executions without displaying payload data:
 gcloud run jobs executions list \
   --project=hushh-tech-prod \
   --region=us-central1 \
-  --job=nws-net-worth-refresh \
+  --job=nws-net-worth-refresh-v4 \
   --limit=5 \
   --format='table(name.basename(),completionTime,succeededCount,failedCount,cancelledCount)'
 ```
@@ -202,7 +208,7 @@ Verify the active pointer and immutable release digest without printing people:
 ```bash
 TMP_DIR="$(mktemp -d)"
 gcloud storage cp \
-  gs://hushh-tech-prod-nws-published-snapshots/published/net-worth-v1.0.0/active.json \
+  gs://hushh-tech-prod-nws-published-snapshots/published/net-worth-v1.0.0/registry-v4/active.json \
   "$TMP_DIR/active.json" \
   --project=hushh-tech-prod
 
@@ -241,7 +247,7 @@ inspected:
 
 ```bash
 TMP_DIR="$(mktemp -d)"
-ACTIVE_URI='gs://hushh-tech-prod-nws-published-snapshots/published/net-worth-v1.0.0/active.json'
+ACTIVE_URI='gs://hushh-tech-prod-nws-published-snapshots/published/net-worth-v1.0.0/registry-v4/active.json'
 
 CURRENT_ACTIVE_GENERATION="$(gcloud storage objects describe "$ACTIVE_URI" \
   --project=hushh-tech-prod \
@@ -254,7 +260,7 @@ test -s "$TMP_DIR/previous-active.json"
 jq -e '
   .schema_version == "nws-net-worth-active-pointer-v1" and
   (.snapshot_id | type == "string" and length > 0) and
-  (.snapshot_object | startswith("published/net-worth-v1.0.0/releases/")) and
+  (.snapshot_object | startswith("published/net-worth-v1.0.0/registry-v4/releases/")) and
   (.snapshot_generation | test("^[1-9][0-9]*$")) and
   (.snapshot_sha256 | test("^[0-9a-f]{64}$")) and
   .snapshot_schema_version == "nws-net-worth-snapshot-v1" and
@@ -275,7 +281,7 @@ snapshot ID and hash. Remove `TMP_DIR` when the evidence is no longer needed.
 Pause the recurring refresh during an upstream incident:
 
 ```bash
-gcloud scheduler jobs pause nws-net-worth-refresh \
+gcloud scheduler jobs pause nws-net-worth-refresh-v4 \
   --project=hushh-tech-prod \
   --location=us-central1
 ```
