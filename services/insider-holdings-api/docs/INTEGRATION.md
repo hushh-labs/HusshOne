@@ -18,8 +18,11 @@ Every upstream is free. No paid data vendor, nothing scraped, no runtime depende
 
 ## Base URL
 
-Set by deployment. `/health` and `/v1/stats` are open; every other route needs
-`Authorization: Bearer <key>` when `INSIDER_API_KEY` is configured.
+Set by deployment. `/health` and `/v1/stats` are open. When
+`INSIDER_REQUIRE_API_KEY` is enabled, every other route needs
+`Authorization: Bearer <key>`. Use `INSIDER_PROFESSIONAL_API_KEY` for professional
+filing routes and a distinct `INSIDER_FORM6_API_KEY` for `/v1/net-worth`.
+`INSIDER_API_KEY` remains a legacy fallback for either scope.
 
 ---
 
@@ -356,9 +359,10 @@ Read the difference carefully. Everywhere else in this service, a figure is **on
 holding in one company** — Bezos's Amazon stake, not Bezos's wealth. Here it is the
 person's **whole declared position**, sworn under the Florida Constitution.
 
-**Only the net-worth figure is extracted.** The asset, liability and income schedules
-are never read or stored, because Form 6 instructs filers to identify real property *"by
-providing the street address of the property"* — so those pages contain home addresses.
+**Only a bounded net-worth field on page one is extracted.** Raw filings and the asset,
+liability, and income schedules are not retained or emitted, because Form 6 instructs
+filers to identify real property *"by providing the street address of the property"* —
+so those schedules can contain home addresses.
 Location is the **county and office** the person is elected to serve. There are no
 coordinates and this endpoint takes no `lat`/`lng`.
 

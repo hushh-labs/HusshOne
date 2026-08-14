@@ -1,6 +1,10 @@
-version: 2
+version: 3
+registry_id: nws-nearby-source-registry
 product: nws_nearby
 source_contract_defaults:
+  enabled: false
+  kill_switch: true
+  publication_mode: NO_DIRECT_PUBLICATION
   immutable_artifacts: true
   sha256_required: true
   parser_version_required: true
@@ -24,6 +28,58 @@ sources:
     trust_tier: authoritative
     cadence: annual
     allowed_fact_types: [city_boundary, metro_boundary, geographic_crosswalk]
+
+  florida_form_6:
+    authority: Florida Commission on Ethics
+    acquisition: reviewed_snapshot
+    trust_tier: authoritative
+    cadence: annual_reviewed_release
+    enabled: true
+    kill_switch: false
+    publication_mode: REVIEWED_SNAPSHOT_ONLY
+    allowed_operations: [SNAPSHOT_PUBLISHER, QUERY]
+    allowed_products: [NET_WORTH_V3]
+    allowed_purposes: [FINANCIAL_EVIDENCE]
+    allowed_fact_types:
+      - sworn_whole_declared_net_worth
+      - public_name
+      - public_office
+      - public_service_jurisdiction
+      - form_year
+      - filing_provenance
+    forbidden_fact_types:
+      - asset_schedule
+      - liability_schedule
+      - income_schedule
+      - private_residence
+      - street_address
+      - personal_contact
+      - raw_pdf_publication
+      - component_addition
+      - eligibility_or_adverse_decision
+    active_snapshot:
+      snapshot_id: florida-form6-2025-20260811T184624Z-partial
+      sha256: d1a20016a18cdc474e8dccc062d7cdccc6a4107a963cb96f8d0e9484702522ad
+      review_status: APPROVED
+      reviewed_at: "2026-08-14"
+      built_at: "2026-08-11T18:46:24.202Z"
+      form_year: 2025
+      partial: true
+      filings_seen: 120
+      declarations_indexed: 120
+    extraction_contract:
+      pdf_content_type: application/pdf
+      maximum_pdf_bytes: 10485760
+      text_pages: [1]
+      emitted_fields: [net_worth]
+      maximum_field_window_characters: 256
+      raw_pdf_retention: EPHEMERAL_DELETE_IN_FINALLY
+      schedule_retention: FORBIDDEN
+      schedule_emission: FORBIDDEN
+    source_url: https://disclosure.floridaethics.gov/PublicSearch/Filings
+    policy: Sworn whole-declaration evidence only. Do not add components, infer residence, republish filing schedules, or use this source for eligibility or adverse decisions.
+    source_family: disclosure.floridaethics.gov
+    candidate_proposal_mode: REVIEW_REQUIRED
 
   sec_edgar_ownership:
     authority: U.S. Securities and Exchange Commission
@@ -246,6 +302,8 @@ sources:
     trust_tier: corroborative
     cadence: weekly
     enabled: false
+    kill_switch: true
+    publication_mode: DISCOVERY_ONLY_NO_FINANCIAL_OUTPUT
     allowed_fact_types: [identity_link, official_role_claim, official_website_link, bounded_public_reach]
     forbidden_fact_types:
       - wealth
@@ -254,9 +312,10 @@ sources:
       - lifestyle_asset_inference
       - face_recognition
       - checkin_history
-    scoring_cap:
-      maximum_share_of_total_nws: 0.0105
-      maximum_share_of_reach_component: 0.15
+      - financial_evidence
+      - net_worth
+      - direct_score_input
+    policy: Disabled. Social scraper infrastructure, authenticated sessions, engagement metrics, and inferred lifestyle signals cannot publish financial evidence or contribute to a net-worth score.
     source_family: verified-public-social
     candidate_proposal_mode: DISCOVERY_ONLY
 

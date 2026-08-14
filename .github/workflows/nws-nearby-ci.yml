@@ -37,11 +37,15 @@ jobs:
           app/net_worth.py app/florida_net_worth.py app/jurisdiction.py
           app/observation_projection.py
           app/collectors/contracts.py app/collectors/fetcher.py app/collectors/registry.py
+          app/jobs/refresh_net_worth.py app/snapshots/contracts.py
+          app/snapshots/form6_refresh.py app/snapshots/gcs_store.py
+          app/snapshots/repository.py
           tests/test_api_discovery.py tests/test_market_release.py tests/test_nearby.py
           tests/test_score_breakdown.py tests/test_security.py tests/test_collectors.py
           tests/test_organization_discovery.py tests/test_policy.py
           tests/test_national_geography.py tests/test_national_sec.py tests/test_national_nppes.py
           tests/test_national_request_path.py tests/test_net_worth.py
           tests/test_florida_net_worth.py tests/test_jurisdiction.py tests/test_net_worth_api.py
+          tests/test_snapshot_data_plane.py
           tests/test_financial_safety_boundary.py tests/test_observation_projection.py
       - run: python -m compileall -q app tests

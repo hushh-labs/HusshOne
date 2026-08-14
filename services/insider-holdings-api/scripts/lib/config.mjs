@@ -4,7 +4,7 @@
  * Every upstream this service reads is free and public: the SEC's own quarterly
  * Form 3/4/5 datasets, EDGAR's submissions API, and the Census ZCTA gazetteer.
  * There is no paid vendor anywhere in the chain and no credential to leak beyond
- * the optional bearer key that gates our own /v1 routes.
+ * the route-scoped bearer keys that gate our own /v1 routes.
  */
 
 const num = (name, fallback) => {
@@ -30,9 +30,17 @@ const bool = (name, fallback) => {
 export const SEC_USER_AGENT =
   process.env.SEC_USER_AGENT || "Hushh Technologies insider-holdings-api ops@hushh.ai";
 
+const legacyApiKey = process.env.INSIDER_API_KEY || "";
+const professionalApiKey = process.env.INSIDER_PROFESSIONAL_API_KEY || "";
+const form6ApiKey = process.env.INSIDER_FORM6_API_KEY || "";
+
 export const config = Object.freeze({
   port: num("PORT", 8080),
-  apiKey: process.env.INSIDER_API_KEY || "",
+  apiKey: legacyApiKey,
+  professionalApiKey: professionalApiKey || legacyApiKey,
+  form6ApiKey: form6ApiKey || legacyApiKey,
+  routeScopedApiKeysConfigured: Boolean(professionalApiKey || form6ApiKey),
+  routeScopedApiKeysComplete: Boolean(professionalApiKey && form6ApiKey),
   requireApiKey: bool("INSIDER_REQUIRE_API_KEY", process.env.NODE_ENV === "production"),
 
   dataDir: process.env.INSIDER_DATA_DIR || "./data",

@@ -55,6 +55,26 @@ class PublicJurisdictionIndex:
         except KeyError as exc:
             raise KeyError(f"postal code {normalized!r} has no jurisdiction mapping") from exc
 
+    def counties(self, *, state_fips: str | None = None) -> tuple[PublicJurisdiction, ...]:
+        """Return one stable public record per county for bounded snapshot collection."""
+
+        if state_fips is not None and (len(state_fips) != 2 or not state_fips.isdigit()):
+            raise ValueError("state_fips must be two digits")
+        unique: dict[str, PublicJurisdiction] = {}
+        for record in self._records.values():
+            if state_fips is not None and record.state_fips != state_fips:
+                continue
+            current = unique.get(record.county_geoid)
+            if current is None or (
+                -record.overlap_fraction,
+                record.postal_code,
+            ) < (
+                -current.overlap_fraction,
+                current.postal_code,
+            ):
+                unique[record.county_geoid] = record
+        return tuple(unique[key] for key in sorted(unique))
+
 
 @lru_cache(maxsize=1)
 def get_public_jurisdiction_index() -> PublicJurisdictionIndex:

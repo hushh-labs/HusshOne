@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated, Literal, Protocol
 
@@ -21,16 +21,9 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
+from app.collectors.registry import SourceOperation, SourceRegistry
 from app.coverage import QueryResolution, resolve_coordinate_query, resolve_postal_query
 from app.financial_context import public_financial_context_policy
-from app.florida_net_worth import (
-    FloridaForm6Batch,
-    FloridaForm6NetWorthAdapter,
-    FloridaForm6Outcome,
-    FloridaForm6Record,
-    PublicJurisdiction,
-    PublicJurisdictionKind,
-)
 from app.geospatial import haversine_km
 from app.jurisdiction import get_public_jurisdiction_index
 from app.market_release import BootstrapMetadata, get_market_release
@@ -48,13 +41,9 @@ from app.net_worth import (
     BalanceSheetCoverage,
     ComponentKind,
     CoverageState,
-    DeclaredNetWorthRange,
     EstimateBasis,
     EstimateStatus,
     EvidenceDatePrecision,
-    EvidenceKind,
-    EvidencePurpose,
-    EvidenceRecord,
     NetWorthEngine,
     NetWorthResult,
     NetWorthSubject,
@@ -76,6 +65,13 @@ from app.organization_discovery import (
 from app.postal import get_us_postal_index, normalize_us_postal_code
 from app.security import AccessContext, require_api_access
 from app.settings import get_settings
+from app.snapshots.contracts import (
+    PublishedNetWorthProfile,
+    PublishedNetWorthSnapshot,
+    SnapshotRepositoryStatus,
+)
+from app.snapshots.gcs_store import SnapshotGcsStore
+from app.snapshots.repository import NetWorthSnapshotRepository, SnapshotUnavailableError
 from app.us_boundary import get_us_boundary_index
 
 logger = logging.getLogger("nws_nearby_intelligence")
@@ -200,6 +196,15 @@ async def lifespan(_: FastAPI):
         market_id=release.market_id,
         organization_ids=(candidate.organization_id for candidate in BOOTSTRAP_CANDIDATES),
     )
+    if settings.form6_source_enabled:
+        repository = _net_worth_snapshot_repository()
+        assert repository is not None
+        try:
+            repository.load_active(force=True)
+        except SnapshotUnavailableError as exc:
+            # Keep diagnostics reachable while every financial query and readiness probe
+            # remains fail closed until a reviewed snapshot can be loaded.
+            logger.error("net_worth_snapshot_preload_failed code=%s", exc.code)
     logger.info(
         "service_started environment=%s data_mode=%s candidate_count=%s",
         settings.environment,
@@ -274,6 +279,9 @@ class ReadyResponse(HealthResponse):
     model_version: str
     net_worth_model_version: str
     nws_scale_version: str
+    net_worth_snapshot_id: str | None
+    net_worth_snapshot_sha256: str | None
+    net_worth_snapshot_generated_at: str | None
 
 
 class QueryLocationInput(StrictModel):
@@ -671,14 +679,47 @@ def _net_worth_provider() -> NearbyNetWorthProvider:
 
 
 @lru_cache(maxsize=1)
-def _florida_net_worth_adapter() -> FloridaForm6NetWorthAdapter | None:
+def _net_worth_source_registry() -> SourceRegistry:
     source_settings = get_settings()
-    if not source_settings.form6_source_enabled or not source_settings.form6_api_key:
+    return SourceRegistry.from_verified_yaml(
+        source_settings.source_registry_path,
+        source_settings.source_registry_manifest_path,
+        expected_registry_sha256=source_settings.source_registry_sha256,
+        expected_registry_version=source_settings.source_registry_version,
+    )
+
+
+def _validate_net_worth_snapshot_source(snapshot: PublishedNetWorthSnapshot) -> None:
+    binding = _net_worth_source_registry().bind_reviewed_snapshot(
+        snapshot.source.source_contract_id,
+        snapshot_id=snapshot.source.source_snapshot_id,
+        snapshot_sha256=snapshot.source.source_artifact_sha256,
+        operation=SourceOperation.QUERY,
+        purpose="FINANCIAL_EVIDENCE",
+        product="NET_WORTH_V3",
+    )
+    if (
+        snapshot.source_registry_id != binding.registry_id
+        or snapshot.source_registry_version != binding.registry_version
+        or snapshot.source_registry_sha256 != binding.registry_sha256
+        or snapshot.model_version != NET_WORTH_MODEL_VERSION
+        or snapshot.scale_version != NWS_SCALE_VERSION
+    ):
+        raise ValueError("snapshot release pins do not match the reviewed query contract")
+
+
+@lru_cache(maxsize=1)
+def _net_worth_snapshot_repository() -> NetWorthSnapshotRepository | None:
+    source_settings = get_settings()
+    if not source_settings.form6_source_enabled:
         return None
-    return FloridaForm6NetWorthAdapter(
-        base_url=source_settings.form6_api_base_url,
-        bearer_token=source_settings.form6_api_key,
-        timeout_seconds=source_settings.form6_timeout_seconds,
+    return NetWorthSnapshotRepository(
+        store=SnapshotGcsStore(bucket=source_settings.snapshot_bucket),
+        prefix=source_settings.snapshot_prefix,
+        expected_registry_sha256=source_settings.source_registry_sha256,
+        max_age=timedelta(hours=source_settings.snapshot_max_age_hours),
+        max_source_age=timedelta(hours=source_settings.snapshot_max_source_age_hours),
+        validate_source_binding=_validate_net_worth_snapshot_source,
     )
 
 
@@ -1313,31 +1354,10 @@ def _net_worth_update_precision(result: NetWorthResult) -> EvidenceDatePrecision
         if evidence.source_date == result.last_financial_update
     ]
     if newest_records and all(
-        evidence.source_date_precision is EvidenceDatePrecision.YEAR
-        for evidence in newest_records
+        evidence.source_date_precision is EvidenceDatePrecision.YEAR for evidence in newest_records
     ):
         return EvidenceDatePrecision.YEAR
     return EvidenceDatePrecision.DAY
-
-
-def _serialize_florida_declared_citation(
-    record: FloridaForm6Record,
-    estimate: NetWorthResult,
-) -> dict[str, object]:
-    """Link to the official public search, not a PDF containing unexposed schedules."""
-
-    return {
-        "publisher": record.provenance.source_authority,
-        "title": "Florida Form 6 sworn whole net worth declaration",
-        "url": record.provenance.source_url,
-        "fact_types": ["STATE_WHOLE_NET_WORTH_DISCLOSURE", "DECLARED_NET_WORTH_TOTAL"],
-        "source_date": str(record.form_year),
-        "retrieved_at": (
-            estimate.declared_total.evidence.retrieved_at.isoformat()
-            if estimate.declared_total is not None
-            else datetime.now(UTC).isoformat()
-        ),
-    }
 
 
 def _publishable_net_worth(result: NetWorthResult, candidate: NearbyCandidate) -> bool:
@@ -1439,9 +1459,45 @@ def _serialize_net_worth_result(
 
 
 @dataclass(frozen=True)
-class FloridaDeclaredProfile:
-    record: FloridaForm6Record
-    estimate: NetWorthResult
+class FloridaSnapshotProfiles:
+    county_name: str
+    county_overlap_fraction: float
+    status: SnapshotRepositoryStatus | None
+    profiles: tuple[PublishedNetWorthProfile, ...]
+    matching_profile_count: int
+
+
+def _snapshot_unavailable(exc: SnapshotUnavailableError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "NET_WORTH_SNAPSHOT_UNAVAILABLE",
+            "reason_code": exc.code,
+        },
+    )
+
+
+def _require_current_snapshot(status: SnapshotRepositoryStatus, *, now: datetime) -> None:
+    current = now.astimezone(UTC)
+    source_settings = get_settings()
+    age = current - status.generated_at.astimezone(UTC)
+    maximum_age = timedelta(hours=source_settings.snapshot_max_age_hours)
+    if age < timedelta(minutes=-5) or age > maximum_age:
+        raise _snapshot_unavailable(
+            SnapshotUnavailableError(
+                "active net-worth snapshot is stale or future-dated",
+                code="SNAPSHOT_STALE",
+            )
+        )
+    source_age = current - status.source_index_built_at.astimezone(UTC)
+    maximum_source_age = timedelta(hours=source_settings.snapshot_max_source_age_hours)
+    if source_age < timedelta(minutes=-5) or source_age > maximum_source_age:
+        raise _snapshot_unavailable(
+            SnapshotUnavailableError(
+                "active net-worth source index is stale or future-dated",
+                code="SOURCE_INDEX_STALE",
+            )
+        )
 
 
 def _florida_financial_profiles(
@@ -1449,20 +1505,8 @@ def _florida_financial_profiles(
     resolution: QueryResolution,
     request: NearbyNetWorthRequest,
     generated_at: datetime,
-) -> (
-    tuple[
-        str,
-        float,
-        FloridaForm6Batch | None,
-        tuple[FloridaDeclaredProfile, ...],
-    ]
-    | None
-):
-    """Resolve Florida postal geography directly to sworn public-jurisdiction filers.
-
-    The Form 6 identity and whole-net-worth amount come from one disclosure record, so
-    no fuzzy join against the professional candidate pool is allowed.
-    """
+) -> FloridaSnapshotProfiles | None:
+    """Resolve Florida geography against the preloaded reviewed snapshot only."""
 
     postal_code = resolution.query.get("postal_code")
     if not isinstance(postal_code, str):
@@ -1482,83 +1526,46 @@ def _florida_financial_profiles(
     if jurisdiction.state_fips != "12":
         return None
 
-    public_jurisdiction = PublicJurisdiction(
-        # The live Form 6 roster's county field is often absent. Public office strings
-        # contain the canonical county name, so the adapter must query its office index.
-        kind=PublicJurisdictionKind.OFFICE,
-        token=jurisdiction.county_name,
-    )
-    adapter = _florida_net_worth_adapter()
-    if adapter is None:
-        return jurisdiction.county_name, jurisdiction.overlap_fraction, None, ()
-
-    batch = adapter.discover(public_jurisdiction=public_jurisdiction, limit=request.top_n)
-    if batch.outcome is not FloridaForm6Outcome.OK:
-        return jurisdiction.county_name, jurisdiction.overlap_fraction, batch, ()
-
-    engine = NetWorthEngine(simulation_count=1_000)
-    profiles: list[FloridaDeclaredProfile] = []
-    for record in batch.records:
-        # Form 6 currently exposes year-level provenance only. January 1 is a
-        # conservative non-future representation; it must not imply a Dec 31 update.
-        source_date = date(record.form_year, 1, 1)
-        if source_date > generated_at.date():
-            continue
-        evidence = EvidenceRecord(
-            evidence_id=f"{record.subject_id}:declared-total",
-            kind=EvidenceKind.STATE_WHOLE_NET_WORTH_DISCLOSURE,
-            purpose=EvidencePurpose.DECLARED_NET_WORTH_TOTAL,
-            source_authority=record.provenance.source_authority,
-            source_uri=record.filing_url,
-            source_date=source_date,
-            retrieved_at=generated_at,
-            quality=0.98,
-            source_date_precision=EvidenceDatePrecision.YEAR,
+    repository = _net_worth_snapshot_repository()
+    if repository is None:
+        return FloridaSnapshotProfiles(
+            county_name=jurisdiction.county_name,
+            county_overlap_fraction=jurisdiction.overlap_fraction,
+            status=None,
+            profiles=(),
+            matching_profile_count=0,
         )
-        declared_amount = float(record.declared_net_worth_usd)
-        estimate = engine.estimate_declared_total(
-            subject=NetWorthSubject(
-                record.subject_id,
-                ProfileBasis.VERIFIED_PUBLIC_FINANCIAL_PROFILE,
-            ),
-            declared_total=DeclaredNetWorthRange(
-                declared_amount,
-                declared_amount,
-                declared_amount,
-            ),
-            evidence=evidence,
-            as_of_date=generated_at.date(),
-        )
-        profiles.append(FloridaDeclaredProfile(record=record, estimate=estimate))
 
-    profiles.sort(
-        key=lambda item: (
-            -item.estimate.net_worth.median_usd,  # type: ignore[union-attr]
-            item.record.subject_id,
-        )
-    )
-    return (
-        jurisdiction.county_name,
-        jurisdiction.overlap_fraction,
-        batch,
-        tuple(profiles[: request.top_n]),
+    jurisdiction_id = f"US-FL-COUNTY-{jurisdiction.county_geoid}"
+    try:
+        status = repository.status()
+        _require_current_snapshot(status, now=generated_at)
+        matching_profiles = repository.profiles_for_jurisdiction(jurisdiction_id)
+    except SnapshotUnavailableError as exc:
+        raise _snapshot_unavailable(exc) from exc
+    return FloridaSnapshotProfiles(
+        county_name=jurisdiction.county_name,
+        county_overlap_fraction=jurisdiction.overlap_fraction,
+        status=status,
+        profiles=matching_profiles[: request.top_n],
+        matching_profile_count=len(matching_profiles),
     )
 
 
 def _florida_source_status(
     *,
-    batch: FloridaForm6Batch | None,
+    selection: FloridaSnapshotProfiles,
 ) -> list[dict[str, object]]:
     reason_code: str | None
-    if batch is None:
+    if selection.status is None:
         status = "UNAVAILABLE"
         as_of = None
-        reason_code = "FLORIDA_FORM_6_SOURCE_NOT_CONFIGURED"
+        reason_code = "FLORIDA_FORM_6_SNAPSHOT_NOT_CONFIGURED"
     else:
-        status = batch.outcome.value
-        as_of = batch.source_status.index_built_at
-        reason_code = batch.source_status.error_code
-        if reason_code is None and batch.source_status.index_partial:
+        status = "OK" if selection.matching_profile_count else "EMPTY"
+        as_of = selection.status.source_index_built_at.isoformat()
+        reason_code = None
+        if selection.status.source_partial:
             reason_code = "SOURCE_INDEX_PARTIAL"
 
     return [
@@ -1579,48 +1586,50 @@ def _florida_source_status(
     ]
 
 
-def _serialize_florida_declared_profile(
+def _serialize_florida_snapshot_profile(
     *,
     rank: int,
-    profile: FloridaDeclaredProfile,
+    profile: PublishedNetWorthProfile,
+    status: SnapshotRepositoryStatus,
     county_name: str,
     county_overlap_fraction: float,
 ) -> dict[str, object]:
-    estimate = profile.estimate
-    record = profile.record
-    assert estimate.net_worth is not None
-    assert estimate.nws is not None
-    assert estimate.confidence is not None
-    assert estimate.last_financial_update is not None
+    included_component = {
+        "status": "INCLUDED_IN_DECLARED_TOTAL",
+        "low_usd": None,
+        "most_likely_usd": None,
+        "high_usd": None,
+        "confidence": None,
+    }
     return {
         "rank": rank,
         "person": {
-            "id": record.subject_id,
-            "name": record.name,
-            "headline": record.public_offices[0],
+            "id": profile.subject_id,
+            "name": profile.name,
+            "headline": profile.headline,
             "organization": None,
         },
         "profile_status": "VERIFIED",
         "estimated_net_worth": {
             "status": "AVAILABLE",
             "currency": "USD",
-            "p10_usd": round(estimate.net_worth.p10_usd),
-            "median_usd": round(estimate.net_worth.median_usd),
-            "p90_usd": round(estimate.net_worth.p90_usd),
-            "method": "DECLARED_TOTAL_SIMULATION",
-            "as_of": str(record.form_year),
+            "p10_usd": profile.p10_usd,
+            "median_usd": profile.median_usd,
+            "p90_usd": profile.p90_usd,
+            "method": profile.method,
+            "as_of": str(profile.form_year),
         },
         "nws": {
             "status": "AVAILABLE",
-            "value": estimate.nws.score,
-            "scale_version": estimate.nws.scale_version,
+            "value": profile.nws,
+            "scale_version": NWS_SCALE_VERSION,
         },
         "confidence": {
-            "score": estimate.confidence.score,
-            "grade": estimate.confidence.grade,
-            "coverage": estimate.confidence.coverage,
+            "score": profile.confidence.score,
+            "grade": profile.confidence.grade,
+            "coverage": profile.confidence.coverage,
         },
-        "components": _serialize_net_worth_components(estimate),
+        "components": {key: dict(included_component) for key in _NET_WORTH_COMPONENT_KEYS.values()},
         "liquid_wealth": {
             "status": "UNKNOWN",
             "currency": "USD",
@@ -1640,9 +1649,21 @@ def _serialize_florida_declared_profile(
                 "not a residence or physical-presence claim."
             ),
         },
-        "last_financial_update": str(record.form_year),
+        "last_financial_update": str(profile.form_year),
         "financial_update_precision": "YEAR",
-        "sources": [_serialize_florida_declared_citation(record, estimate)],
+        "sources": [
+            {
+                "publisher": "Florida Commission on Ethics",
+                "title": "Florida Form 6 sworn whole net worth declaration",
+                "url": profile.source_url,
+                "fact_types": [
+                    "STATE_WHOLE_NET_WORTH_DISCLOSURE",
+                    "DECLARED_NET_WORTH_TOTAL",
+                ],
+                "source_date": str(profile.form_year),
+                "retrieved_at": status.source_retrieved_at.isoformat(),
+            }
+        ],
     }
 
 
@@ -1651,21 +1672,14 @@ def _florida_net_worth_response(
     common: dict[str, object],
     resolution: QueryResolution,
     request: NearbyNetWorthRequest,
-    county_name: str,
-    county_overlap_fraction: float,
-    batch: FloridaForm6Batch | None,
-    profiles: Sequence[FloridaDeclaredProfile],
+    selection: FloridaSnapshotProfiles,
 ) -> NearbyNetWorthResponse:
-    evaluated_count = len(batch.records) if batch is not None else 0
-    discovered_count = max(
-        evaluated_count,
-        batch.source_status.upstream_total
-        if batch is not None and batch.source_status.upstream_total is not None
-        else 0,
-    )
-    unevaluated_count = discovered_count - evaluated_count
-    returned_count = len(profiles)
-    insufficient_evidence_count = max(0, evaluated_count - returned_count)
+    discovered_count = selection.matching_profile_count
+    evaluated_count = discovered_count
+    unevaluated_count = 0
+    scored_count = discovered_count
+    insufficient_evidence_count = 0
+    returned_count = len(selection.profiles)
     shortfall_count = max(0, request.top_n - returned_count)
     if returned_count >= request.top_n:
         result_status = "TARGET_MET"
@@ -1676,21 +1690,19 @@ def _florida_net_worth_response(
     else:
         result_status = "EMPTY"
         reasons = ["FINANCIAL_COVERAGE_INSUFFICIENT"]
-        if batch is None:
-            reasons.append("FINANCIAL_SOURCE_UNAVAILABLE")
-        elif batch.outcome is FloridaForm6Outcome.UNAVAILABLE:
+        if selection.status is None:
             reasons.append("FINANCIAL_SOURCE_UNAVAILABLE")
         else:
             reasons.append("NO_ELIGIBLE_PUBLIC_DECLARATIONS")
-    if batch is not None and batch.source_status.index_partial:
+    if selection.status is not None and selection.status.source_partial:
         reasons.append("SOURCE_INDEX_PARTIAL")
-    if batch is not None and batch.source_status.truncated:
+    if selection.status is not None and selection.status.truncated:
         reasons.append("SOURCE_RESULT_TRUNCATED")
 
     coverage = {
         "status": "COVERED",
         "reason_code": "FLORIDA_PUBLIC_FORM_6_JURISDICTION",
-        "market_label": f"{county_name} public Form 6 jurisdiction",
+        "market_label": f"{selection.county_name} public Form 6 jurisdiction",
         "country_code": "US",
         "complete": False,
         "message": (
@@ -1702,13 +1714,15 @@ def _florida_net_worth_response(
         ),
     }
     results = [
-        _serialize_florida_declared_profile(
+        _serialize_florida_snapshot_profile(
             rank=index + 1,
             profile=profile,
-            county_name=county_name,
-            county_overlap_fraction=county_overlap_fraction,
+            status=selection.status,
+            county_name=selection.county_name,
+            county_overlap_fraction=selection.county_overlap_fraction,
         )
-        for index, profile in enumerate(profiles)
+        for index, profile in enumerate(selection.profiles)
+        if selection.status is not None
     ]
     return NearbyNetWorthResponse.model_validate(
         {
@@ -1721,8 +1735,8 @@ def _florida_net_worth_response(
                     else "PARTIAL"
                     if (
                         returned_count < request.top_n
-                        or (batch is not None and batch.source_status.index_partial)
-                        or (batch is not None and batch.source_status.truncated)
+                        or (selection.status is not None and selection.status.source_partial)
+                        or (selection.status is not None and selection.status.truncated)
                     )
                     else "AVAILABLE"
                 ),
@@ -1730,7 +1744,7 @@ def _florida_net_worth_response(
                 "discovered_count": discovered_count,
                 "evaluated_count": evaluated_count,
                 "unevaluated_count": unevaluated_count,
-                "scored_count": returned_count,
+                "scored_count": scored_count,
                 "insufficient_evidence_count": insufficient_evidence_count,
             },
             "result_set": {
@@ -1751,7 +1765,7 @@ def _florida_net_worth_response(
                 "maximum_radius_km": request.max_radius_km,
                 "maximum_radius_reached": False,
             },
-            "source_status": _florida_source_status(batch=batch),
+            "source_status": _florida_source_status(selection=selection),
             "results": results,
         }
     )
@@ -2196,6 +2210,15 @@ def ready() -> ReadyResponse:
     geography_record_count = len(get_us_postal_index())
     get_us_boundary_index()  # digest/header validation is the readiness condition
     public_jurisdiction_record_count = len(get_public_jurisdiction_index())
+    snapshot_status: SnapshotRepositoryStatus | None = None
+    if settings.form6_source_enabled:
+        repository = _net_worth_snapshot_repository()
+        assert repository is not None
+        try:
+            repository.load_active(force=True)
+            snapshot_status = repository.status()
+        except SnapshotUnavailableError as exc:
+            raise _snapshot_unavailable(exc) from exc
     return ReadyResponse(
         status="ok",
         service="nws-nearby-intelligence",
@@ -2214,6 +2237,15 @@ def ready() -> ReadyResponse:
         ),
         net_worth_model_version=NET_WORTH_MODEL_VERSION,
         nws_scale_version=NWS_SCALE_VERSION,
+        net_worth_snapshot_id=(
+            snapshot_status.snapshot_id if snapshot_status is not None else None
+        ),
+        net_worth_snapshot_sha256=(
+            snapshot_status.snapshot_sha256 if snapshot_status is not None else None
+        ),
+        net_worth_snapshot_generated_at=(
+            snapshot_status.generated_at.isoformat() if snapshot_status is not None else None
+        ),
     )
 
 
@@ -2307,15 +2339,11 @@ def discover_net_worth(
         generated_at=generated_at,
     )
     if florida is not None:
-        county_name, county_overlap_fraction, batch, profiles = florida
         return _florida_net_worth_response(
             common=common,
             resolution=resolution,
             request=request,
-            county_name=county_name,
-            county_overlap_fraction=county_overlap_fraction,
-            batch=batch,
-            profiles=profiles,
+            selection=florida,
         )
 
     pool = _net_worth_candidate_pool(resolution=resolution, request=request)
@@ -2339,10 +2367,13 @@ def discover_net_worth(
                     candidate,
                     provider.estimate(candidate, as_of_date=as_of_date),
                 )
-        if sum(
-            _publishable_net_worth(estimate, candidate)
-            for candidate, estimate in evaluated_by_id.values()
-        ) >= request.top_n:
+        if (
+            sum(
+                _publishable_net_worth(estimate, candidate)
+                for candidate, estimate in evaluated_by_id.values()
+            )
+            >= request.top_n
+        ):
             break
 
     evaluated = list(evaluated_by_id.values())

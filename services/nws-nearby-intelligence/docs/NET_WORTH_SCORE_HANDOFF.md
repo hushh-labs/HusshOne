@@ -3,6 +3,10 @@
 Status date: 2026-08-14. This is the integration and operations contract for the true Net Worth
 Score route. It does not rename the legacy professional-network score.
 
+Background publication, published-snapshot infrastructure, Scheduler commands, probes, social
+scraper reuse boundaries, and rollback are documented in
+[`NET_WORTH_REFRESH_OPERATIONS.md`](NET_WORTH_REFRESH_OPERATIONS.md).
+
 ## Contract in one minute
 
 | Item | Contract |

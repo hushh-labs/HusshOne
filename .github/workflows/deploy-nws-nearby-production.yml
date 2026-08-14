@@ -24,13 +24,23 @@ env:
   BUILD_LOG_DIR: gs://hushh-tech-prod-nws-nearby-build-logs/logs
   BUILD_SA: projects/hushh-tech-prod/serviceAccounts/nws-nearby-build@hushh-tech-prod.iam.gserviceaccount.com
   RUNTIME_SA: nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com
+  SNAPSHOT_JOB: nws-net-worth-refresh
+  SNAPSHOT_RUNTIME_SA: nws-net-worth-collector@hushh-tech-prod.iam.gserviceaccount.com
+  SNAPSHOT_BUCKET: hushh-tech-prod-nws-published-snapshots
+  SNAPSHOT_PREFIX: published/net-worth-v1.0.0
+  SOURCE_REGISTRY_PATH: /app/config/sources.yaml
+  SOURCE_REGISTRY_MANIFEST_PATH: /app/config/source-registry-manifest.json
+  SOURCE_REGISTRY_SHA256: fb97b845e41998e2d1cdf6c832751605a6285940d885c632883979980511038a
+  SOURCE_REGISTRY_VERSION: '3'
   SECRET_NAME: nws-nearby-api-key
-  SEC_SECRET_NAME: insider-api-key
+  PROFESSIONAL_SECRET_NAME: insider-professional-api-key
+  FORM6_SECRET_NAME: nws-form6-api-key
   NPPES_DB_SECRET_NAME: nws-nearby-nppes-db-password
   CLOUD_SQL_INSTANCE: hushh-tech-prod:us-central1:hushh-directories-db
   # Advance deliberately after adding a Secret Manager version; do not use latest.
   NWS_API_KEY_SECRET_VERSION: '1'
-  SEC_API_KEY_SECRET_VERSION: '1'
+  PROFESSIONAL_API_KEY_SECRET_VERSION: '2'
+  FORM6_API_KEY_SECRET_VERSION: '1'
   NPPES_DB_PASSWORD_SECRET_VERSION: '1'
 
 jobs:
@@ -81,9 +91,131 @@ jobs:
             esac
           done
           test "${BUILD_STATUS:-}" = 'SUCCESS'
-          DIGEST="$(gcloud artifacts docker images describe "$IMAGE_URI" --format='value(image_summary.digest)')"
+          DIGEST="$(gcloud artifacts docker images describe "$IMAGE_URI" \
+            --project="$PROJECT_ID" --format='value(image_summary.digest)')"
           test -n "$DIGEST"
-          echo "uri=${IMAGE_URI%@*}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "uri=${IMAGE_URI%:*}@${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Refresh and verify the published net-worth snapshot
+        id: snapshot
+        run: |
+          set -euo pipefail
+          IMAGE='${{ steps.image.outputs.uri }}'
+          JOB_BEFORE="$(gcloud run jobs describe "$SNAPSHOT_JOB" \
+            --project="$PROJECT_ID" --region="$REGION" --format=json)"
+          jq -e --arg runtime_sa "$SNAPSHOT_RUNTIME_SA" '
+            def task_template:
+              (.template?.template? // .spec?.template?.spec?.template?.spec?);
+            task_template as $task |
+            ($task.serviceAccount // $task.serviceAccountName) == $runtime_sa and
+            $task.containers[0].command == ["python"] and
+            $task.containers[0].args == ["-m", "app.jobs.refresh_net_worth"]
+          ' <<<"$JOB_BEFORE" >/dev/null
+          BUCKET_BEFORE="$(gcloud storage buckets describe "gs://$SNAPSHOT_BUCKET" \
+            --project="$PROJECT_ID" --format=json)"
+          jq -e '
+            .uniform_bucket_level_access == true and
+            .public_access_prevention == "enforced" and
+            .versioning_enabled == true and
+            (.soft_delete_policy.retentionDurationSeconds | tonumber) >= 2592000
+          ' <<<"$BUCKET_BEFORE" >/dev/null
+          gcloud run jobs update "$SNAPSHOT_JOB" \
+            --project="$PROJECT_ID" --region="$REGION" \
+            --image="$IMAGE" \
+            --update-env-vars="NWS_SNAPSHOT_BUCKET=$SNAPSHOT_BUCKET,NWS_SNAPSHOT_PREFIX=$SNAPSHOT_PREFIX,NWS_SOURCE_REGISTRY_PATH=$SOURCE_REGISTRY_PATH,NWS_SOURCE_REGISTRY_MANIFEST_PATH=$SOURCE_REGISTRY_MANIFEST_PATH,NWS_SOURCE_REGISTRY_SHA256=$SOURCE_REGISTRY_SHA256,NWS_SOURCE_REGISTRY_VERSION=$SOURCE_REGISTRY_VERSION,NWS_FORM6_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_FORM6_TIMEOUT_SECONDS=8,NWS_FORM6_REQUEST_INTERVAL_SECONDS=2.1,NWS_FORM6_MAX_RATE_LIMIT_RETRIES=2,NWS_FORM6_MAX_RETRY_AFTER_SECONDS=30,NWS_FORM6_REFRESH_DEADLINE_SECONDS=600,NWS_SNAPSHOT_MAX_RECORDS_PER_JURISDICTION=1000" \
+            --update-secrets="NWS_FORM6_API_KEY=${FORM6_SECRET_NAME}:${FORM6_API_KEY_SECRET_VERSION}" \
+            --quiet
+          JOB_AFTER="$(gcloud run jobs describe "$SNAPSHOT_JOB" \
+            --project="$PROJECT_ID" --region="$REGION" --format=json)"
+          jq -e \
+            --arg image "$IMAGE" \
+            --arg runtime_sa "$SNAPSHOT_RUNTIME_SA" \
+            --arg registry_sha256 "$SOURCE_REGISTRY_SHA256" \
+            --arg registry_version "$SOURCE_REGISTRY_VERSION" \
+            --arg form6_secret "$FORM6_SECRET_NAME" \
+            --arg form6_secret_version "$FORM6_API_KEY_SECRET_VERSION" '
+            def task_template:
+              (.template?.template? // .spec?.template?.spec?.template?.spec?);
+            def secret_name:
+              (.valueFrom?.secretKeyRef?.name // .valueSource?.secretKeyRef?.secret // "");
+            def secret_version:
+              (.valueFrom?.secretKeyRef?.key // .valueSource?.secretKeyRef?.version // "");
+            task_template as $task |
+            ($task.serviceAccount // $task.serviceAccountName) == $runtime_sa and
+            $task.containers[0].image == $image and
+            $task.containers[0].command == ["python"] and
+            $task.containers[0].args == ["-m", "app.jobs.refresh_net_worth"] and
+            any($task.containers[0].env[]?;
+              .name == "NWS_SOURCE_REGISTRY_SHA256" and .value == $registry_sha256) and
+            any($task.containers[0].env[]?;
+              .name == "NWS_SOURCE_REGISTRY_VERSION" and .value == $registry_version) and
+            any($task.containers[0].env[]?;
+              .name == "NWS_FORM6_REQUEST_INTERVAL_SECONDS" and .value == "2.1") and
+            any($task.containers[0].env[]?;
+              .name == "NWS_FORM6_MAX_RATE_LIMIT_RETRIES" and .value == "2") and
+            any($task.containers[0].env[]?;
+              .name == "NWS_FORM6_MAX_RETRY_AFTER_SECONDS" and .value == "30") and
+            any($task.containers[0].env[]?;
+              .name == "NWS_FORM6_REFRESH_DEADLINE_SECONDS" and .value == "600") and
+            any($task.containers[0].env[]?;
+              .name == "NWS_FORM6_API_KEY" and
+              ((secret_name) == $form6_secret or (secret_name | endswith("/secrets/" + $form6_secret))) and
+              (secret_version) == $form6_secret_version)
+          ' <<<"$JOB_AFTER" >/dev/null
+          gcloud run jobs execute "$SNAPSHOT_JOB" \
+            --project="$PROJECT_ID" --region="$REGION" \
+            --wait --quiet
+
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          ACTIVE_OBJECT="${SNAPSHOT_PREFIX}/active.json"
+          gcloud storage cp "gs://${SNAPSHOT_BUCKET}/${ACTIVE_OBJECT}" \
+            "$TMP_DIR/active.json" --project="$PROJECT_ID" --quiet
+          jq -e --arg source_registry_sha256 "$SOURCE_REGISTRY_SHA256" '
+            .schema_version == "nws-net-worth-active-pointer-v1" and
+            (.snapshot_id | type == "string" and length > 0) and
+            (.snapshot_object | type == "string" and length > 0) and
+            (.snapshot_generation | type == "string" and test("^[1-9][0-9]*$")) and
+            (.snapshot_sha256 | test("^[0-9a-f]{64}$")) and
+            .snapshot_schema_version == "nws-net-worth-snapshot-v1" and
+            .source_registry_sha256 == $source_registry_sha256 and
+            (.generated_at | type == "string" and length > 0) and
+            (.published_at | type == "string" and length > 0)
+          ' "$TMP_DIR/active.json" >/dev/null
+          SNAPSHOT_ID="$(jq -r '.snapshot_id' "$TMP_DIR/active.json")"
+          SNAPSHOT_OBJECT="$(jq -r '.snapshot_object' "$TMP_DIR/active.json")"
+          SNAPSHOT_GENERATION="$(jq -r '.snapshot_generation | tostring' "$TMP_DIR/active.json")"
+          SNAPSHOT_SHA256="$(jq -r '.snapshot_sha256' "$TMP_DIR/active.json")"
+          [[ "$SNAPSHOT_ID" =~ ^nwsnw_[0-9a-f]{24}$ ]] || {
+            echo "Active pointer contains an unsafe snapshot ID" >&2
+            exit 1
+          }
+          test "$SNAPSHOT_OBJECT" = "${SNAPSHOT_PREFIX}/releases/${SNAPSHOT_ID}.json" || {
+            echo "Active pointer references an unexpected object" >&2
+            exit 1
+          }
+          gcloud storage cp \
+            "gs://${SNAPSHOT_BUCKET}/${SNAPSHOT_OBJECT}#${SNAPSHOT_GENERATION}" \
+            "$TMP_DIR/snapshot.json" --project="$PROJECT_ID" --quiet
+          printf '%s  %s\n' "$SNAPSHOT_SHA256" "$TMP_DIR/snapshot.json" | sha256sum --check --status
+          jq -e --arg snapshot_id "$SNAPSHOT_ID" \
+            --arg source_registry_sha256 "$SOURCE_REGISTRY_SHA256" \
+            --arg source_registry_version "$SOURCE_REGISTRY_VERSION" '
+            .schema_version == "nws-net-worth-snapshot-v1" and
+            .snapshot_id == $snapshot_id and
+            .source_registry_sha256 == $source_registry_sha256 and
+            .source_registry_id == "nws-nearby-source-registry" and
+            .source_registry_version == ($source_registry_version | tonumber) and
+            .model_version == "net-worth-v1.0.0" and
+            .scale_version == "nws-fixed-us-log-v1.0.0" and
+            (.source | type == "object") and
+            (.jurisdictions | type == "array") and
+            (.profiles | type == "array")
+          ' \
+            "$TMP_DIR/snapshot.json" >/dev/null
+          echo "id=$SNAPSHOT_ID" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SNAPSHOT_SHA256" >> "$GITHUB_OUTPUT"
+          jq '{snapshot_id,snapshot_object,snapshot_generation,snapshot_sha256,published_at}' \
+            "$TMP_DIR/active.json"
       - name: Deploy candidate with zero production traffic
         id: rollout
         run: |
@@ -101,8 +233,9 @@ jobs:
             --cpu=1 --memory=512Mi --concurrency=8 --timeout=30s --max-instances=4 \
             --no-traffic --tag="$TAG" \
             --add-cloudsql-instances="$CLOUD_SQL_INSTANCE" \
-            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT,NWS_NATIONAL_SOURCES_ENABLED=true,NWS_SEC_SOURCE_ENABLED=true,NWS_SEC_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_FORM6_SOURCE_ENABLED=true,NWS_FORM6_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_NPPES_SOURCE_ENABLED=true,NWS_NPPES_DB_HOST=/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db,NWS_NPPES_DB_PORT=5432,NWS_NPPES_DB_NAME=healthcare,NWS_NPPES_DB_USER=nws_nearby_ro,NWS_NPPES_STATEMENT_TIMEOUT_MS=4000,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
-            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION},NWS_SEC_API_KEY=${SEC_SECRET_NAME}:${SEC_API_KEY_SECRET_VERSION},NWS_FORM6_API_KEY=${SEC_SECRET_NAME}:${SEC_API_KEY_SECRET_VERSION},NWS_NPPES_DB_PASSWORD=${NPPES_DB_SECRET_NAME}:${NPPES_DB_PASSWORD_SECRET_VERSION}" \
+            --set-env-vars=NWS_ENVIRONMENT=production,NWS_REQUIRE_API_KEY=true,NWS_DATA_MODE=NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT,NWS_NATIONAL_SOURCES_ENABLED=true,NWS_SEC_SOURCE_ENABLED=true,NWS_SEC_API_BASE_URL=https://insider-holdings-api-fro3hygenq-uc.a.run.app,NWS_FORM6_SOURCE_ENABLED=true,NWS_SNAPSHOT_BUCKET=${SNAPSHOT_BUCKET},NWS_SNAPSHOT_PREFIX=${SNAPSHOT_PREFIX},NWS_SNAPSHOT_MAX_AGE_HOURS=24,NWS_SNAPSHOT_MAX_SOURCE_AGE_HOURS=720,NWS_SOURCE_REGISTRY_PATH=${SOURCE_REGISTRY_PATH},NWS_SOURCE_REGISTRY_MANIFEST_PATH=${SOURCE_REGISTRY_MANIFEST_PATH},NWS_SOURCE_REGISTRY_SHA256=${SOURCE_REGISTRY_SHA256},NWS_SOURCE_REGISTRY_VERSION=${SOURCE_REGISTRY_VERSION},NWS_NPPES_SOURCE_ENABLED=true,NWS_NPPES_DB_HOST=/cloudsql/hushh-tech-prod:us-central1:hushh-directories-db,NWS_NPPES_DB_PORT=5432,NWS_NPPES_DB_NAME=healthcare,NWS_NPPES_DB_USER=nws_nearby_ro,NWS_NPPES_STATEMENT_TIMEOUT_MS=4000,NWS_RATE_LIMIT_PER_MINUTE=60,NWS_MAX_REQUEST_BYTES=32768,NWS_QUERY_LOCATION_DECIMALS=2 \
+            --remove-secrets=NWS_FORM6_API_KEY \
+            --update-secrets="NWS_API_KEY=${SECRET_NAME}:${NWS_API_KEY_SECRET_VERSION},NWS_SEC_API_KEY=${PROFESSIONAL_SECRET_NAME}:${PROFESSIONAL_API_KEY_SECRET_VERSION},NWS_NPPES_DB_PASSWORD=${NPPES_DB_SECRET_NAME}:${NPPES_DB_PASSWORD_SECRET_VERSION}" \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=6 \
             --liveness-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=10,failureThreshold=3
           AFTER="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format=json)"
@@ -121,12 +254,16 @@ jobs:
           echo "::add-mask::$SMOKE_KEY"
           curl --fail-with-body --retry 5 --retry-all-errors "$URL/health" >/dev/null
           READY="$(curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready")"
-          jq -e '
+          jq -e \
+            --arg snapshot_id '${{ steps.snapshot.outputs.id }}' \
+            --arg snapshot_sha256 '${{ steps.snapshot.outputs.sha256 }}' '
             .status == "ok" and
             .geography_record_count == 33791 and
             .public_jurisdiction_record_count == 33791 and
             .national_sources_enabled == true and
             .form6_source_enabled == true and
+            .net_worth_snapshot_id == $snapshot_id and
+            .net_worth_snapshot_sha256 == $snapshot_sha256 and
             .net_worth_model_version == "net-worth-v1.0.0" and
             .nws_scale_version == "nws-fixed-us-log-v1.0.0"
           ' <<<"$READY" >/dev/null
@@ -171,7 +308,14 @@ jobs:
             --to-revisions="$CANDIDATE=100" --quiet
           URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
           curl --fail-with-body --retry 5 --retry-all-errors "$URL/health" >/dev/null
-          curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready" >/dev/null
+          LIVE_READY="$(curl --fail-with-body --retry 5 --retry-all-errors "$URL/ready")"
+          jq -e \
+            --arg snapshot_id '${{ steps.snapshot.outputs.id }}' \
+            --arg snapshot_sha256 '${{ steps.snapshot.outputs.sha256 }}' '
+            .status == "ok" and
+            .net_worth_snapshot_id == $snapshot_id and
+            .net_worth_snapshot_sha256 == $snapshot_sha256
+          ' <<<"$LIVE_READY" >/dev/null
           SMOKE_KEY="$(gcloud secrets versions access "$NWS_API_KEY_SECRET_VERSION" --secret="$SECRET_NAME" --project="$PROJECT_ID")"
           echo "::add-mask::$SMOKE_KEY"
           LIVE_BODY="$(curl --fail-with-body --retry 3 --retry-all-errors \
@@ -191,6 +335,8 @@ jobs:
           LIVE_REVISION="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
             --format=json | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')"
           test "$LIVE_REVISION" = "$CANDIDATE"
+          gcloud run services update-traffic "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
+            --clear-tags --quiet
           trap - ERR
           gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" \
             --format='json(status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName)'

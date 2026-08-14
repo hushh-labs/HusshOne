@@ -30,17 +30,52 @@ def test_production_rejects_missing_or_weak_api_key(monkeypatch, api_key: str) -
         Settings.from_environment()
 
 
-def test_production_form6_source_requires_its_explicit_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_production_form6_query_uses_snapshot_config_without_source_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("NWS_ENVIRONMENT", "production")
     monkeypatch.setenv("NWS_REQUIRE_API_KEY", "true")
     monkeypatch.setenv("NWS_API_KEY", "n" * 32)
     monkeypatch.setenv("NWS_NATIONAL_SOURCES_ENABLED", "false")
     monkeypatch.setenv("NWS_FORM6_SOURCE_ENABLED", "true")
     monkeypatch.delenv("NWS_FORM6_API_KEY", raising=False)
-    # A legacy SEC key must not implicitly activate named financial disclosure.
-    monkeypatch.setenv("NWS_SEC_API_KEY", "legacy-sec-key")
+    monkeypatch.setenv("NWS_SNAPSHOT_BUCKET", "test-published-snapshots")
+    monkeypatch.setenv("NWS_SNAPSHOT_PREFIX", "published/test-net-worth")
+    monkeypatch.setenv("NWS_SNAPSHOT_MAX_AGE_HOURS", "12")
+    monkeypatch.setenv("NWS_SNAPSHOT_MAX_SOURCE_AGE_HOURS", "240")
+    monkeypatch.setenv("NWS_SOURCE_REGISTRY_PATH", "/app/config/test-sources.yaml")
+    monkeypatch.setenv(
+        "NWS_SOURCE_REGISTRY_MANIFEST_PATH",
+        "/app/config/test-source-manifest.json",
+    )
+    monkeypatch.setenv("NWS_SOURCE_REGISTRY_SHA256", "a" * 64)
+    monkeypatch.setenv("NWS_SOURCE_REGISTRY_VERSION", "9")
 
-    with pytest.raises(RuntimeError, match="NWS_FORM6_API_KEY"):
+    settings = Settings.from_environment()
+
+    assert settings.form6_source_enabled is True
+    assert settings.snapshot_bucket == "test-published-snapshots"
+    assert settings.snapshot_prefix == "published/test-net-worth"
+    assert settings.snapshot_max_age_hours == 12
+    assert settings.snapshot_max_source_age_hours == 240
+    assert settings.source_registry_path == "/app/config/test-sources.yaml"
+    assert (
+        settings.source_registry_manifest_path
+        == "/app/config/test-source-manifest.json"
+    )
+    assert settings.source_registry_sha256 == "a" * 64
+    assert settings.source_registry_version == 9
+    assert not hasattr(settings, "form6_api_key")
+
+
+def test_production_form6_source_requires_snapshot_bucket(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("NWS_ENVIRONMENT", "production")
+    monkeypatch.setenv("NWS_REQUIRE_API_KEY", "true")
+    monkeypatch.setenv("NWS_API_KEY", "n" * 32)
+    monkeypatch.setenv("NWS_NATIONAL_SOURCES_ENABLED", "false")
+    monkeypatch.setenv("NWS_FORM6_SOURCE_ENABLED", "true")
+    monkeypatch.delenv("NWS_SNAPSHOT_BUCKET", raising=False)
+    monkeypatch.setenv("NWS_SOURCE_REGISTRY_SHA256", "a" * 64)
+
+    with pytest.raises(RuntimeError, match="NWS_SNAPSHOT_BUCKET"):
         Settings.from_environment()
 
 

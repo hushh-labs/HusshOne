@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -34,6 +35,7 @@ _MAX_RESPONSE_BYTES = 5_000_000
 _MAX_TEXT_LENGTH = 240
 _MAX_DECLARED_NET_WORTH_USD = Decimal("1000000000000000")
 _FILING_PATH = re.compile(r"^/api/Report/RenderPdf/(?P<filing_id>[1-9][0-9]*)/False$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 _STREET_ADDRESS = re.compile(
     r"^\s*\d{1,7}\s+.+\b(?:street|st\.?|avenue|ave\.?|road|rd\.?|drive|dr\.?|"
@@ -99,6 +101,9 @@ class FloridaForm6Record:
 @dataclass(frozen=True)
 class FloridaForm6SourceStatus:
     source_id: str = "florida_form_6"
+    source_snapshot_id: str | None = None
+    source_artifact_sha256: str | None = None
+    source_retrieved_at: str | None = None
     index_built_at: str | None = None
     index_form_year: int | None = None
     index_partial: bool | None = None
@@ -124,9 +129,16 @@ class FloridaForm6Batch:
 class FloridaForm6SourceError(RuntimeError):
     """The source was unavailable or violated the declared whole-net-worth contract."""
 
-    def __init__(self, message: str, *, code: str = "SOURCE_UNAVAILABLE") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "SOURCE_UNAVAILABLE",
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.retry_after_seconds = retry_after_seconds
 
 
 class JsonTransport(Protocol):
@@ -144,6 +156,27 @@ class _NoRedirects(HTTPRedirectHandler):
         return None
 
 
+def _parse_retry_after(value: object) -> float | None:
+    """Parse a 429 Retry-After value without trusting it as a sleep duration yet."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None or retry_at.utcoffset() is None:
+            return None
+        seconds = (retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
+
+
 class UrllibJsonTransport:
     """HTTPS JSON transport that never forwards bearer auth through a redirect."""
 
@@ -158,7 +191,17 @@ class UrllibJsonTransport:
         try:
             with build_opener(_NoRedirects).open(request, timeout=timeout_seconds) as response:
                 payload = response.read(_MAX_RESPONSE_BYTES + 1)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        except HTTPError as exc:
+            if exc.code == 429:
+                raise FloridaForm6SourceError(
+                    "Florida Form 6 source rate limit was reached",
+                    code="SOURCE_RATE_LIMITED",
+                    retry_after_seconds=_parse_retry_after(
+                        exc.headers.get("Retry-After") if exc.headers is not None else None
+                    ),
+                ) from exc
+            raise FloridaForm6SourceError("Florida Form 6 source request failed") from exc
+        except (URLError, TimeoutError, OSError) as exc:
             raise FloridaForm6SourceError("Florida Form 6 source request failed") from exc
         if len(payload) > _MAX_RESPONSE_BYTES:
             raise FloridaForm6SourceError("Florida Form 6 response exceeded size limit")
@@ -173,6 +216,9 @@ class UrllibJsonTransport:
 
 @dataclass(frozen=True)
 class _IndexSnapshot:
+    source_snapshot_id: str
+    source_artifact_sha256: str
+    source_retrieved_at: str
     built_at: str
     form_year: int
     partial: bool
@@ -286,7 +332,12 @@ class FloridaForm6NetWorthAdapter:
         page_size: int = 50,
         max_pages: int = 2,
         allowed_hosts: frozenset[str] | None = None,
+        minimum_request_interval_seconds: float = 0.0,
+        max_rate_limit_retries: int = 0,
+        maximum_retry_after_seconds: float = 30.0,
+        deadline_monotonic: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         parsed = urlsplit(base_url)
         host_allowlist = allowed_hosts or frozenset({_CANONICAL_SOURCE_HOST})
@@ -314,6 +365,26 @@ class FloridaForm6NetWorthAdapter:
             raise ValueError("page_size must be between 1 and 100")
         if not 1 <= max_pages <= 10:
             raise ValueError("max_pages must be between 1 and 10")
+        if (
+            not math.isfinite(minimum_request_interval_seconds)
+            or not 0 <= minimum_request_interval_seconds <= 60
+        ):
+            raise ValueError("minimum_request_interval_seconds must be in [0, 60]")
+        if (
+            isinstance(max_rate_limit_retries, bool)
+            or not isinstance(max_rate_limit_retries, int)
+            or not 0 <= max_rate_limit_retries <= 5
+        ):
+            raise ValueError("max_rate_limit_retries must be in [0, 5]")
+        if (
+            not math.isfinite(maximum_retry_after_seconds)
+            or not 0 <= maximum_retry_after_seconds <= 300
+        ):
+            raise ValueError("maximum_retry_after_seconds must be in [0, 300]")
+        if deadline_monotonic is not None and (
+            not math.isfinite(deadline_monotonic) or deadline_monotonic <= clock()
+        ):
+            raise ValueError("deadline_monotonic must be a future monotonic timestamp")
 
         self._base_url = base_url.rstrip("/")
         self._bearer_token = token
@@ -323,7 +394,14 @@ class FloridaForm6NetWorthAdapter:
         self._page_size = page_size
         self._max_pages = max_pages
         self._max_results = page_size * max_pages
+        self._minimum_request_interval_seconds = minimum_request_interval_seconds
+        self._max_rate_limit_retries = max_rate_limit_retries
+        self._maximum_retry_after_seconds = maximum_retry_after_seconds
+        self._deadline_monotonic = deadline_monotonic
         self._clock = clock
+        self._sleep = sleep
+        self._next_request_at = 0.0
+        self._request_lock = threading.Lock()
         self._cache: dict[
             tuple[PublicJurisdictionKind, str, int], tuple[float, FloridaForm6Batch]
         ] = {}
@@ -412,9 +490,7 @@ class FloridaForm6NetWorthAdapter:
                 break
             page_limit = min(self._page_size, remaining)
             query_field = (
-                "county"
-                if public_jurisdiction.kind is PublicJurisdictionKind.COUNTY
-                else "office"
+                "county" if public_jurisdiction.kind is PublicJurisdictionKind.COUNTY else "office"
             )
             params = urlencode(
                 {
@@ -423,19 +499,7 @@ class FloridaForm6NetWorthAdapter:
                     "offset": offset,
                 }
             )
-            try:
-                payload = self._transport.get_json(
-                    f"{self._base_url}/v1/net-worth?{params}",
-                    headers={
-                        "Authorization": f"Bearer {self._bearer_token}",
-                        "Accept": "application/json",
-                    },
-                    timeout_seconds=self._timeout_seconds,
-                )
-            except FloridaForm6SourceError:
-                raise
-            except (TimeoutError, OSError) as exc:
-                raise FloridaForm6SourceError("Florida Form 6 source request failed") from exc
+            payload = self._get_json_with_rate_limit(f"{self._base_url}/v1/net-worth?{params}")
             page = self._map_page(
                 payload,
                 public_jurisdiction=public_jurisdiction,
@@ -481,6 +545,9 @@ class FloridaForm6NetWorthAdapter:
 
         truncated = expected_total > len(records) or requested_limit < expected_total
         status = FloridaForm6SourceStatus(
+            source_snapshot_id=expected_index.source_snapshot_id,
+            source_artifact_sha256=expected_index.source_artifact_sha256,
+            source_retrieved_at=expected_index.source_retrieved_at,
             index_built_at=expected_index.built_at,
             index_form_year=expected_index.form_year,
             index_partial=expected_index.partial,
@@ -494,12 +561,89 @@ class FloridaForm6NetWorthAdapter:
             truncated=truncated,
         )
         return FloridaForm6Batch(
-            outcome=(
-                FloridaForm6Outcome.OK if records else FloridaForm6Outcome.EMPTY
-            ),
+            outcome=(FloridaForm6Outcome.OK if records else FloridaForm6Outcome.EMPTY),
             records=tuple(records),
             source_status=status,
         )
+
+    def _check_deadline(self, now: float | None = None) -> float:
+        current = self._clock() if now is None else now
+        if self._deadline_monotonic is not None and current >= self._deadline_monotonic:
+            raise FloridaForm6SourceError(
+                "Florida Form 6 refresh deadline was exceeded",
+                code="REFRESH_DEADLINE_EXCEEDED",
+            )
+        return current
+
+    def _sleep_before_request(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        current = self._check_deadline()
+        if self._deadline_monotonic is not None and current + seconds >= self._deadline_monotonic:
+            raise FloridaForm6SourceError(
+                "Florida Form 6 refresh deadline would be exceeded",
+                code="REFRESH_DEADLINE_EXCEEDED",
+            )
+        self._sleep(seconds)
+        self._check_deadline()
+
+    def _pace_request(self) -> float:
+        with self._request_lock:
+            current = self._check_deadline()
+            self._sleep_before_request(max(0.0, self._next_request_at - current))
+            request_started_at = self._check_deadline()
+            self._next_request_at = request_started_at + self._minimum_request_interval_seconds
+            return request_started_at
+
+    def _request_timeout(self) -> float:
+        current = self._check_deadline()
+        if self._deadline_monotonic is None:
+            return self._timeout_seconds
+        remaining = self._deadline_monotonic - current
+        if remaining <= 0:
+            raise FloridaForm6SourceError(
+                "Florida Form 6 refresh deadline was exceeded",
+                code="REFRESH_DEADLINE_EXCEEDED",
+            )
+        return min(self._timeout_seconds, remaining)
+
+    def _retry_delay(self, exc: FloridaForm6SourceError, retry_number: int) -> float:
+        retry_after = exc.retry_after_seconds
+        if retry_after is None:
+            retry_after = max(1.0, self._minimum_request_interval_seconds) * (
+                2 ** (retry_number - 1)
+            )
+        if (
+            not math.isfinite(retry_after)
+            or retry_after < 0
+            or retry_after > self._maximum_retry_after_seconds
+        ):
+            raise FloridaForm6SourceError(
+                "Florida Form 6 Retry-After exceeded the configured bound",
+                code="RATE_LIMIT_RETRY_AFTER_EXCEEDED",
+            ) from exc
+        return retry_after
+
+    def _get_json_with_rate_limit(self, url: str) -> Mapping[str, object]:
+        retry_count = 0
+        while True:
+            self._pace_request()
+            try:
+                return self._transport.get_json(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self._bearer_token}",
+                        "Accept": "application/json",
+                    },
+                    timeout_seconds=self._request_timeout(),
+                )
+            except FloridaForm6SourceError as exc:
+                if exc.code != "SOURCE_RATE_LIMITED" or retry_count >= self._max_rate_limit_retries:
+                    raise
+                retry_count += 1
+                self._sleep_before_request(self._retry_delay(exc, retry_count))
+            except (TimeoutError, OSError) as exc:
+                raise FloridaForm6SourceError("Florida Form 6 source request failed") from exc
 
     def _map_page(
         self,
@@ -556,6 +700,41 @@ class FloridaForm6NetWorthAdapter:
                 "Florida Form 6 source returned future index.builtAt",
                 code="SOURCE_CONTRACT_VIOLATION",
             )
+        source_snapshot_id = _public_text(
+            index.get("sourceSnapshotId"), field="index.sourceSnapshotId", maximum=200
+        )
+        source_artifact_sha256 = _public_text(
+            index.get("sourceArtifactSha256"),
+            field="index.sourceArtifactSha256",
+            maximum=64,
+        )
+        if _SHA256.fullmatch(source_artifact_sha256) is None:
+            raise FloridaForm6SourceError(
+                "Florida Form 6 source returned invalid index.sourceArtifactSha256",
+                code="SOURCE_CONTRACT_VIOLATION",
+            )
+        source_retrieved_at = _public_text(
+            index.get("sourceRetrievedAt"), field="index.sourceRetrievedAt", maximum=64
+        )
+        try:
+            parsed_retrieved_at = datetime.fromisoformat(source_retrieved_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise FloridaForm6SourceError(
+                "Florida Form 6 source returned invalid index.sourceRetrievedAt",
+                code="SOURCE_CONTRACT_VIOLATION",
+            ) from exc
+        if parsed_retrieved_at.tzinfo is None or parsed_retrieved_at > datetime.now(
+            UTC
+        ) + timedelta(minutes=5):
+            raise FloridaForm6SourceError(
+                "Florida Form 6 source returned invalid index.sourceRetrievedAt",
+                code="SOURCE_CONTRACT_VIOLATION",
+            )
+        if parsed_retrieved_at < parsed_built_at - timedelta(days=1):
+            raise FloridaForm6SourceError(
+                "Florida Form 6 source retrieval predates its index build",
+                code="SOURCE_CONTRACT_VIOLATION",
+            )
         form_year = _nonnegative_int(index.get("formYear"), field="index.formYear")
         if not 2000 <= form_year <= datetime.now(UTC).year:
             raise FloridaForm6SourceError(
@@ -563,9 +742,7 @@ class FloridaForm6NetWorthAdapter:
                 code="SOURCE_CONTRACT_VIOLATION",
             )
         filings_seen = _nonnegative_int(index.get("filingsSeen"), field="index.filingsSeen")
-        with_net_worth = _nonnegative_int(
-            index.get("withNetWorth"), field="index.withNetWorth"
-        )
+        with_net_worth = _nonnegative_int(index.get("withNetWorth"), field="index.withNetWorth")
         unreadable = _nonnegative_int(index.get("unreadable"), field="index.unreadable")
         if with_net_worth > filings_seen or unreadable > filings_seen:
             raise FloridaForm6SourceError(
@@ -573,6 +750,9 @@ class FloridaForm6NetWorthAdapter:
                 code="SOURCE_CONTRACT_VIOLATION",
             )
         snapshot = _IndexSnapshot(
+            source_snapshot_id=source_snapshot_id,
+            source_artifact_sha256=source_artifact_sha256,
+            source_retrieved_at=source_retrieved_at,
             built_at=built_at,
             form_year=form_year,
             partial=cast(bool, index["partial"]),
@@ -611,8 +791,10 @@ class FloridaForm6NetWorthAdapter:
             not isinstance(coverage, str)
             or "exact sworn net worth" not in coverage.casefold()
             or not isinstance(disclosure, str)
-            or "only the sworn net-worth figure is extracted" not in disclosure.casefold()
-            or "never read or stored" not in disclosure.casefold()
+            or "bounded page-one sworn net-worth field" not in disclosure.casefold()
+            or "raw filings" not in disclosure.casefold()
+            or "asset, liability, and income schedules" not in disclosure.casefold()
+            or "not retained or emitted" not in disclosure.casefold()
         ):
             raise FloridaForm6SourceError(
                 "Florida Form 6 source did not confirm whole-declaration scope",

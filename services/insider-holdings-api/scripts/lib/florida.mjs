@@ -14,10 +14,10 @@
  * documents next to their value. Some filers also attach their entire federal tax
  * return.
  *
- * So this parser is an ALLOWLIST OF ONE. It reads the net-worth figure and nothing
- * else. It never returns the asset schedule, the liability schedule, the income
- * schedule, or any free text — not because those are hard to parse, but because they
- * are exactly what must not be republished.
+ * So this parser is an ALLOWLIST OF ONE. The builder text-extracts page one only and
+ * passes this parser a bounded net-worth field window. The temporary PDF is removed in
+ * a `finally` block; raw filings and asset, liability, and income schedules are not
+ * retained or emitted.
  *
  * Identity comes from the roster API instead (name, office, county), which carries no
  * financial detail and no address. The two are joined on the filing id.

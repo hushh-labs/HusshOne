@@ -1,23 +1,14 @@
 from __future__ import annotations
 
+import urllib.request
 from dataclasses import replace
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
 from fastapi.testclient import TestClient
 
 import app.main as main
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES
-from app.florida_net_worth import (
-    FloridaForm6Batch,
-    FloridaForm6Outcome,
-    FloridaForm6Provenance,
-    FloridaForm6Record,
-    FloridaForm6SourceStatus,
-    PublicJurisdiction,
-    PublicJurisdictionKind,
-)
 from app.main import NetWorthCandidatePool, app
 from app.net_worth import (
     BalanceSheetCoverage,
@@ -37,9 +28,16 @@ from app.net_worth import (
     NetWorthEngine,
     NetWorthSubject,
     ProfileBasis,
+    net_worth_to_nws,
 )
 from app.nws_models import GeoPoint
 from app.security import rate_limiter
+from app.snapshots.contracts import (
+    PublishedNetWorthProfile,
+    SnapshotConfidence,
+    SnapshotRepositoryStatus,
+)
+from app.snapshots.repository import SnapshotUnavailableError
 
 API_HEADERS = {"X-NWS-API-Key": "local-development-only"}
 
@@ -149,79 +147,108 @@ def test_v3_non_us_and_unresolved_locations_are_not_financial_searches() -> None
         assert {source["status"] for source in body["source_status"]} == {"NOT_QUERIED"}
 
 
-class _FakeFloridaAdapter:
-    def __init__(self, batch: FloridaForm6Batch) -> None:
-        self.batch = batch
-        self.calls: list[tuple[PublicJurisdiction, int]] = []
-
-    def discover(
-        self,
-        *,
-        public_jurisdiction: PublicJurisdiction,
-        limit: int,
-    ) -> FloridaForm6Batch:
-        self.calls.append((public_jurisdiction, limit))
-        return self.batch
-
-
-def _florida_record(*, subject_id: str, name: str, net_worth: str) -> FloridaForm6Record:
-    filing_id = subject_id.rsplit(":", 1)[-1]
-    jurisdiction = PublicJurisdiction(
-        PublicJurisdictionKind.OFFICE,
-        "Miami-Dade County",
+def _snapshot_status(
+    *,
+    partial: bool = False,
+    generated_at: datetime | None = None,
+    profile_count: int = 0,
+) -> SnapshotRepositoryStatus:
+    return SnapshotRepositoryStatus(
+        snapshot_id="nwsnw_0123456789abcdef01234567",
+        snapshot_sha256="a" * 64,
+        generated_at=generated_at or datetime.now(UTC) - timedelta(minutes=5),
+        source_retrieved_at=datetime(2026, 8, 11, 18, 46, 24, tzinfo=UTC),
+        source_index_built_at=datetime(2026, 8, 11, 18, 46, 24, tzinfo=UTC),
+        source_form_year=2025,
+        source_partial=partial,
+        source_total_count=profile_count,
+        evaluated_count=profile_count,
+        profile_count=profile_count,
+        jurisdiction_count=67,
+        truncated=False,
     )
-    filing_url = f"https://disclosure.floridaethics.gov/api/Report/RenderPdf/{filing_id}/False"
-    return FloridaForm6Record(
+
+
+class _FakeSnapshotRepository:
+    def __init__(
+        self,
+        profiles: tuple[PublishedNetWorthProfile, ...] = (),
+        *,
+        status: SnapshotRepositoryStatus | None = None,
+        error: SnapshotUnavailableError | None = None,
+    ) -> None:
+        self.profiles = profiles
+        self.snapshot_status = status or _snapshot_status(profile_count=len(profiles))
+        self.error = error
+        self.jurisdiction_calls: list[str] = []
+        self.load_calls: list[bool] = []
+
+    def load_active(self, *, force: bool = False):  # type: ignore[no-untyped-def]
+        self.load_calls.append(force)
+        if self.error is not None:
+            raise self.error
+        return object()
+
+    def status(self, *, force: bool = False) -> SnapshotRepositoryStatus:
+        if self.error is not None:
+            raise self.error
+        return self.snapshot_status
+
+    def profiles_for_jurisdiction(
+        self,
+        jurisdiction_id: str,
+    ) -> tuple[PublishedNetWorthProfile, ...]:
+        if self.error is not None:
+            raise self.error
+        self.jurisdiction_calls.append(jurisdiction_id)
+        return self.profiles
+
+
+def _florida_profile(*, subject_id: str, name: str, net_worth: int) -> PublishedNetWorthProfile:
+    return PublishedNetWorthProfile(
         subject_id=subject_id,
         name=name,
-        declared_net_worth_usd=Decimal(net_worth),
+        headline="Miami-Dade County Commissioner",
         public_offices=("Miami-Dade County Commissioner",),
-        public_jurisdiction=jurisdiction,
+        jurisdiction_ids=("US-FL-COUNTY-12086",),
         form_year=2025,
-        filing_url=filing_url,
-        provenance=FloridaForm6Provenance(
-            source_id="florida_form_6",
-            source_authority="Florida Commission on Ethics",
-            source_url="https://disclosure.floridaethics.gov/PublicSearch/Filings",
-            filing_url=filing_url,
-            declaration_scope="SWORN_WHOLE_DECLARED_NET_WORTH",
-        ),
+        declared_net_worth_usd=net_worth,
+        p10_usd=net_worth,
+        median_usd=net_worth,
+        p90_usd=net_worth,
+        nws=net_worth_to_nws(net_worth),
+        confidence=SnapshotConfidence(score=0.98, grade="A", coverage=1.0),
     )
 
 
 def test_v3_florida_postal_publishes_direct_sworn_totals_without_fuzzy_join(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    records = (
-        _florida_record(
+    profiles = (
+        _florida_profile(
             subject_id="florida-form6:101",
             name="Lower Filer",
-            net_worth="10000000",
+            net_worth=10_000_000,
         ),
-        _florida_record(
+        _florida_profile(
             subject_id="florida-form6:102",
             name="Higher Filer",
-            net_worth="100000000",
+            net_worth=100_000_000,
         ),
     )
-    fake = _FakeFloridaAdapter(
-        FloridaForm6Batch(
-            outcome=FloridaForm6Outcome.OK,
-            records=records,
-            source_status=FloridaForm6SourceStatus(
-                index_built_at="2026-08-11T18:46:24.202Z",
-                index_form_year=2025,
-                index_partial=False,
-                accepted_record_count=2,
-                requested_limit=2,
-            ),
-        )
-    )
-    monkeypatch.setattr(main, "_florida_net_worth_adapter", lambda: fake)
+    fake = _FakeSnapshotRepository(tuple(reversed(profiles)))
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
     monkeypatch.setattr(
         main,
         "_net_worth_candidate_pool",
         lambda **_: (_ for _ in ()).throw(AssertionError("professional pool must not run")),
+    )
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("financial query must not call an upstream source")
+        ),
     )
 
     response = TestClient(app).post(
@@ -232,12 +259,8 @@ def test_v3_florida_postal_publishes_direct_sworn_totals_without_fuzzy_join(
 
     assert response.status_code == 200
     body = response.json()
-    assert fake.calls == [
-        (
-            PublicJurisdiction(PublicJurisdictionKind.OFFICE, "Miami-Dade County"),
-            2,
-        )
-    ]
+    assert fake.jurisdiction_calls == ["US-FL-COUNTY-12086"]
+    assert fake.load_calls == []
     assert body["coverage"]["reason_code"] == "FLORIDA_PUBLIC_FORM_6_JURISDICTION"
     assert body["search"]["scope"] == "PUBLIC_JURISDICTION"
     assert [result["person"]["name"] for result in body["results"]] == [
@@ -262,12 +285,10 @@ def test_v3_florida_postal_publishes_direct_sworn_totals_without_fuzzy_join(
     assert all(result["last_financial_update"] == "2025" for result in body["results"])
     assert all(result["estimated_net_worth"]["as_of"] == "2025" for result in body["results"])
     assert all(
-        result["confidence"]["score"] != result["nws"]["value"] / 100
-        for result in body["results"]
+        result["confidence"]["score"] != result["nws"]["value"] / 100 for result in body["results"]
     )
     assert all(
-        result["sources"][0]["url"]
-        == "https://disclosure.floridaethics.gov/PublicSearch/Filings"
+        result["sources"][0]["url"] == "https://disclosure.floridaethics.gov/PublicSearch/Filings"
         for result in body["results"]
     )
     assert all(result["sources"][0]["source_date"] == "2025" for result in body["results"])
@@ -277,25 +298,16 @@ def test_v3_florida_postal_publishes_direct_sworn_totals_without_fuzzy_join(
 
 
 def test_v3_florida_partial_index_never_claims_available_coverage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    record = _florida_record(
+    profile = _florida_profile(
         subject_id="florida-form6:103",
         name="Partial Index Filer",
-        net_worth="1000000",
+        net_worth=1_000_000,
     )
-    fake = _FakeFloridaAdapter(
-        FloridaForm6Batch(
-            outcome=FloridaForm6Outcome.OK,
-            records=(record,),
-            source_status=FloridaForm6SourceStatus(
-                index_built_at="2026-08-11T18:46:24.202Z",
-                index_form_year=2025,
-                index_partial=True,
-                accepted_record_count=1,
-                requested_limit=1,
-            ),
-        )
+    fake = _FakeSnapshotRepository(
+        (profile,),
+        status=_snapshot_status(partial=True, profile_count=1),
     )
-    monkeypatch.setattr(main, "_florida_net_worth_adapter", lambda: fake)
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
 
     body = (
         TestClient(app)
@@ -316,25 +328,13 @@ def test_v3_florida_partial_index_never_claims_available_coverage(monkeypatch) -
 def test_v3_florida_coordinate_resolves_bounded_zcta_to_public_jurisdiction(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    record = _florida_record(
+    profile = _florida_profile(
         subject_id="florida-form6:104",
         name="Coordinate Filer",
-        net_worth="10000000",
+        net_worth=10_000_000,
     )
-    fake = _FakeFloridaAdapter(
-        FloridaForm6Batch(
-            outcome=FloridaForm6Outcome.OK,
-            records=(record,),
-            source_status=FloridaForm6SourceStatus(
-                index_built_at="2026-08-11T18:46:24.202Z",
-                index_form_year=2025,
-                index_partial=False,
-                accepted_record_count=1,
-                requested_limit=1,
-            ),
-        )
-    )
-    monkeypatch.setattr(main, "_florida_net_worth_adapter", lambda: fake)
+    fake = _FakeSnapshotRepository((profile,))
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
 
     response = TestClient(app).post(
         "/v3/nearby-net-worth/discover",
@@ -361,82 +361,107 @@ def test_v3_florida_coordinate_resolves_bounded_zcta_to_public_jurisdiction(
         "public jurisdiction match"
         == body["results"][0]["location_relationship"]["approximate_distance_band"]
     )
-    assert fake.calls[0][0] == PublicJurisdiction(
-        PublicJurisdictionKind.OFFICE,
-        "Miami-Dade County",
+    assert fake.jurisdiction_calls == ["US-FL-COUNTY-12086"]
+
+
+def test_v3_florida_stale_snapshot_fails_closed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    profile = _florida_profile(
+        subject_id="florida-form6:105",
+        name="Stale Snapshot Filer",
+        net_worth=10_000_000,
     )
-
-
-def test_v3_florida_future_form_year_fails_closed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    future = replace(
-        _florida_record(
-            subject_id="florida-form6:105",
-            name="Future Record",
-            net_worth="10000000",
+    fake = _FakeSnapshotRepository(
+        (profile,),
+        status=_snapshot_status(
+            generated_at=datetime.now(UTC) - timedelta(hours=25),
+            profile_count=1,
         ),
-        form_year=2099,
     )
-    fake = _FakeFloridaAdapter(
-        FloridaForm6Batch(
-            outcome=FloridaForm6Outcome.OK,
-            records=(future,),
-            source_status=FloridaForm6SourceStatus(
-                index_built_at="2026-08-11T18:46:24.202Z",
-                index_form_year=2099,
-                index_partial=False,
-                accepted_record_count=1,
-                requested_limit=1,
-            ),
-        )
-    )
-    monkeypatch.setattr(main, "_florida_net_worth_adapter", lambda: fake)
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
 
-    body = (
-        TestClient(app)
-        .post(
-            "/v3/nearby-net-worth/discover",
-            headers=API_HEADERS,
-            json={"query": {"postal_code": "33130"}, "top_n": 1},
-        )
-        .json()
+    response = TestClient(app).post(
+        "/v3/nearby-net-worth/discover",
+        headers=API_HEADERS,
+        json={"query": {"postal_code": "33130"}, "top_n": 1},
     )
 
-    assert body["financial_coverage"]["status"] == "FINANCIAL_COVERAGE_INSUFFICIENT"
-    assert body["financial_coverage"]["candidate_count"] == 1
-    assert body["financial_coverage"]["scored_count"] == 0
-    assert body["financial_coverage"]["insufficient_evidence_count"] == 1
-    assert body["results"] == []
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "NET_WORTH_SNAPSHOT_UNAVAILABLE",
+        "reason_code": "SNAPSHOT_STALE",
+    }
 
 
-def test_v3_florida_source_unavailable_is_distinct_from_no_declarations(
+def test_v3_florida_registry_mismatch_fails_closed(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
-    unavailable = _FakeFloridaAdapter(
-        FloridaForm6Batch(
-            outcome=FloridaForm6Outcome.UNAVAILABLE,
-            records=(),
-            source_status=FloridaForm6SourceStatus(
-                requested_limit=10,
-                error_code="SOURCE_UNAVAILABLE",
-            ),
+    unavailable = _FakeSnapshotRepository(
+        error=SnapshotUnavailableError(
+            "snapshot registry mismatch",
+            code="SOURCE_REGISTRY_MISMATCH",
         )
     )
-    monkeypatch.setattr(main, "_florida_net_worth_adapter", lambda: unavailable)
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: unavailable)
 
-    body = (
-        TestClient(app)
-        .post(
-            "/v3/nearby-net-worth/discover",
-            headers=API_HEADERS,
-            json={"query": {"postal_code": "33130"}, "top_n": 10},
-        )
-        .json()
+    response = TestClient(app).post(
+        "/v3/nearby-net-worth/discover",
+        headers=API_HEADERS,
+        json={"query": {"postal_code": "33130"}, "top_n": 10},
     )
 
-    assert body["financial_coverage"]["status"] == "FINANCIAL_COVERAGE_INSUFFICIENT"
-    assert body["results"] == []
-    assert "FINANCIAL_SOURCE_UNAVAILABLE" in body["result_set"]["reasons"]
-    assert {source["status"] for source in body["source_status"]} == {"UNAVAILABLE"}
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "NET_WORTH_SNAPSHOT_UNAVAILABLE",
+        "reason_code": "SOURCE_REGISTRY_MISMATCH",
+    }
+
+
+def test_ready_force_refreshes_and_reports_snapshot_proof(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source_settings = replace(
+        main.get_settings(),
+        form6_source_enabled=True,
+        snapshot_bucket="test-snapshot-bucket",
+        source_registry_sha256="b" * 64,
+    )
+    fake = _FakeSnapshotRepository()
+    monkeypatch.setattr(main, "get_settings", lambda: source_settings)
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert fake.load_calls == [True]
+    assert body["net_worth_snapshot_id"] == fake.snapshot_status.snapshot_id
+    assert body["net_worth_snapshot_sha256"] == fake.snapshot_status.snapshot_sha256
+    assert body["net_worth_snapshot_generated_at"] == (
+        fake.snapshot_status.generated_at.isoformat()
+    )
+
+
+def test_ready_fails_closed_when_snapshot_refresh_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source_settings = replace(
+        main.get_settings(),
+        form6_source_enabled=True,
+        snapshot_bucket="test-snapshot-bucket",
+        source_registry_sha256="b" * 64,
+    )
+    fake = _FakeSnapshotRepository(
+        error=SnapshotUnavailableError(
+            "active pointer mismatch",
+            code="SOURCE_REGISTRY_MISMATCH",
+        )
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: source_settings)
+    monkeypatch.setattr(main, "_net_worth_snapshot_repository", lambda: fake)
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "NET_WORTH_SNAPSHOT_UNAVAILABLE",
+        "reason_code": "SOURCE_REGISTRY_MISMATCH",
+    }
 
 
 class _DeclaredTotalProvider:
@@ -624,9 +649,7 @@ def test_v3_expands_until_financially_eligible_target_not_raw_candidate_target(
         .json()
     )
 
-    assert [result["person"]["name"] for result in body["results"]] == [
-        "Farther Verified"
-    ]
+    assert [result["person"]["name"] for result in body["results"]] == ["Farther Verified"]
     assert body["search"]["expanded"] is True
     assert body["search"]["effective_radius_km"] > 20
     assert body["result_set"]["target_satisfied"] is True
