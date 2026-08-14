@@ -53,6 +53,10 @@ class Settings:
     source_registry_manifest_path: str
     source_registry_sha256: str
     source_registry_version: int
+    v4_enabled: bool
+    consumer_registry_json: str
+    consumer_registry_sha256: str
+    consent_receipt_bucket: str
     nppes_source_enabled: bool
     nppes_db_host: str
     nppes_db_port: int
@@ -105,8 +109,16 @@ class Settings:
         ).strip()
         source_registry_sha256 = os.getenv("NWS_SOURCE_REGISTRY_SHA256", "").strip().casefold()
         source_registry_version = _read_int(
-            "NWS_SOURCE_REGISTRY_VERSION", 3, minimum=1, maximum=1_000_000
+            "NWS_SOURCE_REGISTRY_VERSION", 4, minimum=1, maximum=1_000_000
         )
+        v4_enabled = _read_bool("NWS_V4_ENABLED", False)
+        # Integrity is over the exact Secret Manager bytes. Do not normalize,
+        # trim, or otherwise rewrite the reviewed registry before verification.
+        consumer_registry_json = os.getenv("NWS_CONSUMER_REGISTRY_JSON", "")
+        consumer_registry_sha256 = os.getenv(
+            "NWS_CONSUMER_REGISTRY_SHA256", ""
+        ).strip().casefold()
+        consent_receipt_bucket = os.getenv("NWS_CONSENT_RECEIPT_BUCKET", "").strip()
         nppes_db_password = os.getenv("NWS_NPPES_DB_PASSWORD", "").strip()
         if environment == "production" and national_sources_enabled:
             if sec_source_enabled and not sec_api_key:
@@ -144,6 +156,28 @@ class Settings:
                     "NWS_SOURCE_REGISTRY_SHA256 must be a SHA-256 hex digest when the "
                     "Florida Form 6 snapshot is enabled"
                 )
+        if v4_enabled:
+            if not consumer_registry_json.strip():
+                raise RuntimeError(
+                    "NWS_CONSUMER_REGISTRY_JSON is required when v4 is enabled"
+                )
+            if len(consumer_registry_sha256) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in consumer_registry_sha256
+            ):
+                raise RuntimeError(
+                    "NWS_CONSUMER_REGISTRY_SHA256 must be a SHA-256 hex digest when v4 "
+                    "is enabled"
+                )
+            if (
+                not consent_receipt_bucket
+                or consent_receipt_bucket.startswith("gs://")
+                or "/" in consent_receipt_bucket
+            ):
+                raise RuntimeError(
+                    "NWS_CONSENT_RECEIPT_BUCKET must be an unqualified bucket name when "
+                    "v4 is enabled"
+                )
 
         return cls(
             environment=environment,
@@ -158,7 +192,7 @@ class Settings:
             query_location_decimals=_read_int(
                 "NWS_QUERY_LOCATION_DECIMALS", 2, minimum=0, maximum=4
             ),
-            service_version="3.2.0",
+            service_version="4.0.0",
             model_version="nws-v2.3.0-kirkland.2026-08-13",
             national_model_version="nws-v3.0.0-us-public-professional.2026-08-14",
             data_mode=data_mode,
@@ -187,6 +221,10 @@ class Settings:
             source_registry_manifest_path=source_registry_manifest_path,
             source_registry_sha256=source_registry_sha256,
             source_registry_version=source_registry_version,
+            v4_enabled=v4_enabled,
+            consumer_registry_json=consumer_registry_json,
+            consumer_registry_sha256=consumer_registry_sha256,
+            consent_receipt_bucket=consent_receipt_bucket,
             nppes_source_enabled=nppes_source_enabled,
             nppes_db_host=os.getenv(
                 "NWS_NPPES_DB_HOST",

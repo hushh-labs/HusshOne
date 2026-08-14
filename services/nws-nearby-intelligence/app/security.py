@@ -9,6 +9,7 @@ from threading import Lock
 
 from fastapi import Header, HTTPException, Request, status
 
+from app.consumer_access import RateLimitResult
 from app.settings import Settings, get_settings
 
 
@@ -44,6 +45,34 @@ class SlidingWindowRateLimiter:
 
 
 rate_limiter = SlidingWindowRateLimiter()
+
+
+class ConsumerRateLimiterAdapter:
+    """Adapter for the v4 consumer-policy interface.
+
+    This remains process-local and is deliberately identified as such in the
+    v4 response disclosures and runbook.  It is a migration guard, not a claim
+    of distributed quota enforcement.
+    """
+
+    def consume(
+        self,
+        *,
+        key: str,
+        limit: int,
+        window_seconds: int,
+    ) -> RateLimitResult:
+        if window_seconds != 60:
+            raise RuntimeError("the in-process limiter supports only a 60-second window")
+        allowed, remaining, reset = rate_limiter.check(key, limit=limit)
+        return RateLimitResult(
+            allowed=allowed,
+            remaining=remaining,
+            reset_after_seconds=reset,
+        )
+
+
+consumer_rate_limiter = ConsumerRateLimiterAdapter()
 
 
 def _client_ip(request: Request) -> str:

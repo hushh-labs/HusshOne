@@ -1,38 +1,36 @@
 "use client";
 
 import Link from "next/link";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { User } from "firebase/auth";
+import {
+  completeGoogleRedirect,
+  getFirebaseBearer,
+  isFirebaseClientConfigured,
+  makeDevUser,
+  observeAuth,
+  signInWithGoogle,
+} from "@/lib/firebase/client";
 import type {
-  NearbyClientRequest,
-  NearbyClientResponse,
-  NearbyClientResult,
-} from "@/lib/nws/contracts";
+  NearbyV4ClientRequest,
+  NearbyV4ClientResponse,
+  NearbyV4ClientResult,
+} from "@/lib/nws/v4-contracts";
 import styles from "./nearby.module.css";
 
 const FIRST_PAGE_SIZE = 20;
 const PAGE_SIZE = 20;
 const US_ZIP_PATTERN = /^\d{5}(?:-\d{4})?$/;
-
-const COMPONENT_LABELS = {
-  cash_and_near_cash: "Cash and near cash",
-  public_securities: "Public securities",
-  private_business_equity: "Private business equity",
-  real_estate_equity: "Real estate equity",
-  other_assets: "Other assets",
-  liabilities: "Liabilities",
-} as const;
-
-type ComponentKey = keyof typeof COMPONENT_LABELS;
-type Component = NearbyClientResult["components"][ComponentKey];
+const DEV_AUTH = process.env.NEXT_PUBLIC_ONE_ENABLE_DEV_AUTH === "true";
 
 type ViewState =
   | { kind: "idle" }
   | { kind: "loading" }
-  | { kind: "success"; data: NearbyClientResponse }
+  | { kind: "success"; data: NearbyV4ClientResponse }
   | { kind: "error"; title: string; detail: string; retryable: boolean };
 
 type RetryAction =
-  | { kind: "request"; payload: NearbyClientRequest }
+  | { kind: "request"; payload: NearbyV4ClientRequest }
   | { kind: "location" };
 
 function coarsenCoordinate(value: number): number {
@@ -71,38 +69,13 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
-function componentStatus(component: Component): string {
-  switch (component.status) {
-    case "SUPPORTED":
-      return "Supported";
-    case "MODELED_RANGE":
-      return "Modeled range";
-    case "INCLUDED_IN_DECLARED_TOTAL":
-      return "Included, not itemized";
-    case "NOT_PROVIDED":
-      return "Not provided";
-    case "NOT_APPLICABLE":
-      return "Not applicable";
-    case "UNKNOWN":
-      return "Unavailable";
-  }
-}
-
-function componentValue(component: Component): string | null {
-  if (
-    component.low_usd === null ||
-    component.high_usd === null ||
-    component.most_likely_usd === null
-  ) {
-    return null;
-  }
-  return moneyRange(component.low_usd, component.high_usd);
-}
-
 function humanError(
   status: number,
   code: string | undefined,
 ): { title: string; detail: string; retryable: boolean } {
+  if (status === 401 || code === "authentication_required") {
+    return { title: "Sign in required", detail: "Sign in to search.", retryable: false };
+  }
   if (status === 429 || code === "rate_limited") {
     return { title: "Too many searches", detail: "Try again shortly.", retryable: true };
   }
@@ -112,8 +85,11 @@ function humanError(
   if (status === 503 || code === "service_unavailable") {
     return { title: "Source unavailable", detail: "Try again soon.", retryable: true };
   }
+  if (status === 409 || code === "coverage_unavailable") {
+    return { title: "Coverage unavailable", detail: "Try another U.S. ZIP.", retryable: false };
+  }
   if (status === 422 || code === "invalid_request") {
-    return { title: "Check ZIP", detail: "Enter a valid U.S. ZIP.", retryable: false };
+    return { title: "Check location", detail: "Try a valid U.S. ZIP.", retryable: false };
   }
   return {
     title: "Couldn’t search",
@@ -122,143 +98,89 @@ function humanError(
   };
 }
 
-async function requestNearby(payload: NearbyClientRequest): Promise<NearbyClientResponse> {
-  const response = await fetch("/api/nws/nearby", {
+async function requestNearby(
+  payload: NearbyV4ClientRequest,
+  authorization: string,
+  signal: AbortSignal,
+): Promise<NearbyV4ClientResponse> {
+  const response = await fetch("/api/nws/v4/nearby", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { Authorization: authorization, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
     cache: "no-store",
+    signal,
   });
   const body = (await response.json().catch(() => null)) as
-    | NearbyClientResponse
+    | NearbyV4ClientResponse
     | { code?: string }
     | null;
 
-  if (!response.ok || !body || !("results" in body)) {
+  if (!response.ok || !body || !("contract_version" in body) || !("results" in body)) {
     const mapped = humanError(response.status, body && "code" in body ? body.code : undefined);
     throw Object.assign(new Error(mapped.detail), { nearby: mapped });
   }
   return body;
 }
 
-function resultHeading(data: NearbyClientResponse): { title: string; detail: string } {
+function resultHeading(data: NearbyV4ClientResponse): { title: string; detail: string } {
   if (data.coverage.status === "NOT_COVERED") {
-    return { title: "Location not covered", detail: "Try another U.S. ZIP." };
+    return { title: "Outside U.S. coverage", detail: "Use a U.S. ZIP." };
   }
   if (data.coverage.status === "LOCATION_UNRESOLVED") {
-    return { title: "Location unresolved", detail: "Check the ZIP and try again." };
+    return { title: "Location not found", detail: "Try a U.S. ZIP." };
   }
-  if (
-    data.source_status.some(
-      (source) =>
-        source.purpose === "FINANCIAL_EVIDENCE" && source.status === "UNAVAILABLE",
-    )
-  ) {
-    return {
-      title: "Financial source unavailable",
-      detail: data.results.length > 0 ? "Results may be incomplete." : "Try again soon.",
-    };
-  }
-  if (data.search.scope === "PUBLIC_JURISDICTION" && data.results.length === 0) {
-    return {
-      title: "No verified NWS",
-      detail: "No matching public declarations in the current partial source.",
-    };
-  }
-  if (data.financial_coverage.candidate_count === 0) {
-    return { title: "No public candidates nearby", detail: "Try another ZIP." };
-  }
-  if (data.financial_coverage.status === "FINANCIAL_COVERAGE_INSUFFICIENT") {
-    const count = data.financial_coverage.candidate_count;
-    return {
-      title: "Financial evidence unavailable",
-      detail: `${count} nearby ${count === 1 ? "candidate lacks" : "candidates lack"} enough public evidence.`,
-    };
+  if (data.results.length === 0 && data.financial_coverage.discovered_count === 0) {
+    return { title: "No public profiles", detail: "Try another U.S. ZIP." };
   }
   if (data.results.length === 0) {
-    return { title: "No scored people nearby", detail: "Try another ZIP." };
+    return {
+      title: "No eligible NWS",
+      detail: `${data.financial_coverage.discovered_count} found · ${data.result_set.shortfall_count} short`,
+    };
   }
   return {
-    title: `${data.results.length} scored ${data.results.length === 1 ? "person" : "people"}`,
-    detail: data.query.label,
+    title: `${data.results.length} NWS ${data.results.length === 1 ? "result" : "results"}`,
+    detail: data.result_set.target_satisfied
+      ? data.query.label
+      : `${data.result_set.shortfall_count} short · ${data.query.label}`,
   };
 }
 
-function sourceNotice(data: NearbyClientResponse): string | null {
-  const unavailable = data.source_status.filter((source) => source.status === "UNAVAILABLE");
-  if (unavailable.length === 0) return null;
-  if (unavailable.some((source) => source.purpose === "FINANCIAL_EVIDENCE")) {
-    return "Financial source unavailable. Some scores may be missing.";
-  }
-  return "Candidate source unavailable. Results may be incomplete.";
-}
-
-function ResultDetails({ result }: { result: NearbyClientResult }) {
-  const liquid = result.liquid_wealth;
-  const declaredTotal = result.estimated_net_worth.method === "DECLARED_TOTAL_SIMULATION";
+function ResultDetails({ result }: { result: NearbyV4ClientResult }) {
+  const rankRange =
+    result.rank_interval.low === result.rank_interval.high
+      ? `#${result.rank_interval.low}`
+      : `#${result.rank_interval.low}–#${result.rank_interval.high}`;
 
   return (
     <div className={styles.detailBody} id={`nearby-detail-${result.person.id}`}>
-      {declaredTotal ? (
-        <p className={styles.declaredNote}>
-          Disclosed total only. Components were not itemized.
-        </p>
-      ) : null}
-
-      <div className={styles.componentList} aria-label="Net worth components">
-        {(Object.keys(COMPONENT_LABELS) as ComponentKey[]).map((key) => {
-          const component = result.components[key];
-          const value = componentValue(component);
-          return (
-            <div className={styles.componentRow} key={key}>
-              <span>{COMPONENT_LABELS[key]}</span>
-              <span className={styles.componentMeasure}>
-                {value ?? componentStatus(component)}
-                {value && component.confidence !== null ? (
-                  <small>{Math.round(component.confidence * 100)}% confidence</small>
-                ) : null}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className={styles.liquidityRow}>
+      <dl className={styles.detailGrid}>
         <div>
-          <span>Liquid wealth</span>
-          <strong>
-            {liquid.status === "AVAILABLE" && liquid.p10_usd !== null && liquid.p90_usd !== null
-              ? moneyRange(liquid.p10_usd, liquid.p90_usd)
+          <dt>Association</dt>
+          <dd>{result.location_relationship.label}</dd>
+        </div>
+        <div>
+          <dt>Available-set rank</dt>
+          <dd>{rankRange}</dd>
+        </div>
+        <div>
+          <dt>Observed floor</dt>
+          <dd>
+            {result.observed_net_worth_floor.status === "AVAILABLE" &&
+            result.observed_net_worth_floor.amount_usd !== null
+              ? compactMoney(result.observed_net_worth_floor.amount_usd)
               : "Unavailable"}
-          </strong>
+          </dd>
         </div>
         <div>
-          <span>
-            {result.estimated_net_worth.method === "DECLARED_TOTAL_SIMULATION"
-              ? "Declared-total coverage"
-              : "Balance-sheet coverage"}
-          </span>
-          <strong>{Math.round(result.confidence.coverage * 100)}%</strong>
+          <dt>Updated</dt>
+          <dd>{formatDate(result.last_financial_update)}</dd>
         </div>
-        <div>
-          <span>Liquidity score</span>
-          <strong>{result.liquidity_score ?? "Unavailable"}</strong>
-        </div>
-      </div>
-
-      <div className={styles.citations}>
-        <p>Public sources</p>
-        <ul>
-          {result.sources.map((source) => (
-            <li key={`${result.person.id}:${source.url}`}>
-              <a href={source.url} target="_blank" rel="noopener noreferrer">
-                {source.title}
-              </a>
-              <span>{source.publisher} · {formatDate(source.source_date)}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      </dl>
+      <p className={styles.sourceLine}>
+        Sources · {result.source_families.join(", ")}
+      </p>
+      <p className={styles.associationNote}>Public association, not live presence.</p>
     </div>
   );
 }
@@ -270,6 +192,39 @@ export default function NearbyPeople() {
   const [visibleCount, setVisibleCount] = useState(FIRST_PAGE_SIZE);
   const [retryAction, setRetryAction] = useState<RetryAction | null>(null);
   const [openResultId, setOpenResultId] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(DEV_AUTH);
+  const [signingIn, setSigningIn] = useState(false);
+  const [user, setUser] = useState<User | null>(() =>
+    DEV_AUTH ? (makeDevUser() as unknown as User) : null,
+  );
+  const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (DEV_AUTH) return;
+    const unsubscribe = observeAuth((nextUser) => {
+      setUser(nextUser);
+      setAuthReady(true);
+    });
+    void completeGoogleRedirect().catch(() => {
+      setAuthReady(true);
+      setState({
+        kind: "error",
+        title: "Sign-in failed",
+        detail: "Try again.",
+        retryable: false,
+      });
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(
+    () => () => {
+      requestSequence.current += 1;
+      requestController.current?.abort();
+    },
+    [],
+  );
 
   const data = state.kind === "success" ? state.data : null;
   const visibleResults = useMemo(
@@ -277,15 +232,70 @@ export default function NearbyPeople() {
     [data, visibleCount],
   );
 
-  async function runSearch(payload: NearbyClientRequest) {
+  async function signIn() {
+    if (signingIn) return;
+    if (!isFirebaseClientConfigured()) {
+      setState({
+        kind: "error",
+        title: "Sign-in unavailable",
+        detail: "Try again soon.",
+        retryable: false,
+      });
+      return;
+    }
+    setSigningIn(true);
+    try {
+      const nextUser = await signInWithGoogle();
+      if (nextUser) setUser(nextUser);
+    } catch {
+      setState({
+        kind: "error",
+        title: "Sign-in failed",
+        detail: "Try again.",
+        retryable: false,
+      });
+    } finally {
+      setSigningIn(false);
+    }
+  }
+
+  async function runSearch(payload: NearbyV4ClientRequest, retry: RetryAction) {
+    if (!user) {
+      setState({
+        kind: "error",
+        title: "Sign in required",
+        detail: "Sign in to search.",
+        retryable: false,
+      });
+      return;
+    }
+
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    const sequence = ++requestSequence.current;
     setInputError("");
     setVisibleCount(FIRST_PAGE_SIZE);
     setOpenResultId(null);
-    setRetryAction({ kind: "request", payload });
+    setRetryAction(retry);
     setState({ kind: "loading" });
+
     try {
-      setState({ kind: "success", data: await requestNearby(payload) });
+      const authorization = await getFirebaseBearer(user);
+      if (!authorization) {
+        throw Object.assign(new Error("Sign in to search."), {
+          nearby: humanError(401, "authentication_required"),
+        });
+      }
+      const response = await requestNearby(payload, authorization, controller.signal);
+      if (sequence === requestSequence.current) {
+        setState({ kind: "success", data: response });
+      }
     } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        return;
+      }
+      if (sequence !== requestSequence.current) return;
       const mapped = (
         error as { nearby?: { title: string; detail: string; retryable: boolean } }
       ).nearby;
@@ -305,13 +315,11 @@ export default function NearbyPeople() {
       setInputError("Enter a valid U.S. ZIP.");
       return;
     }
-    void runSearch({
+    const payload: NearbyV4ClientRequest = {
       query: { postal_code: normalized, country_code: "US" },
-      top_n: 100,
-      initial_radius_km: 20,
-      max_radius_km: 100,
-      auto_expand: true,
-    });
+      count: 100,
+    };
+    void runSearch(payload, { kind: "request", payload });
   }
 
   function requestLocation() {
@@ -326,21 +334,25 @@ export default function NearbyPeople() {
       });
       return;
     }
+
+    requestController.current?.abort();
+    const locationSequence = ++requestSequence.current;
     setState({ kind: "loading" });
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        void runSearch({
+        if (locationSequence !== requestSequence.current) return;
+        const payload: NearbyV4ClientRequest = {
           query: {
             latitude: coarsenCoordinate(coords.latitude),
             longitude: coarsenCoordinate(coords.longitude),
           },
-          top_n: 100,
-          initial_radius_km: 20,
-          max_radius_km: 100,
-          auto_expand: true,
-        });
+          count: 100,
+          consent_granted: true,
+        };
+        void runSearch(payload, { kind: "location" });
       },
       (error) => {
+        if (locationSequence !== requestSequence.current) return;
         const timedOut = error.code === error.TIMEOUT;
         setState({
           kind: "error",
@@ -354,10 +366,11 @@ export default function NearbyPeople() {
   }
 
   const heading = data ? resultHeading(data) : null;
-  const sourceWarning = data ? sourceNotice(data) : null;
-  const partial = data?.financial_coverage.status === "PARTIAL";
-  const partialSource = data?.result_set.reasons.some(
-    (reason) => reason === "SOURCE_INDEX_PARTIAL" || reason === "SOURCE_RESULT_TRUNCATED",
+  const partial = Boolean(
+    data &&
+      (!data.result_set.target_satisfied ||
+        data.financial_coverage.status !== "AVAILABLE" ||
+        !data.limitations.financial_coverage_nationwide),
   );
 
   return (
@@ -375,35 +388,69 @@ export default function NearbyPeople() {
       <div className={styles.main}>
         <section className={styles.hero} aria-labelledby="nearby-title">
           <h1 id="nearby-title">Net worth nearby</h1>
-          <p className={styles.lede}>Verified public financial disclosures.</p>
+          <p className={styles.lede}>Public financial signals by U.S. area.</p>
 
-          <form className={styles.searchForm} onSubmit={submitPostal} noValidate>
-            <div className={styles.searchRow}>
-              <label className="sr-only" htmlFor="nearby-postal">U.S. ZIP code</label>
-              <input
-                id="nearby-postal"
-                className={styles.input}
-                inputMode="numeric"
-                autoComplete="postal-code"
-                placeholder="U.S. ZIP"
-                value={postalCode}
-                aria-invalid={Boolean(inputError)}
-                aria-describedby={inputError ? "nearby-input-error nearby-privacy" : "nearby-privacy"}
-                onChange={(event) => {
-                  setPostalCode(event.target.value);
-                  if (inputError) setInputError("");
-                }}
-              />
-              <button className={styles.primaryButton} type="submit" disabled={state.kind === "loading"}>
-                {state.kind === "loading" ? "Finding…" : "Find people"}
+          {!authReady ? (
+            <p className={styles.authStatus} aria-live="polite">Checking sign-in…</p>
+          ) : !user ? (
+            <div className={styles.authGate}>
+              <button
+                className={styles.primaryButton}
+                type="button"
+                onClick={() => void signIn()}
+                disabled={signingIn}
+              >
+                {signingIn ? "Signing in…" : "Sign in"}
               </button>
-              <button className={styles.secondaryButton} type="button" onClick={requestLocation} disabled={state.kind === "loading"}>
-                Use location
-              </button>
+              <p>Sign in to search.</p>
             </div>
-            {inputError ? <p id="nearby-input-error" className={styles.inputError} role="alert">{inputError}</p> : null}
-            <p id="nearby-privacy" className={styles.privacyNote}>Approximate location. Public filings only.</p>
-          </form>
+          ) : (
+            <form className={styles.searchForm} onSubmit={submitPostal} noValidate>
+              <div className={styles.searchRow}>
+                <label className="sr-only" htmlFor="nearby-postal">U.S. ZIP code</label>
+                <input
+                  id="nearby-postal"
+                  className={styles.input}
+                  inputMode="numeric"
+                  autoComplete="postal-code"
+                  maxLength={10}
+                  placeholder="U.S. ZIP"
+                  value={postalCode}
+                  aria-invalid={Boolean(inputError)}
+                  aria-describedby={
+                    inputError ? "nearby-input-error nearby-privacy" : "nearby-privacy"
+                  }
+                  onChange={(event) => {
+                    setPostalCode(event.target.value);
+                    if (inputError) setInputError("");
+                  }}
+                />
+                <button
+                  className={styles.primaryButton}
+                  type="submit"
+                  disabled={state.kind === "loading"}
+                >
+                  {state.kind === "loading" ? "Finding…" : "Find people"}
+                </button>
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  onClick={requestLocation}
+                  disabled={state.kind === "loading"}
+                >
+                  Use location
+                </button>
+              </div>
+              {inputError ? (
+                <p id="nearby-input-error" className={styles.inputError} role="alert">
+                  {inputError}
+                </p>
+              ) : null}
+              <p id="nearby-privacy" className={styles.privacyNote}>
+                Approximate location. Public records only.
+              </p>
+            </form>
+          )}
         </section>
 
         {state.kind === "loading" ? (
@@ -418,21 +465,31 @@ export default function NearbyPeople() {
             <h2>{state.title}</h2>
             <p>{state.detail}</p>
             <div className={styles.stateActions}>
-              {state.retryable && retryAction ? (
+              {state.title.includes("Sign in") ? (
+                <button className={styles.primaryButton} type="button" onClick={() => void signIn()}>
+                  Sign in
+                </button>
+              ) : state.retryable && retryAction ? (
                 <button
                   className={styles.primaryButton}
                   type="button"
                   onClick={() => {
                     if (retryAction.kind === "location") requestLocation();
-                    else void runSearch(retryAction.payload);
+                    else void runSearch(retryAction.payload, retryAction);
                   }}
                 >
                   Retry
                 </button>
               ) : null}
-              <button className={styles.secondaryButton} type="button" onClick={() => document.getElementById("nearby-postal")?.focus()}>
-                Enter ZIP
-              </button>
+              {user ? (
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  onClick={() => document.getElementById("nearby-postal")?.focus()}
+                >
+                  Enter ZIP
+                </button>
+              ) : null}
             </div>
           </section>
         ) : null}
@@ -447,29 +504,9 @@ export default function NearbyPeople() {
               {data.results.length > 0 ? <span>{formatDate(data.snapshot.as_of)}</span> : null}
             </header>
 
-            {sourceWarning ? (
-              <div className={styles.notice} role="status">
-                <span>{sourceWarning}</span>
-                {retryAction ? (
-                  <button
-                    className={styles.textButton}
-                    type="button"
-                    onClick={() => {
-                      if (retryAction.kind === "location") requestLocation();
-                      else void runSearch(retryAction.payload);
-                    }}
-                  >
-                    Retry
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-
-            {partialSource ? (
-              <p className={styles.partialNote} role="status">Source roster is partial</p>
-            ) : partial && data.financial_coverage.insufficient_evidence_count > 0 ? (
+            {partial ? (
               <p className={styles.partialNote} role="status">
-                Partial coverage · {data.financial_coverage.insufficient_evidence_count} without enough public evidence
+                Partial public coverage · {data.financial_coverage.eligible_count} eligible from {data.financial_coverage.discovered_count} found
               </p>
             ) : null}
 
@@ -481,43 +518,48 @@ export default function NearbyPeople() {
                     <li className={styles.row} key={result.person.id}>
                       <article>
                         <div className={styles.rowSummary}>
-                          <span className={styles.rank} aria-label={`Rank ${result.rank}`}>{result.rank}</span>
+                          <span className={styles.rank} aria-label={`Rank ${result.rank}`}>
+                            {result.rank}
+                          </span>
                           <div className={styles.identity}>
                             <h3>{result.person.name}</h3>
-                            <p>{[result.person.headline, result.person.organization].filter(Boolean).join(" · ")}</p>
+                            <p>
+                              {[result.person.headline, result.person.organization]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
                           </div>
                           <div className={styles.worth}>
-                            <strong>{moneyRange(result.estimated_net_worth.p10_usd, result.estimated_net_worth.p90_usd)}</strong>
-                            <span>Estimated net worth</span>
+                            <strong>
+                              {moneyRange(
+                                result.estimated_net_worth.p10_usd,
+                                result.estimated_net_worth.p90_usd,
+                              )}
+                            </strong>
+                            <span>Net worth range</span>
                           </div>
                           <div className={styles.scorePair}>
                             <div>
                               <strong>{result.nws.value}</strong>
-                              <span>NWS · 100</span>
+                              <span>
+                                NWS · {result.nws.uncertainty.low}–{result.nws.uncertainty.high}
+                              </span>
                             </div>
                             <div>
                               <strong>{result.confidence.grade}</strong>
                               <span>Confidence · {Math.round(result.confidence.score * 100)}%</span>
                             </div>
                           </div>
-                          <div className={styles.relationship}>
-                            <p>{result.location_relationship.label}</p>
-                            <span>{result.location_relationship.approximate_distance_band}</span>
-                          </div>
-                          <div className={styles.update}>
-                            <span>Updated</span>
-                            <strong>
-                              {result.financial_update_precision === "YEAR"
-                                ? result.last_financial_update
-                                : formatDate(result.last_financial_update)}
-                            </strong>
-                          </div>
                           <button
                             className={styles.detailToggle}
                             type="button"
                             aria-expanded={isOpen}
                             aria-controls={`nearby-detail-${result.person.id}`}
-                            onClick={() => setOpenResultId((current) => current === result.person.id ? null : result.person.id)}
+                            onClick={() =>
+                              setOpenResultId((current) =>
+                                current === result.person.id ? null : result.person.id,
+                              )
+                            }
                           >
                             {isOpen ? "Close" : "Details"}
                           </button>
@@ -532,7 +574,11 @@ export default function NearbyPeople() {
 
             {data.results.length > visibleCount ? (
               <div className={styles.showMore}>
-                <button className={styles.secondaryButton} type="button" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}>
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+                >
                   Show more
                 </button>
               </div>

@@ -27,7 +27,7 @@ Required:
 
 Optional:
   --bucket                  Published snapshot bucket. Default: <project>-nws-published-snapshots
-  --schedule                UTC cron. Default: 17 */6 * * *
+  --schedule                UTC cron. Default: 47 */6 * * *
   --apply                   Create/update resources. Without it, validate and print the plan.
 EOF
 }
@@ -37,7 +37,7 @@ REGION=""
 IMAGE=""
 FORM6_SECRET_VERSION=""
 BUCKET=""
-SCHEDULE="17 */6 * * *"
+SCHEDULE="47 */6 * * *"
 APPLY="false"
 
 while [[ $# -gt 0 ]]; do
@@ -116,20 +116,23 @@ for tool in gcloud jq; do
   fi
 done
 
-JOB="nws-net-worth-refresh"
-SCHEDULER_JOB="nws-net-worth-refresh"
-COLLECTOR_SA_NAME="nws-net-worth-collector"
+JOB="nws-net-worth-refresh-v4"
+SCHEDULER_JOB="nws-net-worth-refresh-v4"
+COLLECTOR_SA_NAME="nws-net-worth-collector-v4"
 SCHEDULER_SA_NAME="nws-net-worth-scheduler"
 COLLECTOR_SA="${COLLECTOR_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 SCHEDULER_SA="${SCHEDULER_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 API_RUNTIME_SA="nws-nearby-runtime@${PROJECT}.iam.gserviceaccount.com"
 DEPLOYER_SA="nws-nearby-deployer@${PROJECT}.iam.gserviceaccount.com"
 FORM6_SECRET="nws-form6-api-key"
-SNAPSHOT_PREFIX="published/net-worth-v1.0.0"
+SNAPSHOT_PREFIX="published/net-worth-v1.0.0/registry-v4"
+# Readers keep access to both blue/green pointers so an immediate Cloud Run
+# rollback does not require an IAM mutation. Writers remain pointer-specific.
+SNAPSHOT_READ_PREFIX="published/net-worth-v1.0.0"
 SOURCE_REGISTRY_PATH="/app/config/sources.yaml"
 SOURCE_REGISTRY_MANIFEST_PATH="/app/config/source-registry-manifest.json"
-SOURCE_REGISTRY_SHA256="fb97b845e41998e2d1cdf6c832751605a6285940d885c632883979980511038a"
-SOURCE_REGISTRY_VERSION="3"
+SOURCE_REGISTRY_SHA256="bc87c8b8a3484e401871c43b2b79ee5b943877dca5c7a046f9da750bb525aaed"
+SOURCE_REGISTRY_VERSION="4"
 FORM6_BASE_URL="https://insider-holdings-api-fro3hygenq-uc.a.run.app"
 SOFT_DELETE_DURATION="30d"
 SOFT_DELETE_SECONDS="2592000"
@@ -264,18 +267,19 @@ RELEASE_RESOURCE_PREFIX="${SNAPSHOT_RESOURCE_PREFIX}releases/"
 ACTIVE_RESOURCE_NAME="${SNAPSHOT_RESOURCE_PREFIX}active.json"
 EXACT_RELEASE_CONDITION="resource.name.startsWith('$RELEASE_RESOURCE_PREFIX')"
 EXACT_ACTIVE_CONDITION="resource.name == '$ACTIVE_RESOURCE_NAME'"
-EXACT_READ_CONDITION="resource.name.startsWith('$SNAPSHOT_RESOURCE_PREFIX')"
+SNAPSHOT_READ_RESOURCE_PREFIX="projects/_/buckets/${BUCKET}/objects/${SNAPSHOT_READ_PREFIX}/"
+EXACT_READ_CONDITION="resource.name.startsWith('$SNAPSHOT_READ_RESOURCE_PREFIX')"
 
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --project="$PROJECT" \
   --member="serviceAccount:$COLLECTOR_SA" \
   --role="roles/storage.objectCreator" \
-  --condition="title=nws_snapshot_create,description=Create immutable releases only,expression=$EXACT_RELEASE_CONDITION" >/dev/null
+  --condition="title=nws_snapshot_create_v4,description=Create immutable registry-v4 releases only,expression=$EXACT_RELEASE_CONDITION" >/dev/null
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --project="$PROJECT" \
   --member="serviceAccount:$COLLECTOR_SA" \
   --role="roles/storage.objectAdmin" \
-  --condition="title=nws_active_pointer_admin,description=CAS access to the active snapshot pointer only,expression=resource.name == 'projects/_/buckets/${BUCKET}/objects/${SNAPSHOT_PREFIX}/active.json'" >/dev/null
+  --condition="title=nws_active_pointer_admin_v4,description=CAS access to the registry-v4 active pointer only,expression=resource.name == 'projects/_/buckets/${BUCKET}/objects/${SNAPSHOT_PREFIX}/active.json'" >/dev/null
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --project="$PROJECT" \
   --member="serviceAccount:$API_RUNTIME_SA" \

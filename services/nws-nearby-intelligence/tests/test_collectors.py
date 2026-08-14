@@ -8,7 +8,12 @@ import yaml
 
 from app.collectors.artifact_store import LocalContentAddressedStore
 from app.collectors.contracts import ArtifactManifest, CandidateProposalMode
-from app.collectors.fetcher import FetchError, FetchScope, _assert_public_resolution
+from app.collectors.fetcher import (
+    ControlledPublicFetcher,
+    FetchError,
+    FetchScope,
+    _assert_public_resolution,
+)
 from app.collectors.registry import (
     SourceBindingError,
     SourceOperation,
@@ -69,6 +74,78 @@ def test_source_registry_loads_machine_readable_catalog() -> None:
     )
     assert registry.get("sec_form_d").source_family == "sec.gov"
     assert "policy" in registry.get("sec_form_d").metadata
+    assert registry.get("official_company_pages").metadata["enabled"] == "false"
+    assert registry.get("official_company_pages").metadata["kill_switch"] == "true"
+
+
+def test_fetcher_requires_verified_enabled_purpose_bound_source() -> None:
+    registry = _verified_registry()
+    with pytest.raises(SourceBindingError, match="disabled"):
+        registry.authorize_source_use(
+            "official_company_pages",
+            operation=SourceOperation.ACQUIRE,
+            purpose="CANDIDATE_DISCOVERY",
+            product="NWS_NEARBY",
+        )
+
+    florida = registry.get("florida_form_6")
+    with pytest.raises(SourceBindingError, match="does not permit ACQUIRE"):
+        registry.authorize_source_use(
+            "florida_form_6",
+            operation=SourceOperation.ACQUIRE,
+            purpose="FINANCIAL_EVIDENCE",
+            product="NET_WORTH_V3",
+        )
+
+    # The fetcher re-authorizes at the network boundary; it never trusts a
+    # caller-constructed or query-only binding.
+    with pytest.raises(SourceBindingError, match="does not permit ACQUIRE"):
+        ControlledPublicFetcher(
+            registry,
+            source_id=florida.source_id,
+            purpose="FINANCIAL_EVIDENCE",
+            product="NET_WORTH_V3",
+        )
+
+    with pytest.raises(SourceBindingError, match="disabled"):
+        ControlledPublicFetcher(
+            registry,
+            source_id="cms_open_payments_ownership",
+            purpose="FINANCIAL_EVIDENCE",
+            product="NET_WORTH_EVIDENCE_V1",
+        )
+
+
+def test_live_candidate_projections_require_exact_reviewed_query_bindings() -> None:
+    registry = _verified_registry()
+    for source_id in (
+        "sec_section16_professional_associations",
+        "cms_nppes_public_professionals",
+    ):
+        binding = registry.authorize_source_use(
+            source_id,
+            operation=SourceOperation.QUERY,
+            purpose="CANDIDATE_DISCOVERY",
+            product="NWS_CANDIDATE_QUERY_V1",
+        )
+        assert binding.source_id == source_id
+        assert binding.registry_version == 4
+
+        with pytest.raises(SourceBindingError, match="does not permit this purpose"):
+            registry.authorize_source_use(
+                source_id,
+                operation=SourceOperation.QUERY,
+                purpose="FINANCIAL_EVIDENCE",
+                product="NWS_CANDIDATE_QUERY_V1",
+            )
+
+    with pytest.raises(SourceBindingError, match="disabled"):
+        registry.authorize_source_use(
+            "cms_open_payments_ownership",
+            operation=SourceOperation.ACQUIRE,
+            purpose="FINANCIAL_EVIDENCE",
+            product="NET_WORTH_EVIDENCE_V1",
+        )
 
 
 def test_verified_registry_binds_only_the_reviewed_florida_snapshot() -> None:
@@ -87,7 +164,7 @@ def test_verified_registry_binds_only_the_reviewed_florida_snapshot() -> None:
     )
 
     assert registry.verified is True
-    assert binding.registry_version == 3
+    assert binding.registry_version == 4
     assert binding.operation is SourceOperation.QUERY
     assert binding.snapshot_sha256 == snapshot["sha256"]
 
@@ -148,7 +225,7 @@ def test_florida_source_kill_switch_blocks_publisher_and_query(tmp_path: Path) -
         catalog,
         manifest_path,
         expected_registry_sha256=digest,
-        expected_registry_version=3,
+        expected_registry_version=4,
     )
     snapshot = payload["sources"]["florida_form_6"]["active_snapshot"]
 

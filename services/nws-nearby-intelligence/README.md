@@ -5,15 +5,16 @@ Standalone, privacy-safe US Net Worth Score and legacy public-professional disco
 the HusshOne `one` application so multiple Hushh products can integrate through their own
 server-side BFF.
 
-The primary API accepts a consented coordinate or US ZIP and returns only financially eligible
-public or opted-in profiles ranked by estimated net worth. NWS means **Net Worth Score** on this
-route. “Nearby” selects a public office, issuer, practice, institution, or opted-in association; it
-never changes a person's NWS and never means current physical presence or residence.
+The financial API accepts a US ZIP/ZIP+4 or a consented coordinate and returns only eligible public
+or opted-in profiles. NWS means **Net Worth Score**. “Nearby” is a public office, issuer, practice,
+institution, or opt-in association; it never means residence or current physical presence.
 
-`POST /v3/nearby-net-worth/discover` is the financial contract. The older
-`POST /v2/nearby-network/discover` remains available for compatibility and is explicitly a
-provisional professional-network response; its historical `global_nws` field must not be shown as
-Net Worth Score.
+`POST /v4/net-worth/discover` is the hardened per-project preview contract. It adds purpose-bound
+access, single-use coordinate-consent receipts, evidence filters, score/rank uncertainty, and
+explicit count shortfall. Use it only when `/ready` reports `v4_enabled: true`.
+`POST /v3/nearby-net-worth/discover` remains the stable financial contract. The older
+`POST /v2/nearby-network/discover` remains compatible and is a provisional professional-network
+response; its historical `global_nws` must not be shown as Net Worth Score.
 
 ## National release
 
@@ -39,8 +40,14 @@ personal net worth.
 
 ## Requests
 
-`POST /v3/nearby-net-worth/discover` requires `X-NWS-API-Key` from a trusted server-side caller.
+All discovery routes require `X-NWS-API-Key` from a trusted server-side caller. v4 uses a distinct
+key and allowlisted policy for each project; v2/v3 retain the legacy shared-key contract.
 `GET /health` and `GET /ready` are public; OpenAPI is at `/docs` and `/openapi.json`.
+
+New v4 integrations should start with the [v4 developer handoff](docs/NWS_V4_DEVELOPER_HANDOFF.md).
+Its request is intentionally stricter than the compact v3 examples below: result count is exactly
+100, 150, or 200, caller context is required, and coordinates need a single-use receipt from
+`POST /v4/location-consent/receipt`.
 
 US ZIP and ZIP+4 are accepted with or without `country_code: "US"`; ZIP+4 is searched by its
 five-digit Census ZCTA base:
@@ -100,9 +107,10 @@ privacy, test, and operational contract.
 ## Privacy and source boundary
 
 The public response omits raw/exact person coordinates, private residence, street or mailing
-address, phone/email, family graph, raw source documents, and filing schedules. The v3 response
-contains only the allowed derived estimate, NWS, component statuses/ranges, confidence, public
-jurisdiction relationship, freshness, and official citations. The v2 response remains
+address, phone/email, family graph, raw source documents, and filing schedules. v4 adds a hashed
+actor reference, uncertainty/shortfall, and source host families while retaining only the
+public-safe projection. v3 contains the allowed derived estimate, NWS, component statuses/ranges,
+confidence, public-jurisdiction relationship, freshness, and official citations. v2 remains
 `financial_context: NOT_PROFILED`.
 
 SEC selection uses a value-free professional ordering and excludes owner-only/legal-entity
@@ -114,8 +122,9 @@ BrokerCheck is excluded pending written terms clearance.
 ## Integration and CORS
 
 Wildcard non-cookie CORS prevents origin allowlist friction across projects, but a browser-exposed
-API key is public. Keep `NWS_API_KEY` in each consumer's BFF/server secret store. Never place it in
-`NEXT_PUBLIC_*`, client JavaScript, a mobile bundle, source control, logs, or DevTools.
+API key is public. Keep each project's NWS key in its BFF/server secret store. Never place it in
+`NEXT_PUBLIC_*`, client JavaScript, a mobile bundle, source control, logs, or DevTools. SSH keys,
+scraper sessions, and VM credentials are not API credentials.
 
 Consumer UI must branch on `coverage.status`, preserve public-association/freshness language, and
 never label results as people physically around the user. It must also distinguish no candidates,
@@ -137,6 +146,8 @@ Copy `.env.example` only for local development. Never commit a real API or datab
 
 ## Developer handoff
 
+- [NWS v4 developer handoff](docs/NWS_V4_DEVELOPER_HANDOFF.md) — per-project access, ZIP and
+  consented-coordinate requests, filters, source plane, operations, and limits.
 - [Net Worth Score handoff](docs/NET_WORTH_SCORE_HANDOFF.md) — canonical financial model, v3 API,
   source eligibility, edge cases, and rollout boundary.
 - [US national coverage handoff](docs/US_NATIONAL_COVERAGE_HANDOFF.md) — legacy v2 candidate-source,

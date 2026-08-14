@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -12,7 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated, Literal, Protocol
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,6 +23,25 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
 from app.collectors.registry import SourceOperation, SourceRegistry
+from app.consumer_access import (
+    AccessPolicyError,
+    AccessRequest,
+    AuditOutcome,
+    AuditRequestId,
+    AuthenticatedConsumer,
+    ConsumerAccessRegistry,
+    CoordinateConsent,
+    CoordinateConsentVerifier,
+    LocationMode,
+    build_access_audit_event,
+    build_denied_access_audit_event,
+    generate_audit_request_id,
+)
+from app.coordinate_consent import (
+    GcsConsentReceiptConsumer,
+    SignedCoordinateConsentVerifier,
+    issue_coordinate_consent_receipt,
+)
 from app.coverage import QueryResolution, resolve_coordinate_query, resolve_postal_query
 from app.financial_context import public_financial_context_policy
 from app.geospatial import haversine_km
@@ -49,6 +69,14 @@ from app.net_worth import (
     NetWorthSubject,
     ProfileBasis,
 )
+from app.net_worth_v4 import (
+    CoordinateConsentIssueRequest,
+    CoordinateConsentReceipt,
+    NetWorthV4ProjectionError,
+    NetWorthV4Request,
+    NetWorthV4Response,
+    project_nearby_net_worth_v4,
+)
 from app.nws import COMPONENT_LABELS, GLOBAL_NWS_WEIGHTS
 from app.nws_models import (
     NearbyCandidate,
@@ -63,7 +91,7 @@ from app.organization_discovery import (
     validate_anchor_coverage,
 )
 from app.postal import get_us_postal_index, normalize_us_postal_code
-from app.security import AccessContext, require_api_access
+from app.security import AccessContext, consumer_rate_limiter, require_api_access
 from app.settings import get_settings
 from app.snapshots.contracts import (
     PublishedNetWorthProfile,
@@ -75,6 +103,8 @@ from app.snapshots.repository import NetWorthSnapshotRepository, SnapshotUnavail
 from app.us_boundary import get_us_boundary_index
 
 logger = logging.getLogger("nws_nearby_intelligence")
+_V4_ROUTE = "/v4/net-worth/discover"
+_V4_CONSENT_ROUTE = "/v4/location-consent/receipt"
 
 
 class PayloadSizeLimitMiddleware:
@@ -132,11 +162,20 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
         settings = get_settings()
+        # Caller correlation headers are untrusted and may accidentally contain
+        # credentials or personal data.  Never echo or log them; every request
+        # gets a server-minted opaque identifier.
+        audit_request_id = generate_audit_request_id()
+        request_id = audit_request_id.value
+        request.state.request_id = request_id
+        request.state.audit_request_id = audit_request_id
+        started = time.perf_counter()
+        response: Response | None = None
         content_length = request.headers.get("content-length")
         if content_length:
             try:
                 if int(content_length) > settings.max_request_bytes:
-                    return Response(
+                    response = Response(
                         status_code=413,
                         content=json.dumps(
                             {
@@ -149,7 +188,7 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
                         media_type="application/json",
                     )
             except ValueError:
-                return Response(
+                response = Response(
                     status_code=400,
                     content=json.dumps(
                         {
@@ -162,20 +201,48 @@ class RequestSafetyMiddleware(BaseHTTPMiddleware):
                     media_type="application/json",
                 )
 
-        started = time.perf_counter()
-        response = await call_next(request)
+        if response is None:
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Keep unexpected failures opaque while preserving the same
+                # server-minted correlation ID and security headers as every
+                # other response. Route-level accountability logging occurs
+                # before a v4 error is re-raised.
+                logger.error(
+                    "request_failed request_id=%s method=%s path=%s",
+                    request_id,
+                    request.method,
+                    request.url.path,
+                )
+                response = JSONResponse(
+                    status_code=500,
+                    content={
+                        "detail": {
+                            "code": "INTERNAL_ERROR",
+                            "message": "The request could not be completed.",
+                        }
+                    },
+                )
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Request-ID"] = request.headers.get("X-Request-ID", "generated")[:128]
+        response.headers["X-Request-ID"] = request_id
         if hasattr(request.state, "rate_limit_remaining"):
-            response.headers["X-RateLimit-Limit"] = str(settings.rate_limit_per_minute)
+            response.headers["X-RateLimit-Limit"] = str(
+                getattr(
+                    request.state,
+                    "rate_limit_limit",
+                    settings.rate_limit_per_minute,
+                )
+            )
             response.headers["X-RateLimit-Remaining"] = str(request.state.rate_limit_remaining)
             response.headers["X-RateLimit-Reset"] = str(request.state.rate_limit_reset_seconds)
         logger.info(
-            "request_complete method=%s path=%s status=%s duration_ms=%s",
+            "request_complete request_id=%s method=%s path=%s status=%s duration_ms=%s",
+            request_id,
             request.method,
             request.url.path,
             response.status_code,
@@ -205,6 +272,10 @@ async def lifespan(_: FastAPI):
             # Keep diagnostics reachable while every financial query and readiness probe
             # remains fail closed until a reviewed snapshot can be loaded.
             logger.error("net_worth_snapshot_preload_failed code=%s", exc.code)
+    if settings.v4_enabled:
+        # A malformed, unpinned, expired-only, or otherwise invalid registry is a
+        # startup failure.  The v4 route never falls back to the shared legacy key.
+        _consumer_access_registry()
     logger.info(
         "service_started environment=%s data_mode=%s candidate_count=%s",
         settings.environment,
@@ -282,6 +353,9 @@ class ReadyResponse(HealthResponse):
     net_worth_snapshot_id: str | None
     net_worth_snapshot_sha256: str | None
     net_worth_snapshot_generated_at: str | None
+    v4_enabled: bool
+    consumer_registry_version: int | None
+    consumer_count: int
 
 
 class QueryLocationInput(StrictModel):
@@ -689,6 +763,31 @@ def _net_worth_source_registry() -> SourceRegistry:
     )
 
 
+@lru_cache(maxsize=1)
+def _consumer_access_registry() -> ConsumerAccessRegistry:
+    consumer_settings = get_settings()
+    if not consumer_settings.v4_enabled:
+        raise RuntimeError("v4 consumer access is disabled")
+    return ConsumerAccessRegistry.from_json_bytes(
+        consumer_settings.consumer_registry_json.encode("utf-8"),
+        expected_sha256=consumer_settings.consumer_registry_sha256,
+    )
+
+
+@lru_cache(maxsize=1)
+def _consent_receipt_consumer() -> GcsConsentReceiptConsumer:
+    bucket = get_settings().consent_receipt_bucket
+    if not bucket:
+        raise RuntimeError("coordinate consent receipt storage is not configured")
+    return GcsConsentReceiptConsumer(
+        store=SnapshotGcsStore(
+            bucket=bucket,
+            timeout_seconds=3,
+            maximum_object_bytes=1_024,
+        )
+    )
+
+
 def _validate_net_worth_snapshot_source(snapshot: PublishedNetWorthSnapshot) -> None:
     binding = _net_worth_source_registry().bind_reviewed_snapshot(
         snapshot.source.source_contract_id,
@@ -726,6 +825,12 @@ def _net_worth_snapshot_repository() -> NetWorthSnapshotRepository | None:
 @lru_cache(maxsize=1)
 def _sec_provider() -> NationalSecProfessionalAdapter:
     source_settings = get_settings()
+    _net_worth_source_registry().authorize_source_use(
+        "sec_section16_professional_associations",
+        operation=SourceOperation.QUERY,
+        purpose="CANDIDATE_DISCOVERY",
+        product="NWS_CANDIDATE_QUERY_V1",
+    )
     return NationalSecProfessionalAdapter(
         base_url=source_settings.sec_api_base_url,
         bearer_token=source_settings.sec_api_key,
@@ -737,6 +842,12 @@ def _sec_provider() -> NationalSecProfessionalAdapter:
 @lru_cache(maxsize=1)
 def _nppes_provider() -> NppesCandidateProvider:
     source_settings = get_settings()
+    _net_worth_source_registry().authorize_source_use(
+        "cms_nppes_public_professionals",
+        operation=SourceOperation.QUERY,
+        purpose="CANDIDATE_DISCOVERY",
+        product="NWS_CANDIDATE_QUERY_V1",
+    )
     from psycopg.conninfo import make_conninfo
 
     return NppesCandidateProvider(
@@ -2219,6 +2330,7 @@ def ready() -> ReadyResponse:
             snapshot_status = repository.status()
         except SnapshotUnavailableError as exc:
             raise _snapshot_unavailable(exc) from exc
+    consumer_registry = _consumer_access_registry() if settings.v4_enabled else None
     return ReadyResponse(
         status="ok",
         service="nws-nearby-intelligence",
@@ -2246,6 +2358,11 @@ def ready() -> ReadyResponse:
         net_worth_snapshot_generated_at=(
             snapshot_status.generated_at.isoformat() if snapshot_status is not None else None
         ),
+        v4_enabled=settings.v4_enabled,
+        consumer_registry_version=(
+            consumer_registry.registry_version if consumer_registry is not None else None
+        ),
+        consumer_count=(len(consumer_registry.consumers) if consumer_registry is not None else 0),
     )
 
 
@@ -2257,6 +2374,10 @@ def discover_net_worth(
     request: NearbyNetWorthRequest,
     _: Annotated[AccessContext, Depends(require_api_access)],
 ) -> NearbyNetWorthResponse:
+    return _discover_net_worth(request)
+
+
+def _discover_net_worth(request: NearbyNetWorthRequest) -> NearbyNetWorthResponse:
     """Rank only evidence-eligible net-worth estimates within a public location pool."""
 
     generated_at = datetime.now(UTC)
@@ -2477,6 +2598,381 @@ def discover_net_worth(
             "results": results,
         }
     )
+
+
+def _v4_radius_km(request: NetWorthV4Request) -> float:
+    miles = request.selection.maximum_radius_miles
+    return min(500.0, round((miles * 1.609344) if miles is not None else 500.0, 6))
+
+
+def _v4_legacy_request(request: NetWorthV4Request) -> NearbyNetWorthRequest:
+    maximum_radius_km = _v4_radius_km(request)
+    strict_radius = request.selection.geography_mode == "strict-radius"
+    initial_radius_km = maximum_radius_km if strict_radius else min(16.09344, maximum_radius_km)
+    return NearbyNetWorthRequest(
+        query=NetWorthQueryLocationInput.model_validate(request.query.model_dump(mode="python")),
+        # Evaluate the largest public result window before applying v4 evidence
+        # filters. The public response is still capped at the caller's requested
+        # 100/150/200 count.
+        top_n=200,
+        initial_radius_km=initial_radius_km,
+        max_radius_km=maximum_radius_km,
+        auto_expand=not strict_radius,
+    )
+
+
+def _access_policy_http_error(exc: AccessPolicyError) -> HTTPException:
+    headers = (
+        {"Retry-After": str(exc.retry_after_seconds)}
+        if exc.retry_after_seconds is not None
+        else None
+    )
+    return HTTPException(
+        status_code=exc.http_status,
+        detail=exc.http_detail(),
+        headers=headers,
+    )
+
+
+def _server_audit_request_id(request: Request) -> AuditRequestId:
+    value = getattr(request.state, "audit_request_id", None)
+    if isinstance(value, AuditRequestId):
+        return value
+    # Defensive fallback for direct ASGI/unit invocation outside the normal
+    # middleware chain. It still never trusts caller input.
+    return generate_audit_request_id()
+
+
+def _log_v4_audit(
+    *,
+    access,  # type: ignore[no-untyped-def]
+    request_id: AuditRequestId,
+    outcome: AuditOutcome,
+    status_code: int,
+    result_count: int | None,
+    upstream: NearbyNetWorthResponse | None = None,
+) -> None:
+    settings = get_settings()
+    snapshot_id: str | None = None
+    snapshot_sha256: str | None = None
+    used_florida_snapshot = bool(
+        upstream is not None
+        and any(
+            source.source == "FLORIDA_FORM_6_DECLARED_TOTALS"
+            and source.status in {"OK", "EMPTY"}
+            for source in upstream.source_status
+        )
+    )
+    if settings.form6_source_enabled and used_florida_snapshot:
+        repository = _net_worth_snapshot_repository()
+        if repository is not None:
+            try:
+                status = repository.status()
+            except SnapshotUnavailableError:
+                pass
+            else:
+                snapshot_id = status.snapshot_id
+                snapshot_sha256 = status.snapshot_sha256
+    event = build_access_audit_event(
+        access,
+        request_id=request_id,
+        outcome=outcome,
+        status_code=status_code,
+        result_count=result_count,
+        snapshot_id=snapshot_id,
+        snapshot_sha256=snapshot_sha256,
+        model_version=NET_WORTH_MODEL_VERSION,
+    )
+    logger.info("consumer_access_audit %s", json.dumps(event, sort_keys=True))
+
+
+@app.post(
+    _V4_CONSENT_ROUTE,
+    response_model=CoordinateConsentReceipt,
+)
+def issue_v4_coordinate_consent(
+    request: CoordinateConsentIssueRequest,
+    http_request: Request,
+    x_nws_api_key: Annotated[
+        str | None,
+        Header(alias="X-NWS-API-Key"),
+    ] = None,
+) -> CoordinateConsentReceipt:
+    """Mint a short-lived receipt after a trusted BFF records user consent."""
+
+    settings = get_settings()
+    if not settings.v4_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "V4_NOT_ENABLED", "message": "The v4 contract is not enabled."},
+        )
+    registry = _consumer_access_registry()
+    now = datetime.now(UTC)
+    audit_request_id = _server_audit_request_id(http_request)
+    principal: AuthenticatedConsumer | None = None
+    try:
+        principal = registry.authenticate(x_nws_api_key or "", now=now)
+        if principal.project_id != request.project_id:
+            raise AccessPolicyError(
+                code="PROJECT_CONTEXT_MISMATCH",
+                message="The caller project does not match the authenticated consumer.",
+                http_status=403,
+            )
+        policy = next(
+            (
+                candidate
+                for candidate in registry.consumers
+                if candidate.consumer_id == principal.consumer_id
+            ),
+            None,
+        )
+        grant = next(
+            (
+                candidate
+                for candidate in (policy.grants if policy is not None else ())
+                if candidate.route == _V4_ROUTE and candidate.purpose == request.purpose_id
+            ),
+            None,
+        )
+        if grant is None:
+            raise AccessPolicyError(
+                code="ROUTE_PURPOSE_NOT_ALLOWED",
+                message="This consumer is not approved for the requested operation.",
+                http_status=403,
+            )
+        try:
+            limit_result = consumer_rate_limiter.consume(
+                key=(
+                    "nws-coordinate-consent:v1:"
+                    + hashlib.sha256(principal.consumer_id.encode()).hexdigest()
+                ),
+                limit=grant.requests_per_minute,
+                window_seconds=60,
+            )
+        except Exception as exc:
+            raise AccessPolicyError(
+                code="RATE_LIMIT_BACKEND_UNAVAILABLE",
+                message="Consumer quota verification is temporarily unavailable.",
+                http_status=503,
+            ) from exc
+        if not limit_result.allowed:
+            raise AccessPolicyError(
+                code="RATE_LIMITED",
+                message="The consumer request limit has been reached.",
+                http_status=429,
+                retry_after_seconds=limit_result.reset_after_seconds,
+            )
+    except AccessPolicyError as exc:
+        denied_event = build_denied_access_audit_event(
+            registry=registry,
+            request_id=audit_request_id,
+            error=exc,
+            route=_V4_CONSENT_ROUTE,
+            principal=principal,
+            purpose=request.purpose_id,
+        )
+        logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
+        raise _access_policy_http_error(exc) from exc
+
+    http_request.state.rate_limit_remaining = limit_result.remaining
+    http_request.state.rate_limit_reset_seconds = limit_result.reset_after_seconds
+    http_request.state.rate_limit_limit = grant.requests_per_minute
+    expires_at = now + timedelta(seconds=min(900, grant.coordinate_consent_max_age_seconds))
+    receipt_id = issue_coordinate_consent_receipt(
+        api_key=x_nws_api_key or "",
+        consumer_id=principal.consumer_id,
+        project_id=principal.project_id,
+        route=_V4_ROUTE,
+        purpose=request.purpose_id,
+        audit_actor=request.audit_actor,
+        issued_at=now,
+        expires_at=expires_at,
+    )
+    actor_reference = (
+        "actor_"
+        + hashlib.sha256(f"{principal.project_id}\x00{request.audit_actor}".encode()).hexdigest()[
+            :16
+        ]
+    )
+    logger.info(
+        "coordinate_consent_issued %s",
+        json.dumps(
+            {
+                "actor_reference": actor_reference,
+                "consumer_id": principal.consumer_id,
+                "expires_at": expires_at.isoformat(),
+                "project_id": principal.project_id,
+                "purpose": request.purpose_id,
+                "request_id": audit_request_id.value,
+                "scope": request.scope,
+            },
+            sort_keys=True,
+        ),
+    )
+    return CoordinateConsentReceipt(
+        receipt_id=receipt_id,
+        purpose_id=request.purpose_id,
+        audit_actor=request.audit_actor,
+        scope=request.scope,
+        issued_at=now,
+        expires_at=expires_at,
+    )
+
+
+@app.post(
+    _V4_ROUTE,
+    response_model=NetWorthV4Response,
+)
+def discover_net_worth_v4(
+    request: NetWorthV4Request,
+    http_request: Request,
+    x_nws_api_key: Annotated[
+        str | None,
+        Header(alias="X-NWS-API-Key"),
+    ] = None,
+) -> NetWorthV4Response:
+    """Apply project policy and a stricter public-safe view over the v3 snapshot."""
+
+    settings = get_settings()
+    if not settings.v4_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "V4_NOT_ENABLED", "message": "The v4 contract is not enabled."},
+        )
+    registry = _consumer_access_registry()
+    now = datetime.now(UTC)
+    audit_request_id = _server_audit_request_id(http_request)
+    principal: AuthenticatedConsumer | None = None
+    location_mode = (
+        LocationMode.COORDINATES if request.query.uses_coordinates else LocationMode.POSTAL_CODE
+    )
+    audit_actor_reference = (
+        "actor_"
+        + hashlib.sha256(
+            (
+                request.caller_context.project_id + "\x00" + request.caller_context.audit_actor
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+    )
+    try:
+        principal = registry.authenticate(x_nws_api_key or "", now=now)
+        if principal.project_id != request.caller_context.project_id:
+            raise AccessPolicyError(
+                code="PROJECT_CONTEXT_MISMATCH",
+                message="The caller project does not match the authenticated consumer.",
+                http_status=403,
+            )
+        if (
+            request.caller_context.authorization_scope != "PUBLIC_SAFE"
+            or request.caller_context.requested_data_tier != "PUBLIC_SAFE"
+        ):
+            raise AccessPolicyError(
+                code="DATA_TIER_NOT_AVAILABLE",
+                message="This route serves only the public-safe data tier.",
+                http_status=403,
+            )
+
+        consent: CoordinateConsent | None = None
+        consent_verifier: CoordinateConsentVerifier | None = None
+        if request.coordinate_consent is not None:
+            if now > request.coordinate_consent.expires_at.astimezone(UTC):
+                raise AccessPolicyError(
+                    code="COORDINATE_CONSENT_EXPIRED",
+                    message="A fresh location-consent receipt is required.",
+                    http_status=403,
+                )
+            consent = CoordinateConsent(receipt_id=request.coordinate_consent.receipt_id)
+            consent_verifier = SignedCoordinateConsentVerifier(
+                api_key=x_nws_api_key or "",
+                expected_audit_actor=request.coordinate_consent.audit_actor,
+                expected_issued_at=request.coordinate_consent.issued_at,
+                expected_expires_at=request.coordinate_consent.expires_at,
+                receipt_consumer=_consent_receipt_consumer(),
+            )
+        access = registry.authorize(
+            principal,
+            AccessRequest(
+                route=_V4_ROUTE,
+                purpose=request.caller_context.purpose_id,
+                top_n=request.selection.count,
+                max_radius_km=_v4_radius_km(request),
+                location_mode=location_mode,
+                actor_reference=audit_actor_reference,
+                coordinate_consent=consent,
+            ),
+            rate_limiter=consumer_rate_limiter,
+            consent_verifier=consent_verifier,
+            now=now,
+        )
+    except AccessPolicyError as exc:
+        denied_event = build_denied_access_audit_event(
+            registry=registry,
+            request_id=audit_request_id,
+            error=exc,
+            route=_V4_ROUTE,
+            principal=principal,
+            purpose=request.caller_context.purpose_id,
+            location_mode=location_mode,
+        )
+        logger.warning("consumer_access_audit %s", json.dumps(denied_event, sort_keys=True))
+        raise _access_policy_http_error(exc) from exc
+
+    http_request.state.rate_limit_remaining = access.rate_limit_remaining
+    http_request.state.rate_limit_reset_seconds = access.rate_limit_reset_after_seconds
+    http_request.state.rate_limit_limit = access.requests_per_minute
+    upstream: NearbyNetWorthResponse | None = None
+    try:
+        upstream = _discover_net_worth(_v4_legacy_request(request))
+        projected = project_nearby_net_worth_v4(
+            upstream.model_dump(mode="json"),
+            request,
+        )
+    except NetWorthV4ProjectionError as exc:
+        _log_v4_audit(
+            access=access,
+            request_id=audit_request_id,
+            outcome=AuditOutcome.ERROR,
+            status_code=409,
+            result_count=None,
+            upstream=upstream,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "V4_REQUEST_CANNOT_BE_SATISFIED",
+                "message": "The active public snapshot cannot satisfy this request.",
+            },
+        ) from exc
+    except HTTPException as exc:
+        _log_v4_audit(
+            access=access,
+            request_id=audit_request_id,
+            outcome=AuditOutcome.ERROR,
+            status_code=exc.status_code,
+            result_count=None,
+            upstream=upstream,
+        )
+        raise
+    except Exception:
+        _log_v4_audit(
+            access=access,
+            request_id=audit_request_id,
+            outcome=AuditOutcome.ERROR,
+            status_code=500,
+            result_count=None,
+            upstream=upstream,
+        )
+        raise
+
+    _log_v4_audit(
+        access=access,
+        request_id=audit_request_id,
+        outcome=(AuditOutcome.SUCCESS if projected.results else AuditOutcome.EMPTY),
+        status_code=200,
+        result_count=len(projected.results),
+        upstream=upstream,
+    )
+    return projected
 
 
 @app.post("/v2/nearby-network/discover")

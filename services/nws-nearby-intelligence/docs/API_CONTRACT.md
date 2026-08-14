@@ -1,6 +1,181 @@
 # NWS Nearby API contracts
 
-## Canonical financial contract
+## Hardened v4 preview
+
+```text
+POST /v4/location-consent/receipt
+POST /v4/net-worth/discover
+X-NWS-API-Key: <per-project server-held secret>
+Content-Type: application/json
+```
+
+The contract version is `nws-nearby-net-worth-v4-preview-1`. It serves only `PUBLIC_SAFE` data and
+returns best-effort financially eligible profiles plus mandatory count/coverage accountability.
+It does not guarantee the requested count. The route is available only when `/ready` reports
+`v4_enabled: true`.
+
+### Access policy
+
+The API key authenticates one registry consumer and project. The integrity-pinned registry grant
+authorizes an exact route + purpose and caps count, radius, requests per minute, and coordinate-
+consent age. The body `project_id` and `purpose_id` must match that grant. Disabled, expired, or
+kill-switched consumers fail closed.
+
+v4 keys match `nws_live_*` or `nws_test_*` and contain 256 bits of random key material. The
+registry stores only `sha256(key)`; the raw key belongs only in the consumer BFF secret store.
+Wildcard non-cookie CORS does not authorize a browser or mobile client to hold it.
+
+### Discovery request
+
+```json
+{
+  "query": {"postal_code": "60637", "country_code": "US"},
+  "selection": {
+    "count": 100,
+    "financial_mode": "estimated",
+    "geography_mode": "nearest-count"
+  },
+  "filters": {
+    "minimum_confidence": "C",
+    "minimum_coverage": 0.55,
+    "asset_families": []
+  },
+  "caller_context": {
+    "project_id": "your-project",
+    "purpose_id": "NET_WORTH_LOOKUP",
+    "authorization_scope": "PUBLIC_SAFE",
+    "requested_data_tier": "PUBLIC_SAFE",
+    "audit_actor": "subject:hush_7f3c9a2e1d4b",
+    "model_version": "net-worth-v1.0.0"
+  }
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `query` | Exactly one five-digit US ZIP/ZIP+4 or latitude + longitude; optional `country_code` is two uppercase letters. |
+| `selection.count` | Exactly `100`, `150`, or `200`. |
+| `selection.financial_mode` | `estimated`, `verified`, or `observed-only`. |
+| `selection.geography_mode` | `nearest-count` or `strict-radius`. |
+| `selection.maximum_radius_miles` | Optional positive number up to `310.685596`; required for `strict-radius`. |
+| `filters.minimum_confidence` | `A`, `B`, or `C`; default `C`. D/E never publish. |
+| `filters.minimum_coverage` | `0.0` to `1.0`; default `0.55`. Mode minimums still apply. |
+| `filters.asset_families` | Unique subset of `cash_and_near_cash`, `public_securities`, `private_business_equity`, `real_estate_equity`, `other_assets`. |
+| `caller_context` | Registered project/purpose, public-safe scope/tier, opaque actor, and exact active model version. |
+| `coordinate_consent` | Required only for coordinates; use the complete receipt response described below. |
+
+All v4 models are strict and reject unknown fields, mixed location forms, non-finite numbers, and
+stringified scalars. Postal requests reject a consent receipt. Coordinate requests require one.
+
+`estimated` allows A/B and qualified C results; C needs at least 0.55 coverage and direct financial
+evidence. `verified` requires A/B, direct evidence, and at least 0.70 coverage. `observed-only`
+requires and ranks by an attributable observed floor. Asset filters require support in the
+selected mode.
+
+`nearest-count` is a best-effort upstream expansion capped at 500 km, not a guarantee. The planned
+ZIP -> county -> CBSA -> state -> national hierarchy is not yet materialized. `strict-radius`
+requires a radius-backed upstream result; an incompatible jurisdiction-wide result fails closed.
+
+### Coordinate consent
+
+After the product obtains and records affirmative location permission, its BFF calls:
+
+```json
+{
+  "project_id": "your-project",
+  "purpose_id": "NET_WORTH_LOOKUP",
+  "audit_actor": "subject:hush_7f3c9a2e1d4b",
+  "scope": "APPROXIMATE_LOCATION_QUERY",
+  "consent_granted": true
+}
+```
+
+The receipt endpoint accepts no location. It returns `receipt_id`, purpose, actor, scope,
+`issued_at`, and `expires_at`. Send that complete object as `coordinate_consent` with the coordinate
+discovery request. The signed receipt is bound to consumer, project, discovery route, purpose,
+actor, and time; it is consumed once through atomic Cloud Storage creation. Expired, replayed,
+altered, mismatched, or unverifiable receipts fail closed.
+
+NWS can verify the BFF's signed, single-use assertion; it cannot observe the device permission UI.
+The consumer remains responsible for showing the prompt and retaining its consent audit evidence.
+
+### Discovery response
+
+Every `200` v4 response contains the following field groups. Nested fields are abbreviated here;
+this block is a map, not a complete wire example:
+
+```json
+{
+  "contract_version": "nws-nearby-net-worth-v4-preview-1",
+  "coverage_contract": "BEST_EFFORT_VERIFIED_PUBLIC_FINANCIAL_PROFILES",
+  "data_tier": "PUBLIC_SAFE",
+  "request_policy": {},
+  "query": {},
+  "coverage": {},
+  "snapshot": {},
+  "financial_coverage": {},
+  "expansion": {},
+  "result_set": {
+    "requested_count": 100,
+    "upstream_result_count": 0,
+    "eligible_count": 0,
+    "returned_count": 0,
+    "shortfall_count": 100,
+    "target_satisfied": false,
+    "reasons": ["INSUFFICIENT_ELIGIBLE_PROFILES"]
+  },
+  "generated_at": "...",
+  "disclosures": [
+    "UPSTREAM_SNAPSHOT_DECLARED_INCOMPLETE",
+    "RANK_INTERVAL_AVAILABLE_SET_ONLY",
+    "PUBLIC_ASSOCIATION_NOT_PHYSICAL_PRESENCE",
+    "SOURCE_FAMILIES_REPLACE_RAW_CITATIONS",
+    "QUOTA_ENFORCEMENT_PROCESS_LOCAL",
+    "GEOGRAPHIC_HIERARCHY_NOT_YET_MATERIALIZED",
+    "FINANCIAL_COVERAGE_NOT_NATIONWIDE"
+  ],
+  "results": []
+}
+```
+
+`request_policy` echoes only approved policy and a hashed actor reference. `financial_coverage`
+separates discovered, evaluated, upstream-scored, and v4-eligible counts. `expansion` declares the
+requested/upstream strategies, the counts available for each reported step, effective radius, and
+any missing hierarchy/per-step data. `result_set.shortfall_count` is always
+`max(0, requested_count - returned_count)`.
+
+Each result includes person display fields, p10/median/p90 estimate, observed floor, fixed-scale NWS
+and uncertainty interval, confidence and component coverage, public-association notice, available-
+set rank interval, concise ranking reasons, and source host families derived from accepted upstream
+citations. v4 intentionally replaces raw citations with source families. It never emits the raw
+actor, credential, residence, exact person location/distance, personal contact, family graph,
+filing schedule, or raw source payload.
+
+Current positive financial coverage is a bounded, partial Florida Form 6 public-official roster.
+National SEC/NPPES candidate discovery does not itself produce NWS. A covered ZIP such as `98033`
+can therefore truthfully return zero results and a full shortfall.
+
+### v4 errors
+
+| HTTP | Representative condition |
+| --- | --- |
+| `401` | `INVALID_CREDENTIALS` or stale authentication context. |
+| `403` | Consumer disabled/expired, project/purpose/tier denied, grant limit exceeded, or invalid/expired consent. |
+| `409` | `V4_REQUEST_CANNOT_BE_SATISFIED` by the active public snapshot. |
+| `413` | Request body exceeds 32 KiB. |
+| `422` | Strict request model failed, including a coordinate request without a receipt. |
+| `429` | `RATE_LIMITED`; honor `Retry-After`. |
+| `503` | v4 disabled, consent verification unavailable, rate-limit backend unavailable, or required source unavailable. |
+
+`X-Request-ID` is safe to retain for support. v4 rate-limit headers reflect the consumer grant, but
+the current limiter is process-local. Production is deliberately capped at one warm instance so
+it cannot multiply by autoscaling, but a restart resets the window; it is not a durable distributed
+quota.
+
+See [NWS v4 developer handoff](NWS_V4_DEVELOPER_HANDOFF.md) for provisioning, source-plane,
+operations, and rollout details.
+
+## Stable v3 financial contract
 
 NWS means **Net Worth Score** on the current product route:
 

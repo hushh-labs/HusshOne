@@ -1,6 +1,6 @@
 [project]
 name = "nws-nearby-intelligence"
-version = "3.1.0"
+version = "4.0.0"
 description = "Privacy-safe nearby Net Worth Score and public-association discovery service."
 requires-python = ">=3.12"
 dependencies = [

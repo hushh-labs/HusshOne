@@ -1,6 +1,6 @@
 name: deploy-prod
 
-# Ships main to production (one.hushh.ai) on Cloud Run.
+# Ships main to production (intelligence.hushh.ai) on Cloud Run.
 #
 # Target — service `one` in project `hushone-app`, region `us-central1` — is the
 # service the domain actually maps to. Do NOT point this at `one-hushh-ai` /
@@ -70,15 +70,14 @@ jobs:
             --project "$PROJECT" \
             --quiet
 
-      # Verify the live domain actually serves the new revision. one.hushh.ai hits the
-      # service directly (no CDN), so a correct deploy is visible immediately.
+      # Verify the canonical live domain actually serves the new revision.
       - name: Verify /docs is live
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" https://one.hushh.ai/docs)
-          echo "GET https://one.hushh.ai/docs -> $code"
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://intelligence.hushh.ai/docs)
+          echo "GET https://intelligence.hushh.ai/docs -> $code"
           test "$code" = "200"
 
       - name: Production smoke / contract test
         env:
-          BASE_URL: https://one.hushh.ai
+          BASE_URL: https://intelligence.hushh.ai
         run: node scripts/prod-smoke.mjs

@@ -18,7 +18,7 @@ Expected:
 
 ```text
 O1 test suite passes (count varies as contracts expand)
-health endpoint returns service version 3.1.0
+health endpoint returns service version 4.0.0
 60637 routes nationally, the corrected Kirkland coordinate uses its reviewed release, and an
 explicit India coordinate returns an empty NOT_COVERED state
 ```

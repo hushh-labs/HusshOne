@@ -57,10 +57,7 @@ def test_production_form6_query_uses_snapshot_config_without_source_key(monkeypa
     assert settings.snapshot_max_age_hours == 12
     assert settings.snapshot_max_source_age_hours == 240
     assert settings.source_registry_path == "/app/config/test-sources.yaml"
-    assert (
-        settings.source_registry_manifest_path
-        == "/app/config/test-source-manifest.json"
-    )
+    assert settings.source_registry_manifest_path == "/app/config/test-source-manifest.json"
     assert settings.source_registry_sha256 == "a" * 64
     assert settings.source_registry_version == 9
     assert not hasattr(settings, "form6_api_key")
@@ -77,6 +74,32 @@ def test_production_form6_source_requires_snapshot_bucket(monkeypatch) -> None: 
 
     with pytest.raises(RuntimeError, match="NWS_SNAPSHOT_BUCKET"):
         Settings.from_environment()
+
+
+def test_v4_requires_pinned_consumer_policy_and_consent_store(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("NWS_ENVIRONMENT", "test")
+    monkeypatch.setenv("NWS_V4_ENABLED", "true")
+    monkeypatch.delenv("NWS_CONSUMER_REGISTRY_JSON", raising=False)
+    monkeypatch.delenv("NWS_CONSUMER_REGISTRY_SHA256", raising=False)
+    monkeypatch.delenv("NWS_CONSENT_RECEIPT_BUCKET", raising=False)
+
+    with pytest.raises(RuntimeError, match="NWS_CONSUMER_REGISTRY_JSON"):
+        Settings.from_environment()
+
+    monkeypatch.setenv("NWS_CONSUMER_REGISTRY_JSON", "{}")
+    with pytest.raises(RuntimeError, match="NWS_CONSUMER_REGISTRY_SHA256"):
+        Settings.from_environment()
+
+    monkeypatch.setenv("NWS_CONSUMER_REGISTRY_SHA256", "a" * 64)
+    with pytest.raises(RuntimeError, match="NWS_CONSENT_RECEIPT_BUCKET"):
+        Settings.from_environment()
+
+    monkeypatch.setenv("NWS_CONSENT_RECEIPT_BUCKET", "test-consent-receipts")
+    settings = Settings.from_environment()
+    assert settings.v4_enabled is True
+    assert settings.consumer_registry_json == "{}"
+    assert settings.consumer_registry_sha256 == "a" * 64
+    assert settings.consent_receipt_bucket == "test-consent-receipts"
 
 
 def test_security_headers_and_no_store_cache_policy_are_returned() -> None:
@@ -100,6 +123,9 @@ def test_oversized_payload_is_rejected_before_json_processing() -> None:
     )
     assert response.status_code == 413
     assert response.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
+    assert response.headers["X-Request-ID"].startswith("req-")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_headerless_oversized_payload_is_rejected_before_validation() -> None:
@@ -116,6 +142,9 @@ def test_headerless_oversized_payload_is_rejected_before_validation() -> None:
     assert response.status_code == 413
     assert response.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
     assert "xxx" not in response.text
+    assert response.headers["X-Request-ID"].startswith("req-")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_validation_errors_do_not_reflect_submitted_values() -> None:

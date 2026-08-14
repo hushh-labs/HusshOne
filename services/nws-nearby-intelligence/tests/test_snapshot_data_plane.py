@@ -45,7 +45,7 @@ from app.snapshots.repository import NetWorthSnapshotRepository, SnapshotUnavail
 
 _NOW = datetime(2026, 8, 14, 12, tzinfo=UTC)
 _BUILT = datetime(2026, 8, 11, 18, 46, 24, 202000, tzinfo=UTC)
-_REGISTRY_SHA = "fb97b845e41998e2d1cdf6c832751605a6285940d885c632883979980511038a"
+_REGISTRY_SHA = "bc87c8b8a3484e401871c43b2b79ee5b943877dca5c7a046f9da750bb525aaed"
 _SOURCE_SHA = "d1a20016a18cdc474e8dccc062d7cdccc6a4107a963cb96f8d0e9484702522ad"
 _SOURCE_ID = "florida-form6-2025-20260811T184624Z-partial"
 
@@ -74,7 +74,7 @@ def _snapshot() -> PublishedNetWorthSnapshot:
         generated_at=_NOW,
         source_registry_sha256=_REGISTRY_SHA,
         source_registry_id="nws-nearby-source-registry",
-        source_registry_version=3,
+        source_registry_version=4,
         model_version="net-worth-v1.0.0",
         scale_version="nws-fixed-us-log-v1.0.0",
         source=SnapshotSourceStatus(
@@ -283,7 +283,7 @@ def _verified_registry() -> SourceRegistry:
         service_root / "config/sources.yaml",
         service_root / "config/source-registry-manifest.json",
         expected_registry_sha256=_REGISTRY_SHA,
-        expected_registry_version=3,
+        expected_registry_version=4,
     )
 
 
@@ -370,7 +370,7 @@ def test_job_settings_require_registry_pins_and_secret() -> None:
         "NWS_SOURCE_REGISTRY_PATH": "/app/config/sources.yaml",
         "NWS_SOURCE_REGISTRY_MANIFEST_PATH": "/app/config/source-registry-manifest.json",
         "NWS_SOURCE_REGISTRY_SHA256": _REGISTRY_SHA,
-        "NWS_SOURCE_REGISTRY_VERSION": "3",
+        "NWS_SOURCE_REGISTRY_VERSION": "4",
         "NWS_FORM6_API_BASE_URL": "https://insider-holdings-api-fro3hygenq-uc.a.run.app",
     }
     with pytest.raises(RuntimeError, match="NWS_FORM6_API_KEY"):

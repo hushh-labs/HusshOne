@@ -3,11 +3,11 @@ import NearbyPeople from "./NearbyPeople";
 
 export const metadata: Metadata = {
   title: "Net worth nearby — hussh",
-  description: "Net Worth Scores from verified public financial disclosures.",
+  description: "Public financial signals by U.S. area.",
   alternates: { canonical: "/nearby" },
   openGraph: {
     title: "Net worth nearby — hussh",
-    description: "Verified public financial disclosures.",
+    description: "Public financial signals by U.S. area.",
     url: "/nearby",
     type: "website",
   },
