@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Mapping
 from dataclasses import asdict
 from decimal import Decimal
+from email.message import Message
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+import app.florida_net_worth as florida_net_worth
 from app.florida_net_worth import (
     FloridaForm6NetWorthAdapter,
     FloridaForm6Outcome,
     FloridaForm6SourceError,
     PublicJurisdiction,
     PublicJurisdictionKind,
+    UrllibJsonTransport,
 )
 
 
@@ -41,6 +46,38 @@ class FakeTransport:
         return self.payloads[len(self.calls) - 1]
 
 
+class SequenceTransport(FakeTransport):
+    def __init__(self, outcomes: list[Mapping[str, object] | Exception]) -> None:
+        super().__init__([])
+        self.outcomes = outcomes
+
+    def get_json(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> Mapping[str, object]:
+        self.calls.append((url, dict(headers), timeout_seconds))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class FakeTime:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 def record(
     *,
     filing_id: int,
@@ -56,8 +93,7 @@ def record(
         "formYear": 2025,
         "netWorth": amount,
         "filingUrl": (
-            "https://disclosure.floridaethics.gov/api/Report/RenderPdf/"
-            f"{filing_id}/False"
+            f"https://disclosure.floridaethics.gov/api/Report/RenderPdf/{filing_id}/False"
         ),
         # These hostile or overbroad fields must never cross the output allowlist.
         "homeAddress": "901 PRIVATE STREET",
@@ -84,6 +120,11 @@ def payload(
         "index": {
             "built": True,
             "builtAt": "2026-08-11T18:46:24.202Z",
+            "sourceSnapshotId": "florida-form6-2025-20260811T184624Z-partial",
+            "sourceArtifactSha256": (
+                "d1a20016a18cdc474e8dccc062d7cdccc6a4107a963cb96f8d0e9484702522ad"
+            ),
+            "sourceRetrievedAt": "2026-08-11T18:46:24.202Z",
             "formYear": 2025,
             "filingsSeen": 120,
             "withNetWorth": 118,
@@ -97,13 +138,11 @@ def payload(
             "publishing an exact sworn net worth."
         ),
         "disclosure": (
-            "Only the sworn net-worth figure is extracted from each filing. The asset, "
-            "liability and income schedules are never read or stored."
+            "Only a bounded page-one sworn net-worth field is extracted from each filing. "
+            "Raw filings and asset, liability, and income schedules are not retained or emitted."
         ),
         "attribution": {
-            "source": (
-                "Florida Commission on Ethics — Form 6, Art. II §8(j)(1), Fla. Const."
-            ),
+            "source": ("Florida Commission on Ethics — Form 6, Art. II §8(j)(1), Fla. Const."),
             "sourceUrl": "https://disclosure.floridaethics.gov/PublicSearch/Filings",
             "notice": "The Commission record is authoritative.",
         },
@@ -148,6 +187,10 @@ def test_maps_only_sworn_whole_declaration_and_public_provenance() -> None:
     assert declaration.public_offices == ("Miami-Dade County",)
     assert declaration.form_year == 2025
     assert declaration.provenance.declaration_scope == "SWORN_WHOLE_DECLARED_NET_WORTH"
+    assert batch.source_status.source_snapshot_id == ("florida-form6-2025-20260811T184624Z-partial")
+    assert batch.source_status.source_artifact_sha256 == (
+        "d1a20016a18cdc474e8dccc062d7cdccc6a4107a963cb96f8d0e9484702522ad"
+    )
 
     url, headers, timeout = transport.calls[0]
     query = parse_qs(urlsplit(url).query)
@@ -218,9 +261,9 @@ def test_empty_and_unavailable_are_distinct_source_outcomes() -> None:
     empty = adapter(FakeTransport([payload([], total=0, partial=True)])).discover(
         public_jurisdiction=office_jurisdiction()
     )
-    unavailable = adapter(
-        FakeTransport([], error=FloridaForm6SourceError("timed out"))
-    ).discover(public_jurisdiction=office_jurisdiction())
+    unavailable = adapter(FakeTransport([], error=FloridaForm6SourceError("timed out"))).discover(
+        public_jurisdiction=office_jurisdiction()
+    )
 
     assert empty.outcome is FloridaForm6Outcome.EMPTY
     assert empty.records == ()
@@ -308,6 +351,25 @@ def test_source_contract_and_endpoint_allowlist_fail_closed() -> None:
     assert result.outcome is FloridaForm6Outcome.UNAVAILABLE
     assert result.source_status.error_code == "SOURCE_CONTRACT_VIOLATION"
 
+    stale_privacy_claim = payload([record(filing_id=1007, amount=12)])
+    stale_privacy_claim["disclosure"] = (
+        "Only the sworn net-worth figure is extracted from each filing. The asset, "
+        "liability and income schedules are never read or stored."
+    )
+    stale_result = adapter(FakeTransport([stale_privacy_claim])).discover(
+        public_jurisdiction=office_jurisdiction()
+    )
+    assert stale_result.outcome is FloridaForm6Outcome.UNAVAILABLE
+    assert stale_result.source_status.error_code == "SOURCE_CONTRACT_VIOLATION"
+
+    unbound_artifact = payload([record(filing_id=1008, amount=12)])
+    del unbound_artifact["index"]["sourceArtifactSha256"]  # type: ignore[index]
+    unbound_result = adapter(FakeTransport([unbound_artifact])).discover(
+        public_jurisdiction=office_jurisdiction()
+    )
+    assert unbound_result.outcome is FloridaForm6Outcome.UNAVAILABLE
+    assert unbound_result.source_status.error_code == "SOURCE_CONTRACT_VIOLATION"
+
     with pytest.raises(ValueError, match="allowlisted HTTPS origin"):
         FloridaForm6NetWorthAdapter(
             base_url="http://insider-source.test",
@@ -320,3 +382,157 @@ def test_source_contract_and_endpoint_allowlist_fail_closed() -> None:
             bearer_token="secret",
             allowed_hosts=frozenset({"insider-source.test"}),
         )
+
+
+def test_adapter_paces_every_upstream_page_below_thirty_requests_per_minute() -> None:
+    fake_time = FakeTime()
+    transport = FakeTransport(
+        [
+            payload([record(filing_id=2001, amount=10)], total=2, partial=True),
+            payload([record(filing_id=2002, amount=20)], total=2, partial=True),
+        ]
+    )
+    source = FloridaForm6NetWorthAdapter(
+        base_url="https://insider-source.test",
+        bearer_token="server-held-secret",
+        transport=transport,
+        cache_ttl_seconds=0,
+        page_size=1,
+        max_pages=2,
+        allowed_hosts=frozenset({"insider-source.test"}),
+        minimum_request_interval_seconds=2.1,
+        clock=fake_time.monotonic,
+        sleep=fake_time.sleep,
+    )
+
+    batch = source.discover(public_jurisdiction=office_jurisdiction(), limit=2)
+
+    assert batch.outcome is FloridaForm6Outcome.OK
+    assert len(transport.calls) == 2
+    assert fake_time.sleeps == [pytest.approx(2.1)]
+
+
+def test_adapter_retries_429_once_after_bounded_retry_after() -> None:
+    fake_time = FakeTime()
+    transport = SequenceTransport(
+        [
+            FloridaForm6SourceError(
+                "rate limited",
+                code="SOURCE_RATE_LIMITED",
+                retry_after_seconds=3,
+            ),
+            payload([record(filing_id=2003, amount=30)]),
+        ]
+    )
+    source = FloridaForm6NetWorthAdapter(
+        base_url="https://insider-source.test",
+        bearer_token="server-held-secret",
+        transport=transport,
+        cache_ttl_seconds=0,
+        allowed_hosts=frozenset({"insider-source.test"}),
+        minimum_request_interval_seconds=2.1,
+        max_rate_limit_retries=2,
+        maximum_retry_after_seconds=30,
+        deadline_monotonic=60,
+        clock=fake_time.monotonic,
+        sleep=fake_time.sleep,
+    )
+
+    batch = source.discover(public_jurisdiction=office_jurisdiction())
+
+    assert batch.outcome is FloridaForm6Outcome.OK
+    assert len(transport.calls) == 2
+    assert fake_time.sleeps == [3]
+
+
+def test_adapter_rejects_unbounded_retry_after_without_sleeping() -> None:
+    fake_time = FakeTime()
+    transport = SequenceTransport(
+        [
+            FloridaForm6SourceError(
+                "rate limited",
+                code="SOURCE_RATE_LIMITED",
+                retry_after_seconds=31,
+            )
+        ]
+    )
+    source = FloridaForm6NetWorthAdapter(
+        base_url="https://insider-source.test",
+        bearer_token="server-held-secret",
+        transport=transport,
+        cache_ttl_seconds=0,
+        allowed_hosts=frozenset({"insider-source.test"}),
+        max_rate_limit_retries=2,
+        maximum_retry_after_seconds=30,
+        clock=fake_time.monotonic,
+        sleep=fake_time.sleep,
+    )
+
+    batch = source.discover(public_jurisdiction=office_jurisdiction())
+
+    assert batch.outcome is FloridaForm6Outcome.UNAVAILABLE
+    assert batch.source_status.error_code == "RATE_LIMIT_RETRY_AFTER_EXCEEDED"
+    assert len(transport.calls) == 1
+    assert fake_time.sleeps == []
+
+
+def test_adapter_does_not_sleep_or_retry_past_refresh_deadline() -> None:
+    fake_time = FakeTime()
+    transport = SequenceTransport(
+        [
+            FloridaForm6SourceError(
+                "rate limited",
+                code="SOURCE_RATE_LIMITED",
+                retry_after_seconds=5,
+            )
+        ]
+    )
+    source = FloridaForm6NetWorthAdapter(
+        base_url="https://insider-source.test",
+        bearer_token="server-held-secret",
+        transport=transport,
+        cache_ttl_seconds=0,
+        allowed_hosts=frozenset({"insider-source.test"}),
+        max_rate_limit_retries=2,
+        deadline_monotonic=4,
+        clock=fake_time.monotonic,
+        sleep=fake_time.sleep,
+    )
+
+    batch = source.discover(public_jurisdiction=office_jurisdiction())
+
+    assert batch.outcome is FloridaForm6Outcome.UNAVAILABLE
+    assert batch.source_status.error_code == "REFRESH_DEADLINE_EXCEEDED"
+    assert len(transport.calls) == 1
+    assert fake_time.sleeps == []
+
+
+def test_urllib_transport_preserves_429_retry_after(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    headers = Message()
+    headers["Retry-After"] = "7"
+
+    class RateLimitedOpener:
+        def open(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise HTTPError(
+                "https://insider-source.test/v1/net-worth",
+                429,
+                "Too Many Requests",
+                headers,
+                io.BytesIO(b"{}"),
+            )
+
+    monkeypatch.setattr(
+        florida_net_worth,
+        "build_opener",
+        lambda *_handlers: RateLimitedOpener(),
+    )
+
+    with pytest.raises(FloridaForm6SourceError) as exc_info:
+        UrllibJsonTransport().get_json(
+            "https://insider-source.test/v1/net-worth",
+            headers={"Authorization": "Bearer secret"},
+            timeout_seconds=4,
+        )
+
+    assert exc_info.value.code == "SOURCE_RATE_LIMITED"
+    assert exc_info.value.retry_after_seconds == 7

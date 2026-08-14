@@ -12,6 +12,7 @@ WORKDIR /app
 COPY pyproject.toml README.md requirements.runtime.lock ./
 RUN python -m pip install --require-hashes -r requirements.runtime.lock
 COPY app ./app
+COPY config ./config
 COPY data ./data
 RUN python -m pip install --no-deps .
 

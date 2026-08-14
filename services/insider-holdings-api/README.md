@@ -177,7 +177,9 @@ built ahead of time and served from memory, so a request never waits on the SEC.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | 8080 | |
-| `INSIDER_API_KEY` | *(empty)* | When set, all `/v1/*` routes require `Authorization: Bearer <key>` |
+| `INSIDER_API_KEY` | *(empty)* | Legacy fallback key for every `/v1/*` route |
+| `INSIDER_PROFESSIONAL_API_KEY` | `INSIDER_API_KEY` | Key for professional/filing routes |
+| `INSIDER_FORM6_API_KEY` | `INSIDER_API_KEY` | Separate key for `/v1/net-worth` |
 | `INSIDER_DATA_DIR` | `./data` | Where the index and centroids live |
 | `SEC_USER_AGENT` | — | Required for SEC requests |
 | `SEC_RPS` | 5 | Outbound rate to the SEC |

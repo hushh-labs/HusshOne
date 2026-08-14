@@ -14,6 +14,7 @@
 
 import http from "node:http";
 import path from "node:path";
+import { timingSafeEqual } from "node:crypto";
 
 import { config } from "./scripts/lib/config.mjs";
 import { ATTRIBUTION, stripOwnerAddress } from "./scripts/lib/disclosure.mjs";
@@ -33,10 +34,46 @@ const limiter = new RateLimiter(config.rateLimit);
 
 const counters = { requests: 0, searches: 0, profiles: 0, rateLimited: 0, unauthorized: 0 };
 
-if (config.requireApiKey && config.apiKey.length < 32) {
+if (
+  config.requireApiKey
+  && config.routeScopedApiKeysConfigured
+  && !config.routeScopedApiKeysComplete
+) {
   throw new Error(
-    "INSIDER_API_KEY must be at least 32 characters when INSIDER_REQUIRE_API_KEY is enabled",
+    "INSIDER_PROFESSIONAL_API_KEY and INSIDER_FORM6_API_KEY must both be set when "
+    + "route-scoped authentication is configured",
   );
+}
+
+if (
+  config.requireApiKey
+  && (config.professionalApiKey.length < 32 || config.form6ApiKey.length < 32)
+) {
+  throw new Error(
+    "INSIDER_API_KEY must be at least 32 characters, or both route-scoped "
+    + "INSIDER_PROFESSIONAL_API_KEY and INSIDER_FORM6_API_KEY must be set, when "
+    + "INSIDER_REQUIRE_API_KEY is enabled",
+  );
+}
+
+if (
+  config.requireApiKey
+  && config.routeScopedApiKeysComplete
+  && config.professionalApiKey === config.form6ApiKey
+) {
+  throw new Error(
+    "INSIDER_PROFESSIONAL_API_KEY and INSIDER_FORM6_API_KEY must contain distinct values",
+  );
+}
+
+function routeApiKey(pathname) {
+  return pathname === "/v1/net-worth" ? config.form6ApiKey : config.professionalApiKey;
+}
+
+function bearerMatches(value, expected) {
+  const supplied = Buffer.from(String(value || ""));
+  const wanted = Buffer.from(`Bearer ${expected}`);
+  return supplied.length === wanted.length && timingSafeEqual(supplied, wanted);
 }
 
 const PROFESSIONAL_RANKING = Object.freeze({
@@ -165,7 +202,7 @@ const server = http.createServer(async (request, response) => {
 
     // Everything below names a person or reads the index. Gate it.
     if (config.requireApiKey && url.pathname.startsWith("/v1/")) {
-      if (String(request.headers.authorization || "") !== `Bearer ${config.apiKey}`) {
+      if (!bearerMatches(request.headers.authorization, routeApiKey(url.pathname))) {
         counters.unauthorized += 1;
         return sendJson(response, 401, { ok: false, error: "Unauthorized" });
       }
@@ -449,7 +486,7 @@ const server = http.createServer(async (request, response) => {
      * is the person's whole declared position, as they swore to it.
      *
      * Ranked by net worth, searchable by name, county and office. No coordinates: the
-     * underlying PDFs print real property by street address, so only the figure is read.
+     * extractor emits only a bounded page-one net-worth field window.
      */
     if (request.method === "GET" && url.pathname === "/v1/net-worth") {
       const result = searchFlorida(
@@ -473,7 +510,7 @@ const server = http.createServer(async (request, response) => {
         coverage:
           "Florida officials required to file Form 6. This is the only US regime publishing an exact sworn net worth; every other source here reports a single holding in a single company.",
         disclosure:
-          "Only the sworn net-worth figure is extracted from each filing. The asset, liability and income schedules are never read or stored, because Form 6 identifies real property by street address. Location is the county and office the person is elected to serve — there are no coordinates.",
+          "Only a bounded page-one sworn net-worth field is extracted from each filing. Raw filings and asset, liability, and income schedules are not retained or emitted. Location is the county and public office the person serves — there are no private-address coordinates.",
         attribution: {
           source: "Florida Commission on Ethics — Form 6, Art. II §8(j)(1), Fla. Const.",
           sourceUrl: "https://disclosure.floridaethics.gov/PublicSearch/Filings",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -9,12 +11,55 @@ import urllib.robotparser
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Lock
+from typing import Protocol
 
 from app.collectors.contracts import ArtifactManifest, SourceContract
 
 
 class FetchError(RuntimeError):
     pass
+
+
+class DnsResolver(Protocol):
+    def __call__(self, host: str, port: int) -> set[str]: ...
+
+
+def _system_resolver(host: str, port: int) -> set[str]:
+    try:
+        return {
+            result[4][0]
+            for result in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        }
+    except socket.gaierror as exc:
+        raise FetchError("source host could not be resolved") from exc
+
+
+def _is_public_ip(value: str) -> bool:
+    address = ipaddress.ip_address(value)
+    return bool(address.is_global and not address.is_multicast)
+
+
+def _assert_public_resolution(uri: str, resolver: DnsResolver) -> None:
+    parsed = urllib.parse.urlsplit(uri)
+    host = parsed.hostname
+    if parsed.scheme != "https" or not host:
+        raise FetchError("collector acquisition requires HTTPS")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        addresses = resolver(host, parsed.port or 443)
+        if not addresses or any(not _is_public_ip(address) for address in addresses):
+            raise FetchError("source host resolved to a non-public address")
+    else:
+        if not _is_public_ip(str(literal)):
+            raise FetchError("source host is a non-public address")
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Fail closed; a reviewed source job must list the canonical final URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise FetchError("source redirects require an explicitly reviewed final URL")
 
 
 @dataclass(frozen=True)
@@ -64,6 +109,13 @@ class FetchScope:
         allowed_hosts = {item.casefold() for item in self.allowed_hosts}
         if host not in allowed_hosts:
             return False
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if not _is_public_ip(str(literal)):
+                return False
         path = parsed.path or "/"
         return any(self._path_is_approved(path, prefix) for prefix in self.allowed_path_prefixes)
 
@@ -115,9 +167,17 @@ class ControlledPublicFetcher:
     anti-bot evasion. Source-specific production collectors should preserve those invariants.
     """
 
-    def __init__(self, contract: SourceContract, *, timeout_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        contract: SourceContract,
+        *,
+        timeout_seconds: int = 30,
+        resolver: DnsResolver = _system_resolver,
+    ) -> None:
         self.contract = contract
         self.timeout_seconds = timeout_seconds
+        self._resolver = resolver
+        self._opener = urllib.request.build_opener(_RejectRedirects())
         self.limiter = TokenBucket(contract.requests_per_second, burst=1.0)
         self._robots: dict[str, urllib.robotparser.RobotFileParser] = {}
 
@@ -128,20 +188,32 @@ class ControlledPublicFetcher:
         origin = f"{parsed.scheme}://{parsed.netloc}"
         if origin not in self._robots:
             parser = urllib.robotparser.RobotFileParser()
-            parser.set_url(f"{origin}/robots.txt")
+            robots_uri = f"{origin}/robots.txt"
+            parser.set_url(robots_uri)
             try:
-                parser.read()
-            except Exception:
+                _assert_public_resolution(robots_uri, self._resolver)
+                request = urllib.request.Request(
+                    robots_uri,
+                    headers={
+                        "User-Agent": self.contract.user_agent,
+                        "Accept-Encoding": "identity",
+                    },
+                )
+                with self._opener.open(request, timeout=self.timeout_seconds) as response:
+                    content = response.read(65_537)
+                if len(content) > 65_536:
+                    return False
+                parser.parse(content.decode("utf-8", errors="replace").splitlines())
+            except (FetchError, OSError, TimeoutError, urllib.error.URLError):
                 # Fail closed for public-page crawlers; bulk-file contracts can disable this check.
                 return False
             self._robots[origin] = parser
         return self._robots[origin].can_fetch(self.contract.user_agent, uri)
 
-    def fetch(self, uri: str, *, scope: FetchScope | None = None) -> tuple[bytes, ArtifactManifest]:
-        if not uri.startswith(("https://", "http://")):
-            raise FetchError("only HTTP(S) acquisition is supported")
-        if scope is not None and not scope.permits_uri(uri):
+    def fetch(self, uri: str, *, scope: FetchScope) -> tuple[bytes, ArtifactManifest]:
+        if not scope.permits_uri(uri):
             raise FetchError("requested URI is outside the approved organization anchor scope")
+        _assert_public_resolution(uri, self._resolver)
         if not self._robots_allowed(uri):
             raise FetchError("robots policy does not permit this fetch")
         self.limiter.acquire()
@@ -153,23 +225,22 @@ class ControlledPublicFetcher:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with self._opener.open(request, timeout=self.timeout_seconds) as response:
                 final_uri = response.geturl()
-                if scope is not None and not scope.permits_uri(final_uri):
+                if not scope.permits_uri(final_uri):
                     raise FetchError("redirect left the approved organization anchor scope")
                 content_type = response.headers.get("Content-Type")
-                if scope is not None and not scope.permits_content_type(content_type):
+                if not scope.permits_content_type(content_type):
                     raise FetchError("response content type is outside the approved scope")
                 declared_length = response.headers.get("Content-Length")
-                if scope is not None and declared_length:
+                if declared_length:
                     try:
                         if int(declared_length) > scope.maximum_content_bytes:
                             raise FetchError("response exceeds the approved content-size limit")
                     except ValueError:
                         raise FetchError("response has an invalid Content-Length header") from None
-                read_limit = (scope.maximum_content_bytes + 1) if scope is not None else None
-                content = response.read(read_limit)
-                if scope is not None and len(content) > scope.maximum_content_bytes:
+                content = response.read(scope.maximum_content_bytes + 1)
+                if len(content) > scope.maximum_content_bytes:
                     raise FetchError("response exceeds the approved content-size limit")
                 digest = hashlib.sha256(content).hexdigest()
                 manifest = ArtifactManifest(

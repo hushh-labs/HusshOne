@@ -2,14 +2,29 @@
  * Serving layer for the Florida Form 6 net-worth roster.
  *
  * Name, county and office search. No geography beyond the county a person is elected to
- * serve, and no coordinates: the underlying PDFs carry home addresses, and this service
- * reads only the net-worth figure out of them.
+ * serve, and no coordinates: the upstream builder emits only a bounded page-one
+ * net-worth field and does not retain or emit raw filings or filing schedules.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 let store = null;
+const PRIVACY_NOTE =
+  "Only a bounded net-worth field window from page one is emitted by the extractor. "
+  + "Raw filing content and asset, liability, and income schedules are not retained or emitted.";
+
+function reviewedSnapshotId(meta) {
+  if (typeof meta.sourceSnapshotId === "string" && meta.sourceSnapshotId.trim()) {
+    return meta.sourceSnapshotId.trim();
+  }
+  const builtAt = new Date(meta.builtAt);
+  const formYear = Number(meta.formYear);
+  if (!Number.isInteger(formYear) || Number.isNaN(builtAt.getTime())) return null;
+  const compactBuiltAt = builtAt.toISOString().replace(/[-:.]/g, "").replace(/\d{3}Z$/, "Z");
+  return `florida-form6-${formYear}-${compactBuiltAt}-${meta.partial ? "partial" : "complete"}`;
+}
 
 export function loadFlorida(dataDir) {
   if (store) return store;
@@ -18,8 +33,13 @@ export function loadFlorida(dataDir) {
     store = { people: [], meta: { built: false } };
     return store;
   }
-  store = JSON.parse(fs.readFileSync(file, "utf8"));
-  store.meta = { ...store.meta, built: true };
+  const artifact = fs.readFileSync(file);
+  store = JSON.parse(artifact.toString("utf8"));
+  store.meta = {
+    ...store.meta,
+    built: true,
+    sourceArtifactSha256: createHash("sha256").update(artifact).digest("hex"),
+  };
   return store;
 }
 
@@ -33,7 +53,13 @@ export function setFlorida(next) {
 
 export function floridaMeta(dataDir) {
   const loaded = loadFlorida(dataDir);
-  return { ...loaded.meta, people: loaded.people.length };
+  return {
+    ...loaded.meta,
+    sourceSnapshotId: reviewedSnapshotId(loaded.meta),
+    sourceRetrievedAt: loaded.meta.sourceRetrievedAt || loaded.meta.builtAt || null,
+    note: PRIVACY_NOTE,
+    people: loaded.people.length,
+  };
 }
 
 const normalise = (value) => String(value || "").trim().toLowerCase();
