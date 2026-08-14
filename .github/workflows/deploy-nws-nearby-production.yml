@@ -40,7 +40,9 @@ env:
   SECRET_NAME: nws-nearby-api-key
   V4_API_KEY_SECRET_NAME: nws-husshone-v4-api-key
   CONSUMER_REGISTRY_SECRET_NAME: nws-consumer-access-registry
-  CONSUMER_REGISTRY_SHA256: df2f5ec0e458db9b92ac937b3b98e9d0b2f335dabffdeb2f19a3b01e272660c0
+  CONSUMER_REGISTRY_SHA256: 79852c396e58795d8a20677f9cc9ea69676b2b458b84d113cb599498fd2f832e
+  RESEARCH_UAT_KEY_SECRET_NAME: nws-hushh-research-v4-api-key-uat
+  RESEARCH_PROD_KEY_SECRET_NAME: nws-hushh-research-v4-api-key-prod
   PROFESSIONAL_SECRET_NAME: insider-professional-api-key
   FORM6_SECRET_NAME: nws-form6-api-key
   NPPES_DB_SECRET_NAME: nws-nearby-nppes-db-password
@@ -48,7 +50,9 @@ env:
   # Advance deliberately after adding a Secret Manager version; do not use latest.
   NWS_API_KEY_SECRET_VERSION: '1'
   V4_API_KEY_SECRET_VERSION: '2'
-  CONSUMER_REGISTRY_SECRET_VERSION: '2'
+  CONSUMER_REGISTRY_SECRET_VERSION: '3'
+  RESEARCH_UAT_KEY_SECRET_VERSION: '1'
+  RESEARCH_PROD_KEY_SECRET_VERSION: '1'
   PROFESSIONAL_API_KEY_SECRET_VERSION: '2'
   FORM6_API_KEY_SECRET_VERSION: '1'
   NPPES_DB_PASSWORD_SECRET_VERSION: '1'
@@ -382,6 +386,80 @@ jobs:
           test "$REPLAY_STATUS" = 403
           jq -e '.detail.code == "INVALID_COORDINATE_CONSENT"' "$REPLAY_BODY" >/dev/null
           rm -f "$REPLAY_BODY"
+      - name: Verify every registered consumer is bound to its own project
+        run: |
+          set -euo pipefail
+          URL='${{ steps.rollout.outputs.candidate_url }}'
+
+          # A registry can be well-formed and still wrong: two consumers whose
+          # keys authenticate but whose project bindings are crossed would pass
+          # every check above. These probe the binding itself — the credential
+          # each lane will actually present, against the project it will claim.
+          # Emits "<http_status> <detail_code>" on one line. Both values must
+          # come back together: a caller running this in a command substitution
+          # gets a subshell, so anything the function merely assigned would be
+          # discarded before the assertion could read it.
+          discover_probe() {
+            local key="$1"
+            local claimed_project="$2"
+            local out
+            out="$(mktemp)"
+            local code
+            code="$(curl --silent --output "$out" --write-out '%{http_code}' \
+              -H 'Content-Type: application/json' -H "X-NWS-API-Key: $key" \
+              -d "$(jq -cn --arg p "$claimed_project" '{
+                     query:{postal_code:"33130",country_code:"US"},
+                     selection:{count:100,financial_mode:"estimated",geography_mode:"nearest-count"},
+                     filters:{minimum_confidence:"C",minimum_coverage:0.55,asset_families:[]},
+                     caller_context:{project_id:$p,purpose_id:"NET_WORTH_LOOKUP",
+                       authorization_scope:"PUBLIC_SAFE",requested_data_tier:"PUBLIC_SAFE",
+                       audit_actor:"service-account:nws-production-smoke",
+                       model_version:"net-worth-v1.0.0"}}')" \
+              "$URL/v4/net-worth/discover")"
+            local detail
+            detail="$(jq -r '.detail.code // "-"' "$out" 2>/dev/null || printf '%s' '-')"
+            rm -f "$out"
+            printf '%s %s' "$code" "$detail"
+          }
+
+          RESEARCH_UAT_KEY="$(gcloud secrets versions access "$RESEARCH_UAT_KEY_SECRET_VERSION" \
+            --secret="$RESEARCH_UAT_KEY_SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$RESEARCH_UAT_KEY"
+          RESEARCH_PROD_KEY="$(gcloud secrets versions access "$RESEARCH_PROD_KEY_SECRET_VERSION" \
+            --secret="$RESEARCH_PROD_KEY_SECRET_NAME" --project="$PROJECT_ID")"
+          echo "::add-mask::$RESEARCH_PROD_KEY"
+
+          assert_probe() {
+            local label="$1"
+            local expected="$2"
+            local actual="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "$label: expected '$expected', got '$actual'" >&2
+              exit 1
+            fi
+            echo "$label -> $actual"
+          }
+
+          # Each lane key against its own registered project.
+          assert_probe "research-uat  key + hushh-pda-uat " "200 -" \
+            "$(discover_probe "$RESEARCH_UAT_KEY" 'hushh-pda-uat')"
+          assert_probe "research-prod key + hushh-pda     " "200 -" \
+            "$(discover_probe "$RESEARCH_PROD_KEY" 'hushh-pda')"
+
+          # Crossed bindings must be refused, in both directions. A UAT
+          # credential presented in a production caller context is the failure
+          # this separation exists to make impossible.
+          assert_probe "research-uat  key + hushh-pda     " "403 PROJECT_CONTEXT_MISMATCH" \
+            "$(discover_probe "$RESEARCH_UAT_KEY" 'hushh-pda')"
+          assert_probe "research-prod key + hushh-pda-uat " "403 PROJECT_CONTEXT_MISMATCH" \
+            "$(discover_probe "$RESEARCH_PROD_KEY" 'hushh-pda-uat')"
+
+          # A well-formed but unregistered credential, minted here so no
+          # key-shaped literal is ever committed to this file.
+          UNREGISTERED_KEY="$(python3 -c 'import secrets; print("nws_live_" + secrets.token_urlsafe(32))')"
+          echo "::add-mask::$UNREGISTERED_KEY"
+          assert_probe "unregistered  key                 " "401 INVALID_CREDENTIALS" \
+            "$(discover_probe "$UNREGISTERED_KEY" 'hushh-pda-uat')"
       - name: Promote candidate and retain automatic rollback
         run: |
           set -euo pipefail
