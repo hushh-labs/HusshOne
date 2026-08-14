@@ -6,6 +6,7 @@ export const NWS_V4_COVERAGE_CONTRACT =
 export const NWS_V4_PROJECT_ID = "hushone-app" as const;
 export const NWS_V4_PURPOSE_ID = "NET_WORTH_LOOKUP" as const;
 export const NWS_V4_MODEL_VERSION = "net-worth-v1.0.0" as const;
+const MAX_RADIUS_MILES_WIRE = 310.69;
 
 const BoundedTextSchema = z.string().trim().min(1).max(1_000);
 const SafeIntegerSchema = z
@@ -182,7 +183,7 @@ const FinancialCoverageSchema = z.strictObject({
 const ExpansionStepSchema = z.strictObject({
   order: z.number().int().positive().max(64),
   stage: z.enum(["LEGACY_RADIUS", "PUBLIC_JURISDICTION"]),
-  radius_miles: z.number().finite().nonnegative().max(310.685596).nullable(),
+  radius_miles: z.number().finite().nonnegative().max(MAX_RADIUS_MILES_WIRE).nullable(),
   count_status: z.enum(["AVAILABLE", "UPSTREAM_NOT_REPORTED"]),
   discovered_count: z.number().int().nonnegative().max(1_000_000).nullable(),
   evaluated_count: z.number().int().nonnegative().max(1_000_000).nullable(),
@@ -195,7 +196,7 @@ const ExpansionSchema = z.strictObject({
   upstream_strategy: z.enum(["LEGACY_RADIUS", "PUBLIC_JURISDICTION", "NOT_SEARCHED"]),
   status: z.enum(["PARTIAL", "NOT_SEARCHED"]),
   steps: z.array(ExpansionStepSchema).max(64),
-  effective_radius_miles: z.number().finite().nonnegative().max(310.685596).nullable(),
+  effective_radius_miles: z.number().finite().nonnegative().max(MAX_RADIUS_MILES_WIRE).nullable(),
   maximum_radius_reached: z.boolean(),
   disclosure_code: z.enum([
     "UPSTREAM_PER_STEP_COUNTS_UNAVAILABLE",

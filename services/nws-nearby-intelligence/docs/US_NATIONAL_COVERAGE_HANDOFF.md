@@ -284,7 +284,7 @@ See [API contract](API_CONTRACT.md) for the exact request, response, filtering, 
 | Cloud SQL connection | `hushh-tech-prod:us-central1:hushh-directories-db` |
 | NPPES database / role | `healthcare` / `nws_nearby_ro` |
 | Main API secret | `nws-nearby-api-key` |
-| SEC source secret | `insider-api-key` |
+| SEC source secret | `insider-professional-api-key` |
 | NPPES database secret | `nws-nearby-nppes-db-password` |
 
 These are secret resource names only; values do not belong in documentation, source, command
@@ -357,9 +357,12 @@ cd services/nws-nearby-intelligence
 python3.13 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q
-.venv/bin/python -m ruff check app tests
 .venv/bin/python -m compileall -q app tests
 ```
+
+Run the exact production path-scoped Ruff command from
+[NWS Nearby CI](../../../.github/workflows/nws-nearby-ci.yml). A repository-wide lint over the
+separate experimental modules is not the protected release gate.
 
 National coverage tests must verify at least:
 

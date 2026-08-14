@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 from dataclasses import replace
@@ -12,7 +13,8 @@ import app.main as main
 from app.consumer_access import ConsumerAccessRegistry, derive_api_key_sha256
 from app.coordinate_consent import issue_coordinate_consent_receipt
 from app.main import app
-from app.net_worth import NET_WORTH_MODEL_VERSION
+from app.net_worth import NET_WORTH_MODEL_VERSION, NWS_SCALE_VERSION, net_worth_to_nws
+from app.net_worth_v4 import NetWorthV4Response
 from app.security import rate_limiter
 
 API_KEY = "nws_test_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"  # gitleaks:allow
@@ -88,6 +90,130 @@ def _payload(*, project_id: str = "hushone-app") -> dict[str, object]:
     }
 
 
+def _successful_response_from_empty(body: dict[str, object]) -> NetWorthV4Response:
+    response = json.loads(json.dumps(body))
+    p10_usd = 800_000
+    median_usd = 1_000_000
+    p90_usd = 1_200_000
+    response["financial_coverage"].update(  # type: ignore[union-attr]
+        {
+            "upstream_status": "PARTIAL",
+            "discovered_count": 1,
+            "evaluated_count": 1,
+            "upstream_scored_count": 1,
+            "v4_eligible_count": 1,
+        }
+    )
+    response["result_set"].update(  # type: ignore[union-attr]
+        {
+            "upstream_result_count": 1,
+            "eligible_count": 1,
+            "returned_count": 1,
+            "shortfall_count": 99,
+            "target_satisfied": False,
+            "reasons": ["SOURCE_INDEX_PARTIAL"],
+        }
+    )
+    included_component = {
+        "status": "INCLUDED_IN_DECLARED_TOTAL",
+        "low_usd": None,
+        "most_likely_usd": None,
+        "high_usd": None,
+        "confidence": None,
+    }
+    response["results"] = [
+        {
+            "rank": 1,
+            "rank_interval": {
+                "low": 1,
+                "high": 1,
+                "basis": "P10_P90_OVERLAP_AVAILABLE_SET",
+                "population_complete": False,
+            },
+            "person": {
+                "id": "public-profile-1",
+                "name": "Public Profile",
+                "headline": "Public official",
+                "organization": "Public agency",
+            },
+            "estimated_net_worth": {
+                "status": "AVAILABLE",
+                "currency": "USD",
+                "p10_usd": p10_usd,
+                "median_usd": median_usd,
+                "p90_usd": p90_usd,
+                "method": "DECLARED_TOTAL_SIMULATION",
+                "as_of": "2026-08-14",
+            },
+            "observed_net_worth_floor": {
+                "status": "AVAILABLE",
+                "amount_usd": p10_usd,
+                "method": "DIRECT_DECLARED_TOTAL_P10",
+                "supporting_asset_families": [],
+            },
+            "nws": {
+                "value": net_worth_to_nws(median_usd),
+                "scale_version": NWS_SCALE_VERSION,
+                "uncertainty": {
+                    "low": net_worth_to_nws(p10_usd),
+                    "median": net_worth_to_nws(median_usd),
+                    "high": net_worth_to_nws(p90_usd),
+                    "basis": "P10_MEDIAN_P90_FIXED_SCALE",
+                },
+            },
+            "confidence": {"score": 0.95, "grade": "A", "coverage": 0.95},
+            "components": {
+                "cash_and_near_cash": included_component,
+                "public_securities": included_component,
+                "private_business_equity": included_component,
+                "real_estate_equity": included_component,
+                "other_assets": included_component,
+                "liabilities": included_component,
+            },
+            "location_relationship": {
+                "label": "Public service jurisdiction",
+                "association_kind": "PUBLIC_SERVICE_JURISDICTION",
+                "granularity": "CITY",
+                "approximate_distance_band": "Within 10 miles",
+            },
+            "last_financial_update": "2026-08-14",
+            "financial_update_precision": "DAY",
+            "why_ranked": ["Verified public declaration"],
+            "source_families": ["disclosure.floridaethics.gov"],
+        }
+    ]
+    return NetWorthV4Response.model_validate_json(json.dumps(response))
+
+
+def _capture_audit_stream(monkeypatch) -> io.StringIO:  # type: ignore[no-untyped-def]
+    assert main.audit_logger.level == logging.INFO
+    assert main.audit_logger.propagate is False
+    assert main.logger.level == logging.NOTSET
+    handlers = [
+        handler
+        for handler in main.audit_logger.handlers
+        if handler.get_name() == main._AUDIT_HANDLER_NAME  # noqa: SLF001
+    ]
+    assert len(handlers) == 1
+    assert handlers[0].level == logging.INFO
+    stream = io.StringIO()
+    monkeypatch.setattr(handlers[0], "stream", stream)
+    return stream
+
+
+def _emitted_audit_records(
+    stream: io.StringIO,
+    prefix: str,
+) -> tuple[list[dict[str, object]], str]:
+    emitted = stream.getvalue()
+    records = [
+        json.loads(line.removeprefix(prefix))
+        for line in emitted.splitlines()
+        if line.startswith(prefix)
+    ]
+    return records, emitted
+
+
 def test_v4_requires_integrity_pinned_consumer_credentials(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _enable_v4(monkeypatch)
     response = TestClient(app).post("/v4/net-worth/discover", json=_payload())
@@ -110,10 +236,9 @@ def test_v4_project_context_must_match_authenticated_consumer(monkeypatch) -> No
 
 def test_v4_truthfully_returns_scored_shortfall_and_redacted_audit(
     monkeypatch,
-    caplog,
 ) -> None:  # type: ignore[no-untyped-def]
     _enable_v4(monkeypatch)
-    caplog.set_level(logging.INFO, logger="nws_nearby_intelligence")
+    audit_stream = _capture_audit_stream(monkeypatch)
     response = TestClient(app).post(
         "/v4/net-worth/discover",
         headers={
@@ -139,14 +264,13 @@ def test_v4_truthfully_returns_scored_shortfall_and_redacted_audit(
     assert body["result_set"]["target_satisfied"] is False
     assert body["results"] == []
 
-    audit_lines = [
-        record.message for record in caplog.records if "consumer_access_audit" in record.message
-    ]
-    assert len(audit_lines) == 1
-    audit = audit_lines[0]
-    assert "actor_" in audit
-    audit_event = json.loads(audit.removeprefix("consumer_access_audit "))
+    audits, emitted = _emitted_audit_records(audit_stream, "consumer_access_audit ")
+    assert len(audits) == 1
+    audit_event = audits[0]
+    assert "actor_" in emitted
     assert audit_event["request_id"] == response.headers["X-Request-ID"]
+    assert audit_event["decision"]["outcome"] == "EMPTY"
+    assert audit_event["decision"]["result_count"] == 0
     assert audit_event["data_version"]["snapshot_id"] is None
     assert audit_event["data_version"]["snapshot_sha256"] is None
     for forbidden in (
@@ -157,7 +281,38 @@ def test_v4_truthfully_returns_scored_shortfall_and_redacted_audit(
         "latitude",
         "longitude",
     ):
-        assert forbidden not in audit
+        assert forbidden not in emitted
+
+
+def test_v4_success_audit_emits_with_response_request_id(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    _enable_v4(monkeypatch)
+    audit_stream = _capture_audit_stream(monkeypatch)
+    client = TestClient(app)
+    empty = client.post(
+        "/v4/net-worth/discover",
+        headers={"X-NWS-API-Key": API_KEY},
+        json=_payload(),
+    )
+    assert empty.status_code == 200
+    projected = _successful_response_from_empty(empty.json())
+    audit_stream.seek(0)
+    audit_stream.truncate(0)
+    monkeypatch.setattr(main, "project_nearby_net_worth_v4", lambda *_: projected)
+
+    response = client.post(
+        "/v4/net-worth/discover",
+        headers={"X-NWS-API-Key": API_KEY},
+        json=_payload(),
+    )
+
+    assert response.status_code == 200
+    audits, _ = _emitted_audit_records(audit_stream, "consumer_access_audit ")
+    assert len(audits) == 1
+    assert audits[0]["request_id"] == response.headers["X-Request-ID"]
+    assert audits[0]["decision"]["outcome"] == "SUCCESS"
+    assert audits[0]["decision"]["result_count"] == 1
 
 
 def test_v4_coordinate_query_requires_fresh_purpose_bound_consent(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -241,8 +396,11 @@ def test_v4_coordinate_query_consumes_a_signed_receipt_once(monkeypatch) -> None
     assert second.json()["detail"]["code"] == "INVALID_COORDINATE_CONSENT"
 
 
-def test_v4_bff_can_issue_a_location_free_consent_receipt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_v4_bff_can_issue_a_location_free_consent_receipt(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     _enable_v4(monkeypatch)
+    audit_stream = _capture_audit_stream(monkeypatch)
     response = TestClient(app).post(
         "/v4/location-consent/receipt",
         headers={"X-NWS-API-Key": API_KEY},
@@ -263,6 +421,11 @@ def test_v4_bff_can_issue_a_location_free_consent_receipt(monkeypatch) -> None: 
     assert "latitude" not in response.text
     assert "longitude" not in response.text
     assert API_KEY not in response.text
+    issued, emitted = _emitted_audit_records(audit_stream, "coordinate_consent_issued ")
+    assert len(issued) == 1
+    assert issued[0]["request_id"] == response.headers["X-Request-ID"]
+    assert "service-account:nws-client" not in emitted
+    assert API_KEY not in emitted
 
 
 def test_v4_replaces_unsafe_caller_request_id(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -286,6 +449,7 @@ def test_v4_never_echoes_or_logs_api_key_shaped_request_id(
     caplog,
 ) -> None:  # type: ignore[no-untyped-def]
     _enable_v4(monkeypatch)
+    audit_stream = _capture_audit_stream(monkeypatch)
     caplog.set_level(logging.INFO, logger="nws_nearby_intelligence")
     secret_shaped_request_id = (
         "nws_live_"
@@ -303,6 +467,8 @@ def test_v4_never_echoes_or_logs_api_key_shaped_request_id(
 
     assert response.status_code == 200
     assert response.headers["X-Request-ID"].startswith("req-")
+    _, emitted = _emitted_audit_records(audit_stream, "consumer_access_audit ")
+    assert secret_shaped_request_id not in emitted
     assert secret_shaped_request_id not in caplog.text
 
 
@@ -311,6 +477,7 @@ def test_v4_unexpected_failure_is_audited_with_response_request_id(
     caplog,
 ) -> None:  # type: ignore[no-untyped-def]
     _enable_v4(monkeypatch)
+    audit_stream = _capture_audit_stream(monkeypatch)
     caplog.set_level(logging.INFO, logger="nws_nearby_intelligence")
 
     def fail_discovery(*_: object, **__: object) -> object:
@@ -325,13 +492,10 @@ def test_v4_unexpected_failure_is_audited_with_response_request_id(
 
     assert response.status_code == 500
     assert response.headers["X-Request-ID"].startswith("req-")
-    audits = [
-        json.loads(record.message.removeprefix("consumer_access_audit "))
-        for record in caplog.records
-        if "consumer_access_audit" in record.message
-    ]
+    audits, emitted = _emitted_audit_records(audit_stream, "consumer_access_audit ")
     assert len(audits) == 1
     assert audits[0]["request_id"] == response.headers["X-Request-ID"]
     assert audits[0]["decision"]["outcome"] == "ERROR"
     assert audits[0]["decision"]["status_code"] == 500
+    assert "private upstream failure" not in emitted
     assert "private upstream failure" not in caplog.text

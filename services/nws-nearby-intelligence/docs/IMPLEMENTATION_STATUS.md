@@ -166,10 +166,10 @@ The national response requires these resources to be healthy:
 | SEC source | `insider-holdings-api` exposes and honors value-free `professional` ranking over its current nationwide index. |
 | NPPES database | `hushh-directories-db`, database `healthcare`, contains a current active-individual snapshot, owner-inspection view, and fixed postal/coordinate functions. |
 | Database grants | `nws_nearby_ro` can execute only the fixed NWS postal/coordinate functions; it cannot select the owner-inspection view or underlying `providers`/`zips`. |
-| Runtime secrets | Numbered versions of `nws-nearby-api-key`, `insider-api-key`, and `nws-nearby-nppes-db-password`. |
+| Runtime secrets | Numbered versions of `nws-nearby-api-key`, `insider-professional-api-key`, `nws-nearby-nppes-db-password`, and the v4 `nws-consumer-access-registry`. The raw v4 consumer key remains only in its BFF secret store. |
 | v4 consumer policy | Exact JSON from a numbered secret version plus its pinned SHA-256; one raw key remains only in each consumer's BFF secret store. |
 | Consent receipts | Dedicated Cloud Storage bucket supporting atomic create-only receipt-use markers; runtime needs object creation, not broad bucket administration. |
-| Cloud Run identity | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` has only required Cloud SQL/secret access. |
+| Cloud Run identity | `nws-nearby-runtime@hushh-tech-prod.iam.gserviceaccount.com` has only required Cloud SQL, per-secret, snapshot-read, and consent-marker-create access. |
 
 One national source may fail soft while another serves results, but source status must disclose the
 failure. If both national sources are unavailable, NWS must not synthesize, reuse Kirkland, or

@@ -85,6 +85,9 @@ function humanError(
   if (status === 503 || code === "service_unavailable") {
     return { title: "Source unavailable", detail: "Try again soon.", retryable: true };
   }
+  if (status === 502 || code === "invalid_upstream_response") {
+    return { title: "Source response unavailable", detail: "Try again soon.", retryable: true };
+  }
   if (status === 409 || code === "coverage_unavailable") {
     return { title: "Coverage unavailable", detail: "Try another U.S. ZIP.", retryable: false };
   }

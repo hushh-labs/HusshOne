@@ -204,7 +204,7 @@ issuer office, practice area, institution, civic office, or opt-in association o
 | Cloud SQL instance | `hushh-tech-prod:us-central1:hushh-directories-db` |
 | NPPES database / role | `healthcare` / `nws_nearby_ro` |
 | NWS credential secret | `nws-nearby-api-key` |
-| SEC credential secret | `insider-api-key` |
+| SEC credential secret | `insider-professional-api-key` |
 | NPPES password secret | `nws-nearby-nppes-db-password` |
 
 These are names, not values. Production references explicit numbered secret versions. Workload
@@ -218,11 +218,12 @@ cd services/nws-nearby-intelligence
 python3.13 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -q
-.venv/bin/python -m ruff check app tests
 .venv/bin/python -m compileall -q app tests
 ```
 
-The path-scoped NWS CI validates Python 3.13 tests, lint, compilation, Docker/runtime dependency
+Run the exact production path-scoped Ruff command from
+[NWS Nearby CI](../../../.github/workflows/nws-nearby-ci.yml). The workflow validates Python 3.13
+tests, lint, compilation, Docker/runtime dependency
 consistency, national geography integrity, source adapters, privacy gates, and legacy regression
 tests. The production workflow builds an immutable image after successful main CI, attaches Cloud
 SQL, injects numbered secrets, deploys Cloud Run, and verifies `/health` and `/ready`.

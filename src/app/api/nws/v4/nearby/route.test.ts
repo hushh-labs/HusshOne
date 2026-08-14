@@ -169,6 +169,41 @@ describe("POST /api/nws/v4/nearby", () => {
     expect(response.headers.get("access-control-allow-origin")).toBeNull();
   });
 
+  it("accepts the production 60637 expansion at the rounded 500 km boundary", async () => {
+    const upstream = validV4UpstreamResponse({ resultCount: 0, discoveredCount: 60 });
+    Object.assign(upstream.query, {
+      label: "Chicago, Illinois 60637 query area",
+      postal_code: "60637",
+    });
+    Object.assign(upstream.expansion, {
+      upstream_strategy: "LEGACY_RADIUS",
+      effective_radius_miles: 310.69,
+      disclosure_code: "UPSTREAM_PER_STEP_COUNTS_UNAVAILABLE",
+    });
+    Object.assign(upstream.expansion.steps[0]!, {
+      order: 8,
+      stage: "LEGACY_RADIUS",
+      radius_miles: 310.69,
+    });
+    mockDiscover(upstream);
+
+    const response = await POST(
+      makeRequest({ query: { postal_code: "60637", country_code: "US" }, count: 100 }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      query: { postal_code: "60637" },
+      expansion: {
+        upstream_strategy: "LEGACY_RADIUS",
+        effective_radius_miles: 310.69,
+        maximum_radius_reached: true,
+      },
+      financial_coverage: { discovered_count: 60, eligible_count: 0 },
+      result_set: { returned_count: 0, shortfall_count: 100 },
+    });
+  });
+
   it("keeps each user's opaque actor stable across NWS API-key rotation", async () => {
     const fetchMock = mockDiscover();
     const requestBody = { query: { postal_code: "32301" }, count: 100 };
