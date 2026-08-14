@@ -1,5 +1,10 @@
 # Financial Context Boundary
 
+> **Route scope:** this boundary applies to the legacy
+> `/v2/nearby-network/discover` professional response. The separately versioned, fail-closed
+> financial contract is `/v3/nearby-net-worth/discover`; see
+> [NET_WORTH_SCORE_HANDOFF.md](NET_WORTH_SCORE_HANDOFF.md).
+
 The Financial Strength Factor proposed for a separate product is **not enabled
 in NWS**. The Nearby Opportunity Score remains a public professional-network
 and public-association score, not a measure of financial capacity.

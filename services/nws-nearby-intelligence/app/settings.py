@@ -44,6 +44,10 @@ class Settings:
     sec_api_base_url: str
     sec_api_key: str
     sec_timeout_seconds: int
+    form6_source_enabled: bool
+    form6_api_base_url: str
+    form6_api_key: str
+    form6_timeout_seconds: int
     nppes_source_enabled: bool
     nppes_db_host: str
     nppes_db_port: int
@@ -82,6 +86,8 @@ class Settings:
         sec_source_enabled = _read_bool("NWS_SEC_SOURCE_ENABLED", national_sources_enabled)
         nppes_source_enabled = _read_bool("NWS_NPPES_SOURCE_ENABLED", national_sources_enabled)
         sec_api_key = os.getenv("NWS_SEC_API_KEY", "").strip()
+        form6_source_enabled = _read_bool("NWS_FORM6_SOURCE_ENABLED", False)
+        form6_api_key = os.getenv("NWS_FORM6_API_KEY", "").strip()
         nppes_db_password = os.getenv("NWS_NPPES_DB_PASSWORD", "").strip()
         if environment == "production" and national_sources_enabled:
             if sec_source_enabled and not sec_api_key:
@@ -92,6 +98,10 @@ class Settings:
                 raise RuntimeError(
                     "NWS_NPPES_DB_PASSWORD must be supplied when the NPPES source is enabled"
                 )
+        if environment == "production" and form6_source_enabled and not form6_api_key:
+            raise RuntimeError(
+                "NWS_FORM6_API_KEY must be supplied when the Florida Form 6 source is enabled"
+            )
 
         return cls(
             environment=environment,
@@ -106,7 +116,7 @@ class Settings:
             query_location_decimals=_read_int(
                 "NWS_QUERY_LOCATION_DECIMALS", 2, minimum=0, maximum=4
             ),
-            service_version="3.0.0",
+            service_version="3.1.0",
             model_version="nws-v2.3.0-kirkland.2026-08-13",
             national_model_version="nws-v3.0.0-us-public-professional.2026-08-14",
             data_mode=data_mode,
@@ -122,6 +132,17 @@ class Settings:
             .rstrip("/"),
             sec_api_key=sec_api_key,
             sec_timeout_seconds=_read_int("NWS_SEC_TIMEOUT_SECONDS", 8, minimum=1, maximum=30),
+            form6_source_enabled=form6_source_enabled,
+            form6_api_base_url=os.getenv(
+                "NWS_FORM6_API_BASE_URL",
+                "https://insider-holdings-api-fro3hygenq-uc.a.run.app",
+            )
+            .strip()
+            .rstrip("/"),
+            form6_api_key=form6_api_key,
+            form6_timeout_seconds=_read_int(
+                "NWS_FORM6_TIMEOUT_SECONDS", 8, minimum=1, maximum=30
+            ),
             nppes_source_enabled=nppes_source_enabled,
             nppes_db_host=os.getenv(
                 "NWS_NPPES_DB_HOST",

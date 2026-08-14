@@ -1,7 +1,7 @@
 [project]
 name = "nws-nearby-intelligence"
-version = "3.0.0"
-description = "Privacy-safe, location-driven discovery for verified public and opted-in professionals."
+version = "3.1.0"
+description = "Privacy-safe nearby Net Worth Score and public-association discovery service."
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",

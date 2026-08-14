@@ -1,8 +1,15 @@
-# NWS Logic Specification
+# Legacy professional-network score specification
+
+> **Compatibility only.** This document describes the provisional professional score retained on
+> `/v2/nearby-network/discover`. It is not Net Worth Score and must not be labeled `NWS` in new
+> product surfaces. The canonical financial NWS model is documented in
+> [NET_WORTH_SCORE_HANDOFF.md](NET_WORTH_SCORE_HANDOFF.md) and served from
+> `/v3/nearby-net-worth/discover`.
 
 ## 1. Definition
 
-**NWS = Network Worth Score**, a 0–100 estimate of a verified public professional's capacity to create, access, or route opportunities through a public professional network.
+The legacy professional score is a 0–100 estimate of a verified public professional's capacity to
+create, access, or route opportunities through a public professional network.
 
 It is deliberately different from financial net worth. The score answers:
 
@@ -133,7 +140,7 @@ semantic evidence-key deduplication
 → freshness, self-published, and suspicious-pattern ratios
 ```
 
-`app/observation_projection.py` maps approved observations to bounded professional graph edges and feature signals. Financial amounts, property values, compensation, and follower counts are not converted into personal wealth. Beneficial-ownership filings contribute only a bounded, verified capital-network relationship signal.
+`app/observation_projection.py` maps approved observations to bounded professional graph edges and feature signals. Financial amounts, property values, compensation, and follower counts are not converted into personal wealth. Beneficial-ownership and owner-only observations remain evidence-only; only a verified Officer/Director role tied to a resolved issuer can contribute a professional-role signal.
 
 ## 4. Graph component
 

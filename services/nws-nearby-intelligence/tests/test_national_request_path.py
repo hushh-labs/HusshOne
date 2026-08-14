@@ -160,6 +160,32 @@ def test_dense_exact_zip_does_not_run_radius_fallback() -> None:
     assert result.source_status["target_satisfied"] is True
 
 
+def test_financial_candidate_fetch_exhausts_radius_even_when_exact_zip_is_dense() -> None:
+    provider = StubNppesProvider(
+        [
+            _result("exact-1", "exact-2", "exact-3", query_mode="POSTAL_CODE"),
+            _result("exact-1", "farther-financial-candidate"),
+        ]
+    )
+
+    result = main._fetch_nppes_candidates(  # noqa: SLF001
+        provider=provider,
+        resolution=_resolution(),
+        request=_request(top_n=3),
+        candidate_limit=200,
+        exhaust_radius=True,
+    )
+
+    assert [call["postal_code"] for call in provider.calls] == ["60637", None]
+    assert [call["radius_km"] for call in provider.calls] == [10, 40]
+    assert {candidate.person_id for candidate in result.candidates} == {
+        "exact-1",
+        "exact-2",
+        "exact-3",
+        "farther-financial-candidate",
+    }
+
+
 def test_auto_expand_false_returns_sparse_exact_zip_without_radius_query() -> None:
     provider = StubNppesProvider([_result("exact-1", query_mode="POSTAL_CODE")])
 

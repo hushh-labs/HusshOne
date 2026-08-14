@@ -7,8 +7,8 @@ from pydantic import ValidationError
 
 import app.main as main
 from app.bootstrap_data import BOOTSTRAP_CANDIDATES, BOOTSTRAP_METADATA
-from app.main import QueryLocationInput, app
-from app.nws_models import GeoPoint
+from app.main import NearbyDiscoveryRequest, NearbyFiltersInput, QueryLocationInput, app
+from app.nws_models import GeoPoint, NearbyDiscoverySummary
 from app.security import rate_limiter
 from app.settings import get_settings
 
@@ -47,6 +47,7 @@ def test_market_release_discovery_returns_reviewed_public_association_records() 
     assert body["snapshot"] == {
         "data_mode": "REVIEWED_PUBLIC_ASSOCIATION_RELEASE",
         "score_status": "PROVISIONAL",
+        "score_kind": "PROFESSIONAL_NETWORK_PROVISIONAL",
         "complete": False,
         "model_version": "nws-v2.3.0-kirkland.2026-08-13",
         "verified_at": "2026-08-13",
@@ -63,6 +64,13 @@ def test_market_release_discovery_returns_reviewed_public_association_records() 
     assert body["coverage"]["market_id"] == "us-wa-kirkland-public-association"
     assert body["summary"]["search_performed"] is True
     assert body["summary"]["candidate_backend"] == "reviewed-public-association-release"
+    assert body["result_set"]["status"] == "PARTIAL"
+    assert body["result_set"]["shortfall_count"] == 40
+    assert body["result_set"]["target_satisfied"] is False
+    assert body["source_health"]["status"] == "NOT_QUERIED"
+    assert body["source_health"]["mode"] == "REVIEWED_RELEASE"
+    assert body["search"]["performed"] is True
+    assert sum(band["count"] for band in body["search"]["returned_by_distance_band"]) == 60
     assert body["discovery"]["mode"] == "ORGANIZATION_ANCHOR_REVIEW_PIPELINE_O1"
     assert body["discovery"]["organization_anchor_count"] == 13
     assert body["discovery"]["market_census_complete"] is False
@@ -70,6 +78,10 @@ def test_market_release_discovery_returns_reviewed_public_association_records() 
     assert body["financial_context"]["status"] == "NOT_PROFILED"
     assert body["financial_context"]["personal_financial_strength"] == "NOT_PROVIDED"
     assert all(item["score_status"] == "PROVISIONAL" for item in body["results"])
+    assert all(item["score_kind"] == "PROFESSIONAL_NETWORK_PROVISIONAL" for item in body["results"])
+    assert all(item["financial_evidence"]["status"] == "NOT_PROFILED" for item in body["results"])
+    assert all(item["financial_evidence"]["used_for_ranking"] is False for item in body["results"])
+    assert all(item["freshness"]["association_as_of"] for item in body["results"])
     assert all("distance_km" not in item for item in body["results"])
     assert all(item["sources"] for item in body["results"])
     assert all(item["public_association_context"]["category"] for item in body["results"])
@@ -185,11 +197,35 @@ def test_successful_national_route_exposes_consistent_safe_contract(monkeypatch)
     assert body["coverage"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
     assert body["snapshot"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
     assert body["snapshot"]["policy_reviewed_at"] == "2026-08-14"
+    assert body["snapshot"]["score_kind"] == "PROFESSIONAL_NETWORK_PROVISIONAL"
     assert "reviewed_at" not in body["snapshot"]
     assert body["source_status"][0]["status"] == "OK"
     assert body["summary"]["public_registry_candidate_count"] == 1
     assert body["summary"]["returned_count"] == 1
+    assert body["result_set"] == {
+        "status": "TARGET_MET",
+        "requested_count": 1,
+        "returned_count": 1,
+        "shortfall_count": 0,
+        "target_satisfied": True,
+        "reasons": [],
+    }
+    assert body["source_health"]["status"] == "HEALTHY"
+    assert body["source_health"]["successful_sources"] == ["CMS_NPPES"]
+    assert body["search"]["performed"] is True
+    assert body["search"]["expansion_steps_km"]
+    assert sum(band["count"] for band in body["search"]["returned_by_distance_band"]) == 1
     assert body["results"][0]["model_version"] == ("nws-v3.0.0-us-public-professional.2026-08-14")
+    assert body["results"][0]["score_kind"] == "PROFESSIONAL_NETWORK_PROVISIONAL"
+    assert body["results"][0]["financial_evidence"] == {
+        "status": "NOT_PROFILED",
+        "personal_financial_strength": "NOT_PROVIDED",
+        "used_for_ranking": False,
+    }
+    assert body["results"][0]["freshness"]["status"] in {
+        "CURRENT_AS_PUBLISHED",
+        "REVALIDATION_REQUIRED",
+    }
     serialized_result = json.dumps(body["results"][0]).casefold()
     for forbidden in (
         "street_address",
@@ -219,6 +255,10 @@ def test_india_coordinate_returns_not_covered_without_kirkland_people() -> None:
     assert body["coverage"]["reason_code"] == "COUNTRY_NOT_IN_NATIONAL_INDEX"
     assert body["results"] == []
     assert body["summary"]["verified_seed_candidate_count"] == 0
+    assert body["result_set"]["status"] == "NOT_SEARCHED"
+    assert body["result_set"]["reasons"] == ["COUNTRY_NOT_IN_NATIONAL_INDEX"]
+    assert body["search"]["performed"] is False
+    assert body["source_health"]["status"] == "NOT_QUERIED"
     assert "Kirkland" not in body["query"]["label"]
     assert body["snapshot"]["data_mode"] == "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT"
     assert body["release"]["market_id"] == "us-national-public-association"
@@ -293,16 +333,166 @@ def test_invalid_location_forms_remain_validation_errors() -> None:
         QueryLocationInput(latitude=float("nan"), longitude=77.2090)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"query": {"postal_code": "98033"}, "top_n": "60"},
+        {"query": {"postal_code": "98033"}, "initial_radius_km": "20"},
+        {"query": {"postal_code": "98033"}, "auto_expand": "true"},
+        {
+            "query": {
+                "latitude": "47.6715",
+                "longitude": -122.2133,
+                "country_code": "US",
+            }
+        },
+    ],
+)
+def test_legacy_v2_keeps_scalar_coercion_contract(payload: dict[str, object]) -> None:
+    response = TestClient(app).post(
+        "/v2/nearby-network/discover",
+        headers=API_HEADERS,
+        json=payload,
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"postal_code": "980-33"},
+        {"postal_code": "980-33", "country_code": "US"},
+    ],
+)
+def test_malformed_us_postal_code_is_rejected(query: dict[str, str]) -> None:
+    response = TestClient(app).post(
+        "/v2/nearby-network/discover",
+        headers=API_HEADERS,
+        json={"query": query},
+    )
+
+    assert response.status_code == 422
+
+
+def test_canonical_but_absent_us_postal_code_is_location_unresolved() -> None:
+    response = TestClient(app).post(
+        "/v2/nearby-network/discover",
+        headers=API_HEADERS,
+        json={"query": {"postal_code": "00000", "country_code": "US"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coverage"]["status"] == "LOCATION_UNRESOLVED"
+    assert body["result_set"]["status"] == "NOT_SEARCHED"
+    assert body["results"] == []
+
+
+def test_filter_tags_are_normalized_deduplicated_and_cannot_be_empty() -> None:
+    filters = NearbyFiltersInput(
+        tags=[" Healthcare   Leader ", "HEALTHCARE LEADER", "Founder"],
+    )
+    assert filters.tags == ["healthcare leader", "founder"]
+
+    with pytest.raises(ValidationError):
+        NearbyFiltersInput(tags=["   "])
+
+
+def test_aggregate_source_health_marks_partial_stale_and_unavailable_sources_degraded() -> None:
+    health = main._aggregate_source_health(  # noqa: SLF001
+        (
+            {"source": "CMS_NPPES", "status": "OK", "degraded": True},
+            {
+                "source": "SEC_SECTION16",
+                "status": "OK",
+                "index_partial": True,
+                "index_stale": True,
+            },
+            {"source": "FUTURE_SOURCE", "status": "UNAVAILABLE"},
+        ),
+        mode="LIVE_PUBLIC_SOURCE_SNAPSHOTS",
+    )
+
+    assert health["status"] == "DEGRADED"
+    assert health["unavailable_sources"] == ["FUTURE_SOURCE"]
+    assert health["partial_sources"] == ["SEC_SECTION16"]
+    assert health["stale_sources"] == ["SEC_SECTION16"]
+    assert health["reasons"] == [
+        "SOURCE_UNAVAILABLE",
+        "SOURCE_INDEX_PARTIAL",
+        "SOURCE_INDEX_STALE",
+        "SOURCE_STAGE_DEGRADED",
+    ]
+
+
+def test_partial_result_set_explains_source_degradation_and_shortfall() -> None:
+    request = NearbyDiscoveryRequest(
+        query=QueryLocationInput(postal_code="60637"),
+        top_n=2,
+        initial_radius_km=20,
+        max_radius_km=100,
+    )
+    summary = NearbyDiscoverySummary(
+        query_radius_km=20,
+        effective_radius_km=100,
+        candidate_pool_size=1,
+        eligible_candidate_count=1,
+        confidence_eligible_candidate_count=1,
+        returned_count=1,
+        expansion_steps=(20, 35, 61.25, 100),
+        diversity_applied=True,
+    )
+    source_status = (
+        {"source": "CMS_NPPES", "status": "OK", "target_satisfied": False},
+        {"source": "SEC_SECTION16", "status": "UNAVAILABLE"},
+    )
+    health = main._aggregate_source_health(  # noqa: SLF001
+        source_status,
+        mode="LIVE_PUBLIC_SOURCE_SNAPSHOTS",
+    )
+
+    result_set = main._result_set_accountability(  # noqa: SLF001
+        request=request,
+        summary=summary,
+        source_candidate_count=1,
+        filtered_candidate_count=1,
+        backend="national-public-association-index",
+        source_status=source_status,
+        source_health=health,
+    )
+
+    assert result_set == {
+        "status": "PARTIAL",
+        "requested_count": 2,
+        "returned_count": 1,
+        "shortfall_count": 1,
+        "target_satisfied": False,
+        "reasons": [
+            "SOURCE_DEGRADED",
+            "MAX_RADIUS_REACHED",
+            "SOURCE_TARGET_NOT_MET",
+            "SOURCE_SPARSE",
+        ],
+    }
+
+
 def test_health_and_readiness_are_public_but_discovery_is_the_only_business_route() -> None:
     client = TestClient(app)
     assert client.get("/health").status_code == 200
     ready = client.get("/ready")
     assert ready.status_code == 200
     assert ready.json()["candidate_count"] == 60
+    assert ready.json()["geography_record_count"] == 33_791
+    assert ready.json()["public_jurisdiction_record_count"] == 33_791
+    assert ready.json()["net_worth_model_version"] == "net-worth-v1.0.0"
+    assert ready.json()["nws_scale_version"] == "nws-fixed-us-log-v1.0.0"
     preview = client.post("/internal/v2/nearby-network/score-preview", headers=API_HEADERS)
     assert preview.status_code == 404
     assert client.post("/v1/anonymous-affluence/rank", headers=API_HEADERS).status_code == 404
     assert client.get("/docs").status_code == 200
+    assert client.get("/").status_code == 404
+    assert client.post("/").status_code == 404
 
 
 def test_cors_preflight_is_open_for_non_cookie_cross_project_clients() -> None:

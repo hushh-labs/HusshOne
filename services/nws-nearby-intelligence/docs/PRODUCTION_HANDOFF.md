@@ -1,5 +1,10 @@
 # NWS Nearby Intelligence — production handoff
 
+> **Route boundary:** the identity and infrastructure below are shared, but the table documents the
+> legacy professional `/v2` route. The canonical financial route is
+> `/v3/nearby-net-worth/discover`; its source gates, probes, and rollback checklist are in
+> [Net Worth Score technical handoff](NET_WORTH_SCORE_HANDOFF.md).
+
 This document is the operator checklist for the standalone US national NWS service. Read the
 canonical [US national coverage handoff](US_NATIONAL_COVERAGE_HANDOFF.md) before operating it.
 

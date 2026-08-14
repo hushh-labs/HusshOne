@@ -30,6 +30,20 @@ def test_production_rejects_missing_or_weak_api_key(monkeypatch, api_key: str) -
         Settings.from_environment()
 
 
+def test_production_form6_source_requires_its_explicit_key(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("NWS_ENVIRONMENT", "production")
+    monkeypatch.setenv("NWS_REQUIRE_API_KEY", "true")
+    monkeypatch.setenv("NWS_API_KEY", "n" * 32)
+    monkeypatch.setenv("NWS_NATIONAL_SOURCES_ENABLED", "false")
+    monkeypatch.setenv("NWS_FORM6_SOURCE_ENABLED", "true")
+    monkeypatch.delenv("NWS_FORM6_API_KEY", raising=False)
+    # A legacy SEC key must not implicitly activate named financial disclosure.
+    monkeypatch.setenv("NWS_SEC_API_KEY", "legacy-sec-key")
+
+    with pytest.raises(RuntimeError, match="NWS_FORM6_API_KEY"):
+        Settings.from_environment()
+
+
 def test_security_headers_and_no_store_cache_policy_are_returned() -> None:
     client = TestClient(app)
     response = client.get("/health")

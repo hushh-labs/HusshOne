@@ -50,15 +50,31 @@
 
 ### API, ranking, and privacy
 
+- Authenticated `POST /v3/nearby-net-worth/discover`, where NWS means Net Worth Score.
+- Fixed national logarithmic NWS scale, bounded whole-ledger simulation, separate confidence,
+  mandatory liabilities, unknown-is-not-zero rules, and economic-interest deduplication.
+- Direct Florida Form 6 public-jurisdiction adapter for sworn whole-net-worth declarations, with
+  ZIP and bounded coordinate-to-ZCTA resolution, partial/truncated source status, and no fuzzy join.
+- Declared whole totals remain undecomposed: every component is `INCLUDED_IN_DECLARED_TOTAL`,
+  liquid wealth is unknown, and negative or zero declarations remain valid scores of zero.
+- Nationwide candidate coverage and named financial coverage are distinct. Unsupported candidates
+  return `FINANCIAL_COVERAGE_INSUFFICIENT`; no SEC holding or professional score becomes NWS.
 - Authenticated `POST /v2/nearby-network/discover`.
 - Public `GET /health`, `GET /ready`, `/docs`, and `/openapi.json`.
 - `COVERED`, `NOT_COVERED`, and `LOCATION_UNRESOLVED` states.
+- Strict JSON scalar validation, canonical US ZIP/ZIP+4 syntax checks, and normalized bounded tag
+  filters. Malformed US ZIP syntax is a `422`; canonical syntax absent from the ZCTA release remains
+  a truthful `LOCATION_UNRESOLVED` response.
 - Sparse covered responses and fail-soft source outcomes without fabricated candidates.
+- Additive final-result, ranking-radius search, distance-band, and aggregate source-health blocks so
+  consumers can distinguish target-met, partial, empty, degraded, and not-searched outcomes.
 - Confidence-aware radius behavior, lane/tag filters, NWS scoring, diversity, and public-safe
   serialization.
 - Coordinate/request-body log suppression, 32 KiB request limit, security headers, in-process rate
   limiting, and wildcard non-cookie CORS.
 - Explicit `financial_context: NOT_PROFILED` boundary.
+- Per-result `PROFESSIONAL_NETWORK_PROVISIONAL`, `NOT_PROFILED` financial-evidence, and public-source
+  freshness states; missing financial data is not emitted as a numeric zero or wealth inference.
 - No private residence, exact person location, personal contact, family graph, raw source payload,
   securities/value/liquidity/property/income/net-worth output or ranking input.
 
@@ -99,7 +115,10 @@ claim a complete result set.
 - Global people coverage outside the US.
 - Complete USPS ZIP coverage; the geography is the 33,791-record 2025 Census ZCTA release.
 - A completed observed national professional graph or nationally calibrated final score.
-- Personal financial strength, net worth, income, assets, property, liquidity, or ability to pay.
+- Nationwide named Net Worth Score coverage. The current positive source is a partial Florida Form
+  6 public-official roster; all other named profiles fail closed without a complete ledger.
+- That one SEC holding, salary, company funding/revenue, fund AUM, nonprofit assets, or lifestyle
+  represents a person's total net worth, liquidity, or ability to pay.
 - Request-time crawling of SEC, CMS, social networks, or the open web.
 - BrokerCheck integration; it remains excluded pending written terms clearance.
 - Instagram, LinkedIn, Crunchbase, check-in, private-page, CAPTCHA-bypass, or data-broker sourcing.

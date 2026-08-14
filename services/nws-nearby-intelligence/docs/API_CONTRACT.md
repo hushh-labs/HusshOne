@@ -1,4 +1,31 @@
-# NWS Nearby API contract
+# NWS Nearby API contracts
+
+## Canonical financial contract
+
+NWS means **Net Worth Score** on the current product route:
+
+```text
+POST /v3/nearby-net-worth/discover
+X-NWS-API-Key: <server-held secret>
+Content-Type: application/json
+```
+
+The v3 request accepts the same exclusive ZIP/ZIP+4 or coordinate location form documented below,
+plus `top_n` (1–200), `initial_radius_km`, `max_radius_km`, and `auto_expand`. It deliberately
+rejects professional lanes, tags, diversity, and confidence filters.
+
+Its response separates `coverage` (location), `financial_coverage` (eligible financial ledgers),
+`result_set`, `search`, and `source_status`. Each scored result exposes an estimated USD range,
+fixed-national `nws`, separate confidence, six component states, liquid wealth when supportable,
+a public location relationship, last financial update, and official citations. Missing evidence
+never becomes zero. See [NET_WORTH_SCORE_HANDOFF.md](NET_WORTH_SCORE_HANDOFF.md) for the complete
+v3 JSON, source matrix, edge cases, and operational contract.
+
+## Legacy professional contract
+
+The remaining sections document `/v2/nearby-network/discover`. Its historical `global_nws` is now
+explicitly `PROFESSIONAL_NETWORK_PROVISIONAL`; it is not Net Worth Score and must not be displayed
+as wealth.
 
 > **Release mode:** hybrid reviewed Kirkland plus US national public-professional snapshots.
 >
@@ -36,7 +63,9 @@ source indexes.
 ## Request
 
 Supply exactly one location form. Unknown fields and mixed postal-plus-coordinate requests are
-rejected.
+rejected. This section documents the legacy v2 compatibility route, which preserves its historical
+Pydantic scalar coercion. New financial clients use v3, whose JSON scalar types are strict and
+reject stringified numbers or booleans.
 
 ### US postal
 
@@ -56,6 +85,8 @@ Rules:
 
 - A bare five-digit US ZIP or ZIP+4 is interpreted as US.
 - `country_code: "US"` is accepted and preferred when the client already knows the country.
+- Malformed US input such as `980-33` returns `422`. It is not silently repaired or confused with
+  an absent geography record.
 - ZIP+4, for example `60637-1234`, is normalized to base ZCTA `60637`; the original value may be
   preserved as `query.input_postal_code`.
 - The packaged geography contains 33,791 records from the 2025 Census Gazetteer ZCTA release.
@@ -110,7 +141,13 @@ Rules:
 | `filters.lanes` | array | Optional professional-lane filter. |
 | `filters.tags` | array | Optional tags; at most 20. |
 
-Malformed, partial, mixed, ambiguous, or unknown-field input returns `422`.
+Tags are whitespace-compacted, case-normalized, deduplicated in request order, and limited to 64
+characters each. Empty tags return `422`.
+
+Malformed, partial, mixed, ambiguous, incorrectly typed, or unknown-field input returns `422`.
+A canonical five-digit US value that is absent from the packaged ZCTA index, such as `00000`, is
+different: it returns `200` with `LOCATION_UNRESOLVED` because syntax succeeded but geography did
+not resolve.
 
 ## Backend selection
 
@@ -161,6 +198,7 @@ All successful responses include:
   "snapshot": {
     "data_mode": "NATIONAL_PUBLIC_PROFESSIONAL_SNAPSHOT",
     "score_status": "PROVISIONAL",
+    "score_kind": "PROFESSIONAL_NETWORK_PROVISIONAL",
     "complete": false,
     "model_version": "..."
   },
@@ -173,6 +211,9 @@ All successful responses include:
   "score_definition": "...",
   "generated_at": "...",
   "source_status": [],
+  "source_health": {},
+  "result_set": {},
+  "search": {},
   "summary": {},
   "results": []
 }
@@ -199,6 +240,74 @@ Source unavailability is fail-soft: a healthy source may still return candidates
 down. An `EMPTY` source is healthy but sparse. If every configured national source is unavailable,
 the endpoint returns `503` with `NATIONAL_CANDIDATE_BACKEND_UNAVAILABLE`. The response must not
 fabricate candidates; a covered response can otherwise be empty.
+
+### Result and search accountability
+
+Covered responses add a final-result block derived after user filters, publication policy,
+confidence gating, radius expansion, scoring, and diversification:
+
+```json
+{
+  "result_set": {
+    "status": "TARGET_MET | PARTIAL | EMPTY",
+    "requested_count": 200,
+    "returned_count": 73,
+    "shortfall_count": 127,
+    "target_satisfied": false,
+    "reasons": ["MAX_RADIUS_REACHED", "SOURCE_TARGET_NOT_MET"]
+  },
+  "search": {
+    "performed": true,
+    "scope": "FINAL_RANKING_RADIUS",
+    "auto_expand": true,
+    "expanded": true,
+    "expansion_steps_km": [20, 35, 61.25, 100],
+    "effective_radius_km": 100,
+    "maximum_radius_km": 100,
+    "maximum_radius_reached": true,
+    "returned_by_distance_band": [
+      {"band": "10–25 km", "count": 31},
+      {"band": "25–50 km", "count": 42}
+    ]
+  }
+}
+```
+
+`returned_by_distance_band` aggregates the same coarse association-distance bands already safe on
+individual results. It never exposes an exact person distance. `result_set` is the final response
+target state; a source-specific `target_satisfied` field is only that source's retrieval state.
+
+Uncovered or unresolved requests use `result_set.status: NOT_SEARCHED`, `search.performed: false`,
+and the coverage reason code. They are not described as a healthy-but-empty source search.
+
+`result_set.reasons` is additive and can include source degradation, disabled expansion, filters,
+publication policy, confidence gating, maximum radius, source target shortfall, source sparsity, or
+reviewed-pool exhaustion. A target-met response has an empty reason list.
+
+### Aggregate source health
+
+National responses retain full `source_status` and add a bounded `source_health` projection:
+
+```json
+{
+  "source_health": {
+    "status": "HEALTHY | DEGRADED | UNAVAILABLE | NOT_QUERIED",
+    "mode": "LIVE_PUBLIC_SOURCE_SNAPSHOTS",
+    "queried_source_count": 2,
+    "successful_sources": ["CMS_NPPES"],
+    "empty_sources": [],
+    "unavailable_sources": ["SEC_SECTION16"],
+    "partial_sources": [],
+    "stale_sources": [],
+    "reasons": ["SOURCE_UNAVAILABLE"]
+  }
+}
+```
+
+SEC partial/stale indexes and degraded NPPES expansion stages make aggregate health `DEGRADED`.
+An `EMPTY` source is successful and does not by itself mean unhealthy. Kirkland and uncovered paths
+use `NOT_QUERIED` with `REVIEWED_RELEASE` or `NOT_QUERIED` mode rather than pretending a live source
+fan-out occurred.
 
 The national summary uses
 `candidate_backend: "national-sec-nppes-public-professional-snapshot"`,
@@ -259,9 +368,14 @@ Each public result may include:
 - Rank, stable source-scoped person ID, public name/headline, organization, lane, and tags.
 - Provisional `global_nws`, `nearby_rank_score`, score components, coverage/integrity factors,
   reasons, and warnings.
-- Confidence score/grade and `score_status`.
+- Confidence score/grade, `score_status`, and
+  `score_kind: PROFESSIONAL_NETWORK_PROVISIONAL`.
 - `ranking_basis`, distinguishing provisional NWS scoring from source-verified registry ordering.
 - Public association label, kind, granularity, and approximate distance band.
+- `freshness`, containing the public association as-of date, latest source-observation timestamp,
+  and whether revalidation is required.
+- `financial_evidence.status: NOT_PROFILED`, `personal_financial_strength: NOT_PROVIDED`, and
+  `used_for_ranking: false`. Missing financial evidence is never serialized as a numeric zero.
 - Citation count, source-family/evidence-fact count, review flags, revalidation state, and public
   source links/retrieval timestamps.
 - Model version.
@@ -277,6 +391,9 @@ The service never serializes:
 
 For SEC records, location means a public issuer-office association. For NPPES records, location
 means a public practice postal-area association. Neither proves current physical presence.
+
+The current score is a provisional professional-network score. It must not be relabeled as wealth,
+financial capacity, net worth, liquidity, or ability to pay.
 
 ## Source and freshness semantics
 

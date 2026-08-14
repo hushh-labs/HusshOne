@@ -1,5 +1,10 @@
 # US national coverage handoff
 
+> **Legacy professional route:** this document covers the national candidate layer behind
+> `/v2/nearby-network/discover`. It does not establish named financial coverage and its historical
+> score is not Net Worth Score. For `/v3/nearby-net-worth/discover`, use
+> [Net Worth Score technical handoff](NET_WORTH_SCORE_HANDOFF.md).
+>
 > **Audience:** consumer-product engineers, backend engineers, data operators, security reviewers,
 > and Cloud Run operators.
 >
