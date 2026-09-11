@@ -61,6 +61,24 @@ async function scrapeTask(browser, task) {
     await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
     await sleep(2500);
     const search = await page.evaluate(() => {
+      function externalResultHref(rawHref) {
+        try {
+          const parsed = new URL(rawHref, "https://www.google.com");
+          const hostIsGoogle = /(^|\.)google\./i.test(parsed.hostname);
+          if (hostIsGoogle) {
+            const redirected = parsed.searchParams.get("q") || parsed.searchParams.get("url");
+            if (!redirected) return null;
+            const target = new URL(redirected);
+            if (!/^https?:$/i.test(target.protocol) || /(^|\.)google\./i.test(target.hostname)) return null;
+            return `${target.origin}${target.pathname}${target.search}`;
+          }
+          if (!/^https?:$/i.test(parsed.protocol)) return null;
+          return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+        } catch {
+          return null;
+        }
+      }
+
       const links = [...document.querySelectorAll("a[href]")];
       return links.map((link) => ({
         href: link.href,
@@ -94,24 +112,6 @@ async function scrapeTask(browser, task) {
     return { resultCount: unique.length, observations };
   } finally {
     await page.close().catch(() => {});
-  }
-}
-
-function externalResultHref(rawHref) {
-  try {
-    const parsed = new URL(rawHref, "https://www.google.com");
-    const hostIsGoogle = /(^|\.)google\./i.test(parsed.hostname);
-    if (hostIsGoogle) {
-      const redirected = parsed.searchParams.get("q") || parsed.searchParams.get("url");
-      if (!redirected) return null;
-      const target = new URL(redirected);
-      if (!/^https?:$/i.test(target.protocol) || /(^|\.)google\./i.test(target.hostname)) return null;
-      return `${target.origin}${target.pathname}${target.search}`;
-    }
-    if (!/^https?:$/i.test(parsed.protocol)) return null;
-    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
-  } catch {
-    return null;
   }
 }
 
