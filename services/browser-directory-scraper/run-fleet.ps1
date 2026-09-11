@@ -8,7 +8,11 @@ $proxyErrorLogPath = Join-Path $logRoot 'cloud-sql-proxy.error.log'
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
 $gcloud = (Get-Command gcloud.cmd -ErrorAction SilentlyContinue).Source
-if (-not $gcloud) { throw 'gcloud.cmd was not found on PATH. Use the Google Cloud SDK installer first.' }
+if (-not $gcloud) {
+  $fallbackGcloud = 'C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+  if (Test-Path $fallbackGcloud) { $gcloud = $fallbackGcloud }
+}
+if (-not $gcloud) { throw 'gcloud.cmd was not found on PATH or at the standard Google Cloud SDK path.' }
 $proxy = $env:CLOUD_SQL_PROXY_EXE
 if (-not $proxy) { $proxy = 'C:\Hushh\bin\cloud-sql-proxy.exe' }
 if (-not (Test-Path $proxy)) { throw "Cloud SQL Auth Proxy not found at $proxy" }
