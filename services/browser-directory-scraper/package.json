@@ -1,0 +1,17 @@
+{
+  "name": "@husshone/browser-directory-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node runner.mjs",
+    "worker": "node worker.mjs",
+    "seed": "node seed-priority.mjs",
+    "schema": "node apply-schema.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "puppeteer-core": "^24.31.0"
+  }
+}
