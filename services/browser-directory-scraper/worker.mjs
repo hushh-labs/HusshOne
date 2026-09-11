@@ -66,7 +66,8 @@ async function scrapeTask(browser, task) {
         href: link.href,
         text: (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim().slice(0, 500),
         title: link.querySelector("h3")?.innerText?.trim() || "",
-      })).filter((item) => /^https?:/i.test(item.href) && !/google\./i.test(new URL(item.href).hostname));
+      })).map((item) => ({ ...item, href: externalResultHref(item.href) }))
+        .filter((item) => item.href);
     });
     if (search.some((item) => /unusual traffic|captcha|sorry/i.test(`${item.title} ${item.text}`))) throw new Error("search_guard_or_captcha");
     const unique = [];
@@ -93,6 +94,24 @@ async function scrapeTask(browser, task) {
     return { resultCount: unique.length, observations };
   } finally {
     await page.close().catch(() => {});
+  }
+}
+
+function externalResultHref(rawHref) {
+  try {
+    const parsed = new URL(rawHref, "https://www.google.com");
+    const hostIsGoogle = /(^|\.)google\./i.test(parsed.hostname);
+    if (hostIsGoogle) {
+      const redirected = parsed.searchParams.get("q") || parsed.searchParams.get("url");
+      if (!redirected) return null;
+      const target = new URL(redirected);
+      if (!/^https?:$/i.test(target.protocol) || /(^|\.)google\./i.test(target.hostname)) return null;
+      return `${target.origin}${target.pathname}${target.search}`;
+    }
+    if (!/^https?:$/i.test(parsed.protocol)) return null;
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return null;
   }
 }
 
