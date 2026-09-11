@@ -57,9 +57,10 @@ async function scrapeTask(browser, task) {
   const page = await browser.newPage();
   page.setDefaultNavigationTimeout(timeoutMs);
   try {
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(task.query)}&num=10`;
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(task.query)}&num=10&hl=en&gl=us`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
-    await sleep(2500);
+    await sleep(5000);
+    await page.waitForFunction(() => document.querySelectorAll("a[href]").length > 0, { timeout: 10_000 }).catch(() => {});
     const search = await page.evaluate(() => {
       function externalResultHref(rawHref) {
         try {
