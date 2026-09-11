@@ -8,6 +8,7 @@
     "worker": "node worker.mjs",
     "seed": "node seed-priority.mjs",
     "schema": "node apply-schema.mjs",
+    "status": "node status.mjs",
     "test": "node --test"
   },
   "dependencies": {

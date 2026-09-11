@@ -6,7 +6,7 @@ if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) { throw 'Node.js 
 if (-not (Get-Command gcloud.cmd -ErrorAction SilentlyContinue)) { throw 'Google Cloud SDK (gcloud.cmd) is required.' }
 
 New-Item -ItemType Directory -Force -Path 'C:\Hushh\bin' | Out-Null
-npm install --omit=dev
+npm.cmd install --omit=dev
 
 $proxyUrl = 'https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.18.2/cloud-sql-proxy.x64.exe'
 $proxyPath = 'C:\Hushh\bin\cloud-sql-proxy.exe'
