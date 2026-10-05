@@ -196,6 +196,12 @@ def test_process_watchdog_terminates_owned_child(monkeypatch):
     assert calls == ["terminate"]
 
 
+def test_real_spawn_returns_blocked_without_network():
+    result = asyncio.run(web.collect_website({**RECORD, "website": "http://localhost/"}, timeout=20))
+    assert result["status"] == "blocked"
+    assert result["reason"] == "Local website blocked"
+
+
 def test_worker_reuses_fetched_result_after_database_outage(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "WEBSITE_ENRICHMENT_ENABLED", True)
     queue = WebsiteQueue(tmp_path / "jobs.sqlite3")
