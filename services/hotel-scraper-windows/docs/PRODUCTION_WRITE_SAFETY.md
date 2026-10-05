@@ -54,6 +54,22 @@ touched hotel and enough identity evidence to investigate a CID conflict.
 
 ## Abrupt shutdown and recovery
 
+The browser worker shares the VM's atomic ZIP queue protocol: transactionally
+select the next ZIP with `FOR UPDATE SKIP LOCKED`, mark it `in_progress`, and
+commit before opening Maps. A unique `husshone-browser:` marker in `last_error`
+identifies browser ownership while work is active; it is cleared on completion.
+Thirty-second heartbeats refresh `updated_at`, keeping active work inside the
+VM's thirty-minute stale-claim window. The browser only requeues expired browser
+markers, never another VM's unmarked claim. Clean shutdown releases only owned
+claims. Every result/status transaction locks the ZIP and verifies ownership.
+
+The outbox retains its claim token. Recovery waits while another worker owns
+the ZIP, then atomically reclaims available work before replay. An older
+observation does not replace hotel data whose `last_seen` is newer. Hotel counts
+use stored rows attributed to `query_zip`, matching VM report semantics. These
+controls coordinate ZIP work; Google CID remains an application identity lookup,
+not a database uniqueness constraint.
+
 `GET /api/recovery` opens the local journal and outbox strictly read-only
 (`mode=ro` plus SQLite `query_only`). It reports interrupted runs, pending
 batches, malformed local payloads, and an explicit `safe_to_resume` decision.
@@ -105,7 +121,8 @@ will run the audit instead.
 
 ## Refresh policy
 
-Set `REFRESH_AFTER_DAYS` when you are ready to refresh completed ZIPs. Once the
+`REFRESH_AFTER_DAYS` defaults to 30 days, matching the VM. Set it to 0 to leave
+completed ZIPs alone. Once the
 explicit pending queue is empty, the worker selects never-scraped/oldest ZIPs
 first and uses `hotels_found` as a density tiebreaker. `DAILY_MAPS_CALL_CAP`
 spreads the refresh workload across days.

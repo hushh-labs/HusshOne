@@ -20,12 +20,9 @@ HEADERS = {
 
 def normalize_name(name: str) -> str:
     """Matches production: ascii-folded, '&' -> 'and', punctuation -> single spaces, lowercase."""
-    chars = []
-    for ch in (name or "").replace("&", " and "):
-        # Any non-alphanumeric (incl. curly apostrophes) becomes a separator; accents are folded.
-        folded = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
-        chars.append(folded if folded.isalnum() else " ")
-    return re.sub(r"\s+", " ", "".join(chars).lower()).strip() or "unnamed hotel"
+    folded = unicodedata.normalize("NFKD", name or "")
+    folded = re.sub(r"[\u0300-\u036f]", "", folded).lower().replace("&", " and ")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", folded)).strip()
 
 def generate_dedup_key(name: str, lat: float, lng: float) -> str:
     """Production dedup_key format: '<normalized name>|<geohash6>'."""
@@ -82,7 +79,7 @@ def _parse_overpass_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, A
             "primary_type": primary_type,
             "types": [primary_type, "lodging"],
             "rating": None,
-            "business_status": "OPERATIONAL",
+            "business_status": None,
             "raw": {
                 "scraped_via": "osm_overpass",
                 "osm_tags": tags,

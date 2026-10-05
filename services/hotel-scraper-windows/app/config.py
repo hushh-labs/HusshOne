@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     SCHEMA_GUARD_CACHE_SEC: int = 300
     # When the queue is empty, re-crawl ZIPs not scraped in this many days
     # (0 = off). Stale/dense refreshes are spread by DAILY_MAPS_CALL_CAP.
-    REFRESH_AFTER_DAYS: int = 0
+    REFRESH_AFTER_DAYS: int = 30
     # Pause this long after repeated scrape failures (e.g. Google captcha/blocking).
     FAILURE_COOLDOWN_SEC: int = 300
 

@@ -173,6 +173,67 @@ def _rating_from_card(card) -> Optional[float]:
     return None
 
 
+def _parse_review_count(value: Optional[str]) -> Optional[int]:
+    match = re.search(r"([\d,]+)\s*reviews?", value or "", re.I)
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+def _place_id_from_url(value: Optional[str]) -> Optional[str]:
+    decoded = unquote(value or "")
+    query = parse_qs(urlparse(decoded).query)
+    candidate = (query.get("query_place_id") or query.get("place_id") or [None])[0]
+    if candidate and re.fullmatch(r"[A-Za-z0-9_-]{10,}", candidate):
+        return candidate
+    # A Maps feature ID / CID is not a Places API identifier.
+    match = re.search(r"!1s(ChI[A-Za-z0-9_-]+)(?:!|$)", decoded)
+    return match.group(1) if match else None
+
+
+def _detail_fields(page) -> Dict[str, Any]:
+    def label(selector, prefix):
+        element = page.query_selector(selector)
+        if not element:
+            return None
+        value = _clean(element.get_attribute("aria-label")) or _clean(element.inner_text())
+        return re.sub(r"^" + prefix + r":\s*", "", value, flags=re.I) if value else None
+
+    body = page.inner_text("body") or ""
+    if _is_blocked(page.url, body):
+        raise ScrapeBlocked("Google blocked hotel detail retrieval")
+    address = label('[data-item-id="address"], button[aria-label^="Address:"]', "Address")
+    phone = label('[data-item-id^="phone:"], button[aria-label^="Phone:"]', "Phone")
+    website_element = page.query_selector('a[data-item-id="authority"], a[aria-label^="Website:"]')
+    website = website_element.get_attribute("href") if website_element else None
+    if website and urlparse(website).hostname in ("www.google.com", "google.com"):
+        website = (parse_qs(urlparse(website).query).get("q") or [None])[0]
+    if website and urlparse(website).scheme not in ("https", "http"):
+        website = None
+    status = None
+    if re.search(r"\bpermanently closed\b", body, re.I):
+        status = "CLOSED_PERMANENTLY"
+    elif re.search(r"\btemporarily closed\b", body, re.I):
+        status = "CLOSED_TEMPORARILY"
+    # An opening-hours label is not a verified Places business status.
+    fields = {
+        "formatted_address": address, "phone": phone, "website": website,
+        "user_ratings_total": _parse_review_count(body),
+        "place_id": _place_id_from_url(page.url), "business_status": status,
+        "rating": _rating_from_card(page),
+    }
+    price = label('[aria-label^="Price:"]', "Price")
+    if price and re.fullmatch(r"\${1,4}", price):
+        fields["price_level"] = ("PRICE_LEVEL_INEXPENSIVE", "PRICE_LEVEL_MODERATE",
+                                 "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE")[len(price) - 1]
+    if address:
+        postal = re.search(r"\b([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b", address)
+        if postal:
+            fields.update(state=postal.group(1), zip=postal.group(2))
+    match = re.search(r"!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)", unquote(page.url))
+    if match:
+        fields.update(lat=float(match.group(1)), lng=float(match.group(2)))
+    return fields
+
+
 class _Browser:
     """Playwright state, created only inside the isolated child process."""
 
@@ -324,6 +385,28 @@ def _scrape_sync(city: str, state: str, zip_code: str, max_results: int) -> Scra
                 query=query,
                 selector=card_selector,
             )
+        # Collect all card data before navigation: opening details invalidates
+        # the original result-card DOM. A separate tab keeps the feed intact.
+        detail_page = page.context.new_page()
+        try:
+            detail_page.set_default_timeout(8_000)
+            for record in results:
+                source_url = record["raw"].get("source_url")
+                if not source_url:
+                    continue
+                try:
+                    detail_page.goto(source_url, wait_until="domcontentloaded", timeout=8_000)
+                    detail_page.wait_for_selector("h1", timeout=3_000)
+                    record.update({k: v for k, v in _detail_fields(detail_page).items() if v is not None})
+                    record["raw"]["detail_status"] = "retrieved"
+                    record["raw"]["detail_url"] = detail_page.url
+                except ScrapeBlocked as exc:
+                    return ScrapeResult(ScrapeStatus.BLOCKED, reason=str(exc), query=query)
+                except Exception as exc:
+                    record["raw"]["detail_status"] = "unavailable"
+                    record["raw"]["detail_error"] = _safe_reason(exc)
+        finally:
+            detail_page.close()
         return ScrapeResult(ScrapeStatus.SUCCESS, results, query=query, selector=card_selector)
     except Exception as exc:
         _browser.close()

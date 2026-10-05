@@ -68,30 +68,35 @@ the outbox, journal, private gcloud configuration, Chrome profile, and logs.
 See [production safety and recovery](docs/PRODUCTION_WRITE_SAFETY.md) and
 [dedicated Google account setup](docs/DEDICATED_GCLOUD_ACCOUNT.md).
 
-## Compatibility limits with the VM crawler
+## VM compatibility and remaining limits
 
-This source import does not claim complete behavioral parity or a completed
-72-hour soak test.
+ZIP work uses the VM's atomic `FOR UPDATE SKIP LOCKED` / `in_progress` claim
+protocol. Browser claims carry an ownership marker in `last_error` until they
+finish and heartbeat every 30 seconds. Result writes verify ownership under a
+row lock; recovery waits for a different worker and preserves newer VM data.
+Clean shutdown releases owned claims. Expired browser claims are recoverable
+after 30 minutes, matching the VM stale-work window.
 
-- The local advisory lock only coordinates copies of this Python worker.
-  ZIP selection does not atomically claim shared work as the VM's
-  `FOR UPDATE SKIP LOCKED`/`in_progress` protocol does. Do not operate both
-  hotel crawl workers on the same pending queue until shared claiming and
-  recovery ownership are aligned.
-- Maps cards currently provide mainly name, coordinates, rating, CID, and URL.
-  Address, Place ID, review count, price, phone, and website are often absent.
-  A CID is not a Google Place ID.
-- Browser-created hotels without a Place ID are not eligible for the existing
-  VM's photo resolver. The local worker assumes `OPERATIONAL` when business
-  status is missing; that is not independently verified.
-- The VM's `hotels_found` is stored inventory by `query_zip`; this worker's
-  value is the latest batch's valid-record count.
-- Refresh is disabled by default here (`REFRESH_AFTER_DAYS=0`).
-- Name normalization has Unicode edge differences from the VM implementation.
-- SMTP alerts/report delivery are not implemented in this Python service.
-  The VM deployment delegates scheduled reporting to the fleet roll-up.
-- The separate `browser-directory-scraper` service stages observations for
-  identity verification; this Python service writes validated hotels directly.
+`hotels_found` counts stored hotels by `query_zip`, name normalization matches
+the VM algorithm, and refresh defaults to 30 days. Existing runtime overrides
+are respected; use `REFRESH_AFTER_DAYS=0` to disable refresh.
+
+Maps detail pages provide address, review count, phone, website, rating, price
+category, closed status, and coordinates when visible. Unavailable fields stay
+empty and detail failures are recorded. Missing business status remains unknown.
+Only a genuine Place ID from an explicit Maps link is stored; a CID/feature ID
+is never substituted. Filling a verified Place ID makes a hotel eligible for
+the existing VM photo resolver without overwriting photo data. Many Maps pages
+do not expose a Place ID, so those rows remain ineligible until API enrichment.
+
+Scheduled progress reporting remains owned by the existing fleet roll-up,
+which reads the same hotel and ZIP tables. This service does not send a duplicate
+scheduled email, and standalone SMTP incident alerts are not implemented.
+The separate `browser-directory-scraper` stages cross-category observations;
+this service continues to write validated hotels into the canonical table.
+
+Live Maps selectors, concurrent production operation, and the 72-hour soak
+must be verified on the running machines; unit/CI tests do not prove those.
 
 Production schema/IAM migrations and VM deployment are separate operator actions.
 This service must not run `apply-schema` against the shared production database.
@@ -102,5 +107,6 @@ This service must not run `apply-schema` against the shared production database.
 .\venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Tests use a temporary SQLite backend and mocked external services. They do not
-require a production scrape or database mutation.
+Most tests use temporary SQLite and mocked external services. CI additionally
+checks real PostgreSQL row locking against a disposable `scraper_ci_windows`
+database. They do not require a production scrape or database mutation.

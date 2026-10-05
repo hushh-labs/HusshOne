@@ -1,0 +1,55 @@
+name: Windows hotel scraper
+
+on:
+  pull_request:
+    paths:
+      - 'services/hotel-scraper-windows/**'
+      - '.github/workflows/windows-hotel-scraper.yml'
+  push:
+    branches: [main, codex/windows-hotel-scraper]
+    paths:
+      - 'services/hotel-scraper-windows/**'
+      - '.github/workflows/windows-hotel-scraper.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scraper_ci
+          POSTGRES_PASSWORD: disposable_ci_password
+          POSTGRES_DB: scraper_ci_windows
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U scraper_ci -d scraper_ci_windows'
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: services/hotel-scraper-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest tests -q
+        env:
+          SCRAPER_TEST_POSTGRES_URL: postgresql+psycopg2://scraper_ci:disposable_ci_password@127.0.0.1:5432/scraper_ci_windows
+
+  windows-tests:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: services/hotel-scraper-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest tests -q

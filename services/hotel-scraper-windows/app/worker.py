@@ -8,6 +8,7 @@ import re
 import sqlite3
 import tempfile
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -839,11 +840,18 @@ class ScraperBackgroundWorker:
 
     # ---- queue ---------------------------------------------------------
     def _claim_next_zip(self, db: Session) -> Optional[Tuple[str, str, str, float, float]]:
+        self._assert_current_write_contract()
+        # Only recover expired browser claims; VM claims have their own recovery.
+        db.query(ZipCode).filter(
+            ZipCode.places_status == "in_progress",
+            ZipCode.last_error.like("husshone-browser:%"),
+            ZipCode.updated_at < _now() - timedelta(minutes=30),
+        ).update({"places_status": "pending", "last_error": None, "updated_at": _now()}, synchronize_session=False)
         query = db.query(ZipCode).filter(ZipCode.places_status == "pending")
         if self._scraper_mode == "defined_zips":
-            row = query.order_by(ZipCode.updated_at.desc()).first()
+            row = query.order_by(ZipCode.updated_at.desc()).with_for_update(skip_locked=True).first()
         else:
-            row = query.order_by(ZipCode.dist_km_from_kirkland.asc()).first()
+            row = query.order_by(ZipCode.dist_km_from_kirkland.asc().nullslast()).with_for_update(skip_locked=True).first()
         if row is None and settings.REFRESH_AFTER_DAYS > 0:
             cutoff = _now() - timedelta(days=settings.REFRESH_AFTER_DAYS)
             row = (
@@ -860,11 +868,86 @@ class ScraperBackgroundWorker:
                     ZipCode.hotels_found.desc(),
                     ZipCode.updated_at.asc(),
                 )
-                .first()
+                .with_for_update(skip_locked=True).first()
             )
         if row is None:
+            db.commit()
             return None
-        return row.zip, row.city or "", (row.state or "").strip(), row.lat, row.lng
+        result = row.zip, row.city or "", (row.state or "").strip(), row.lat, row.lng
+        token = "husshone-browser:" + uuid.uuid4().hex
+        row.places_status, row.last_error, row.updated_at = "in_progress", token, _now()
+        db.commit()
+        if not hasattr(self, "_zip_claims"):
+            self._zip_claims = {}
+        self._zip_claims[result[0]] = token
+        return result
+
+    def _lock_owned_zip(self, db: Session, zip_code: str) -> ZipCode:
+        row = db.query(ZipCode).filter(ZipCode.zip == zip_code).with_for_update().one()
+        token = getattr(self, "_zip_claims", {}).get(zip_code)
+        if token and (row.places_status != "in_progress" or row.last_error != token):
+            raise database.DatabaseUnavailable("ZIP lease lost; retaining batch for recovery")
+        if not token and not database.is_sqlite():
+            raise database.DatabaseUnavailable("ZIP write requires an owned claim")
+        return row
+
+    def _heartbeat_claims(self) -> None:
+        claims = dict(getattr(self, "_zip_claims", {}))
+        if not claims:
+            return
+        self._assert_current_write_contract()
+        db = get_db_session()
+        try:
+            for zip_code, token in claims.items():
+                db.query(ZipCode).filter(
+                    ZipCode.zip == zip_code, ZipCode.places_status == "in_progress",
+                    ZipCode.last_error == token,
+                ).update({"updated_at": _now()}, synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
+
+    def _release_zip_claims(self) -> None:
+        claims = dict(getattr(self, "_zip_claims", {}))
+        if not claims:
+            return
+        self._assert_current_write_contract()
+        db = get_db_session()
+        try:
+            for zip_code, token in claims.items():
+                db.query(ZipCode).filter(
+                    ZipCode.zip == zip_code, ZipCode.places_status == "in_progress",
+                    ZipCode.last_error == token,
+                ).update({"places_status": "pending", "last_error": None,
+                          "updated_at": _now()}, synchronize_session=False)
+            db.commit()
+            self._zip_claims.clear()
+        finally:
+            db.close()
+
+    async def _lease_heartbeat_loop(self) -> None:
+        while self._is_running:
+            try:
+                await asyncio.to_thread(self._heartbeat_claims)
+            except Exception as exc:
+                self._log(f"ZIP lease heartbeat failed: {_reason(exc)}", "WARNING")
+            await asyncio.sleep(30)
+
+    def _claim_outbox_zip(self, entry: OutboxBatch) -> None:
+        self._assert_current_write_contract()
+        db = get_db_session()
+        try:
+            row = db.query(ZipCode).filter(ZipCode.zip == entry.zip_code).with_for_update().one()
+            token = entry.metadata.get("claim_token") or "husshone-browser:" + uuid.uuid4().hex
+            if row.places_status == "in_progress" and row.last_error != token:
+                raise database.DatabaseUnavailable("Another worker owns the outbox ZIP; waiting")
+            row.places_status, row.last_error, row.updated_at = "in_progress", token, _now()
+            db.commit()
+            if not hasattr(self, "_zip_claims"):
+                self._zip_claims = {}
+            self._zip_claims[entry.zip_code] = token
+        finally:
+            db.close()
 
     def _next_zip_sync(self) -> Optional[Tuple[str, str, str, float, float]]:
         db = get_db_session()
@@ -1266,7 +1349,7 @@ class ScraperBackgroundWorker:
             "sources": record["sources"],
             "name": record["name"],
             "formatted_address": address,
-            "zip": zip_match[-1] if zip_match else None,
+            "zip": _clean(record.get("zip")) or (zip_match[-1] if zip_match else None),
             "query_zip": zip_code,
             "state": (state or "")[:2] or None,
             "lat": record["lat"],
@@ -1279,7 +1362,7 @@ class ScraperBackgroundWorker:
             "google_maps_uri": _clean(record.get("google_maps_uri")),
             "primary_type": _clean(record.get("primary_type")) or "hotel",
             "types": record.get("types") or ["hotel", "lodging"],
-            "business_status": _clean(record.get("business_status")) or "OPERATIONAL",
+            "business_status": _clean(record.get("business_status")),
             "raw": dict(record.get("raw") or {}),
             "first_seen": now,
             "last_seen": now,
@@ -1291,9 +1374,30 @@ class ScraperBackgroundWorker:
 
     @staticmethod
     def _touch_row(row: Hotel, record: Dict[str, Any], now: datetime) -> None:
+        # An outbox can survive for days. Never replace newer VM enrichment
+        # with an older observation replayed after a database outage.
+        collected_at = (record.get("raw") or {}).get("scraped_at")
+        if collected_at and row.last_seen:
+            try:
+                collected = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+                previous = row.last_seen
+                if previous.tzinfo is None:
+                    previous = previous.replace(tzinfo=timezone.utc)
+                if collected.tzinfo is None:
+                    collected = collected.replace(tzinfo=timezone.utc)
+                if previous > collected:
+                    return
+            except (TypeError, ValueError):
+                raise ValueError("Invalid scraped_at timestamp; refusing hotel refresh")
         row.sources = sorted(set(row.sources or []) | set(record["sources"]))
         if record.get("rating") is not None and "places" in record["sources"]:
             row.rating = record["rating"]
+        for field_name in ("user_ratings_total", "price_level", "business_status"):
+            if record.get(field_name) is not None and "places" in record["sources"]:
+                setattr(row, field_name, record[field_name])
+        for field_name in ("formatted_address", "zip", "state", "osm_id"):
+            if not getattr(row, field_name) and record.get(field_name):
+                setattr(row, field_name, record[field_name])
         if not row.phone and _clean(record.get("phone")):
             row.phone = _clean(record.get("phone"))
         if not row.website and _clean(record.get("website")):
@@ -1308,8 +1412,7 @@ class ScraperBackgroundWorker:
         row.last_seen = now
 
     # ---- durable local outbox -----------------------------------------
-    @staticmethod
-    def _outbox_metadata(batch: _PendingBatch) -> Dict[str, Any]:
+    def _outbox_metadata(self, batch: _PendingBatch) -> Dict[str, Any]:
         return {
             "city": batch.city,
             "state": batch.state,
@@ -1319,6 +1422,7 @@ class ScraperBackgroundWorker:
             "maps_status": batch.result.status.value,
             "query": batch.result.query,
             "selector": batch.result.selector,
+            "claim_token": getattr(self, "_zip_claims", {}).get(batch.zip_code),
         }
 
     async def _enqueue_outbox_batch(self, batch: _PendingBatch) -> OutboxBatch:
@@ -1373,6 +1477,7 @@ class ScraperBackgroundWorker:
         if self._outbox is None:
             raise OutboxError("Durable local outbox is not initialized")
         state, lat, lng = self._outbox_location(entry)
+        await asyncio.to_thread(self._claim_outbox_zip, entry)
         # The outbox is durable, not implicitly trusted: validate the decoded
         # payload again before a replayed batch can reach Cloud SQL.
         records, rejected = self._prepare_records(
@@ -1509,6 +1614,7 @@ class ScraperBackgroundWorker:
         self._assert_inventory_safe("before_result_save")
         db = get_db_session()
         try:
+            self._lock_owned_zip(db, zip_code)
             by_key, by_place, by_cid = self._existing_rows(db, records) if records else ({}, {}, {})
             resolved = [
                 (record, self._resolve_existing(zip_code, record, by_key, by_place, by_cid))
@@ -1569,10 +1675,12 @@ class ScraperBackgroundWorker:
                             "WARNING",
                         )
 
+            db.flush()
+            inventory_count = db.query(Hotel).filter(Hotel.query_zip == zip_code).count()
             db.query(ZipCode).filter(ZipCode.zip == zip_code).update(
                 {
                     "places_status": "done",
-                    "hotels_found": len(records),
+                    "hotels_found": inventory_count,
                     "last_scraped_at": now,
                     "last_error": None,
                     "updated_at": now,
@@ -1582,6 +1690,7 @@ class ScraperBackgroundWorker:
             db.commit()
 
             # Commit is deliberately followed by another independent read:
+            getattr(self, "_zip_claims", {}).pop(zip_code, None)
             # a concurrent external delete or unexpected restore must stop
             # future writes even though this transaction itself is durable.
             self._assert_inventory_safe("after_result_commit")
@@ -1618,10 +1727,12 @@ class ScraperBackgroundWorker:
         self._assert_current_write_contract()
         db = get_db_session()
         try:
+            self._lock_owned_zip(db, zip_code)
             db.query(ZipCode).filter(ZipCode.zip == zip_code).update(
                 values, synchronize_session=False
             )
             db.commit()
+            getattr(self, "_zip_claims", {}).pop(zip_code, None)
         except Exception:
             db.rollback()
             raise
@@ -1631,9 +1742,8 @@ class ScraperBackgroundWorker:
     def _historical_hotel_count(self, zip_code: str) -> int:
         db = get_db_session()
         try:
-            return int(
-                db.query(ZipCode.hotels_found).filter(ZipCode.zip == zip_code).scalar() or 0
-            )
+            return max(int(db.query(ZipCode.hotels_found).filter(ZipCode.zip == zip_code).scalar() or 0),
+                       db.query(Hotel).filter(Hotel.query_zip == zip_code).count())
         finally:
             db.close()
 
@@ -1906,6 +2016,7 @@ class ScraperBackgroundWorker:
     async def _run_loop(self) -> None:
         pending: Optional[_PendingBatch] = None
         self._log("Worker background task entered execution loop.")
+        heartbeat_task = asyncio.create_task(self._lease_heartbeat_loop())
         try:
             while self._is_running:
                 if self._is_paused:
@@ -2054,6 +2165,15 @@ class ScraperBackgroundWorker:
             self._log("Background worker task cancellation received.")
         finally:
             self._is_running = False
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                await asyncio.to_thread(self._release_zip_claims)
+            except Exception as exc:
+                self._log(f"ZIP claim release deferred to stale-lease recovery: {_reason(exc)}", "WARNING")
             self._stats["current_action"] = "Idle"
             self._release_lock()
             worker_wake_lock.release()
