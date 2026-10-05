@@ -187,6 +187,21 @@ change from the scraper process.
 
 ## Windows continuity
 
+Tests set an isolated temporary `LOCALAPPDATA` before importing the application.
+SQLite development outboxes and journals are also separated by database target.
+Every new batch records a non-secret database fingerprint; startup and replay
+reject missing or mismatched fingerprints before any ZIP claim or remote write.
+Legacy pending batches stay intact and hold the worker for operator review.
+The worker fails closed if its durable files cannot open; it never silently
+switches to a shared temporary recovery folder. Production connections are
+explicitly forbidden while the test-mode marker is set.
+
+An authorized cleanup may record an `operator_inventory_checkpoint` with its
+database fingerprint, removed IDs and backup path in the local run journal.
+This establishes a reviewed inventory baseline without erasing old audit
+history or lowering any newer run watermark. This is not an automatic cleanup
+feature: the running app's destructive-SQL firewall remains enabled.
+
 `run_as_background_vm.ps1` launches the worker below normal priority and keeps
 runtime logs under `%LOCALAPPDATA%\HusshOne-Hotel-Scraper\logs`. To prepare a
 per-user login task with restart-on-crash behavior, review and explicitly run:

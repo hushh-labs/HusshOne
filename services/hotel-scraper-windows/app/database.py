@@ -239,6 +239,8 @@ def is_sqlite() -> bool:
 def init_db() -> Optional[Engine]:
     """Creates the engine (lazy, no network round-trip). Never creates/alters PostgreSQL tables."""
     global engine, SessionLocal, _last_init_attempt
+    if settings.DB_BACKEND == "cloud" and (os.getenv("HUSSHONE_TEST_MODE") or os.getenv("PYTEST_CURRENT_TEST")):
+        raise DatabaseUnavailable("Cloud SQL connections are forbidden in tests")
     with _init_lock:
         if engine is not None:
             return engine
@@ -286,6 +288,8 @@ def init_db() -> Optional[Engine]:
 
 def ensure_engine() -> Optional[Engine]:
     """Returns the engine, retrying initialisation (e.g. password lookup) at most every 30s."""
+    if settings.DB_BACKEND == "cloud" and (os.getenv("HUSSHONE_TEST_MODE") or os.getenv("PYTEST_CURRENT_TEST")):
+        raise DatabaseUnavailable("Cloud SQL connections are forbidden in tests")
     if engine is not None:
         return engine
     if time.time() - _last_init_attempt < 30:

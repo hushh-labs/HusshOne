@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from app.outbox import LocalOutbox
+from app.config import database_target
 from app.recovery import RecoveryInspectionError, inspect_startup_recovery, startup_recovery_status
 from app.run_journal import RunJournal
 
@@ -22,7 +23,8 @@ def test_recovery_report_finds_interrupted_runs_and_pending_outbox_without_mutat
         "interrupted-run",
         "98033",
         [{"name": "North Star", "lat": 47.61, "lng": -122.2}],
-        metadata={"state": "WA", "zip_lat": 47.61, "zip_lng": -122.2},
+        metadata={"state": "WA", "zip_lat": 47.61, "zip_lng": -122.2,
+                  "database_target": database_target()},
         batch_id="interrupted-run:98033",
         created_at=datetime(2026, 10, 5, 8, 1, tzinfo=timezone.utc),
     )

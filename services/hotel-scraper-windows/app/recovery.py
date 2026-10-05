@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
-from app.outbox import default_outbox_path
+from app.outbox import default_outbox_path, require_matching_target, OutboxTargetMismatch
 from app.run_journal import default_journal_path
 
 
@@ -398,7 +398,7 @@ def _inspect_outbox(path: Path, limit: int) -> Dict[str, Any]:
 
         if result["integrity_errors"]:
             result["state"] = "corrupt"
-            result["error"] = "outbox contains a malformed pending batch; remote writes should remain paused"
+            result["error"] = "outbox contains an unsafe pending batch (payload or database target); remote writes should remain paused"
         else:
             result["state"] = "ready"
     except (OSError, sqlite3.Error, ValueError) as exc:
@@ -425,7 +425,8 @@ def _validate_pending_payload(
         metadata = json.loads(row["metadata_json"])
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be a JSON object")
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        require_matching_target(metadata)
+    except (TypeError, ValueError, json.JSONDecodeError, OutboxTargetMismatch) as exc:
         _append_limited(
             integrity_errors,
             {

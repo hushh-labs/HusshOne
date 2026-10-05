@@ -31,7 +31,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Union
 
-from app.config import user_data_dir
+from app.config import runtime_state_dir
 
 
 DEFAULT_JOURNAL_FILENAME = "scrape_run_journal.sqlite3"
@@ -73,7 +73,7 @@ DateLike = Union[date, datetime, str]
 
 def default_journal_path() -> Path:
     """Return the stable, user-local path used when no journal path is supplied."""
-    return Path(user_data_dir()) / DEFAULT_JOURNAL_FILENAME
+    return Path(runtime_state_dir()) / DEFAULT_JOURNAL_FILENAME
 
 
 def _utc_now() -> datetime:

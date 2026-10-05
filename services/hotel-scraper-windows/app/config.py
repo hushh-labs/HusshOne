@@ -1,4 +1,6 @@
 import os
+import hashlib
+import json
 from typing import Literal, Mapping, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -113,6 +115,31 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def database_target() -> dict:
+    """Non-secret identity for durable batches; credentials are never persisted."""
+    if settings.DB_BACKEND == "sqlite":
+        identity = {"url": settings.DATABASE_URL or "default-sqlite"}
+    elif settings.DATABASE_URL:
+        from sqlalchemy.engine import make_url
+        url = make_url(settings.DATABASE_URL)
+        identity = {"host": url.host, "port": url.port, "database": url.database}
+    else:
+        identity = {"project": settings.GCP_PROJECT, "region": settings.GCP_REGION,
+                    "instance": settings.CLOUD_SQL_INSTANCE, "database": settings.DB_NAME}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return {"version": 1, "backend": settings.DB_BACKEND, "fingerprint": digest}
+
+
+def runtime_state_dir() -> str:
+    # Retain the existing production audit trail. Local development gets a
+    # separate spool per SQLite target, even outside pytest.
+    root = user_data_dir()
+    if settings.DB_BACKEND == "sqlite":
+        root = os.path.join(root, "development", database_target()["fingerprint"][:24])
+    os.makedirs(root, exist_ok=True)
+    return root
 
 
 def gcloud_config_dir() -> str:

@@ -22,12 +22,12 @@ from sqlalchemy.orm import Session
 
 from app import chrome_scraper, database
 from app.canary import assess_canary
-from app.config import settings
+from app.config import settings, database_target
 from app.database import get_db_session
 from app.data_quality import audit_hotels
 from app.free_scraper import generate_dedup_key
 from app.models import Hotel, ZipCode
-from app.outbox import LocalOutbox, OutboxBatch, OutboxError
+from app.outbox import LocalOutbox, OutboxBatch, OutboxError, require_matching_target
 from app.power import worker_wake_lock
 from app.recovery import inspect_startup_recovery
 from app.run_journal import RunJournal
@@ -267,30 +267,9 @@ class ScraperBackgroundWorker:
 
     def _open_durable_state(self) -> Tuple[RunJournal, LocalOutbox]:
         """Open the local audit files without starting a new run yet."""
-        fallback_dir = Path(tempfile.gettempdir()) / "HusshOne-Hotel-Scraper"
-        try:
-            journal = RunJournal()
-        except (OSError, sqlite3.Error) as exc:
-            # A locked or policy-restricted LOCALAPPDATA must not silently
-            # remove the audit trail or prevent a healthy worker from running.
-            # The temporary directory is durable across app restarts on normal
-            # Windows installations and is writable in restricted deployments.
-            fallback = fallback_dir / "scrape_run_journal.sqlite3"
-            journal = RunJournal(fallback)
-            self._log(
-                f"Default run journal unavailable ({_reason(exc)}); using {fallback}.",
-                "WARNING",
-            )
-        try:
-            outbox = LocalOutbox()
-        except (OSError, sqlite3.Error) as exc:
-            fallback = fallback_dir / "scrape_outbox.sqlite3"
-            outbox = LocalOutbox(fallback)
-            self._log(
-                f"Default scrape outbox unavailable ({_reason(exc)}); using {fallback}.",
-                "WARNING",
-            )
-        return journal, outbox
+        # Never switch to a shared temporary spool: it can hide pending work
+        # and mix development batches with production recovery.
+        return RunJournal(), LocalOutbox()
 
     def _open_journal_run(
         self,
@@ -305,6 +284,7 @@ class ScraperBackgroundWorker:
         if journal is None or outbox is None:
             journal, outbox = self._open_durable_state()
         metadata: Dict[str, Any] = {
+            "database_target": database_target(),
             "scraped_via": SCRAPED_VIA,
             "worker": "background",
             "scraper_mode": self._scraper_mode,
@@ -441,6 +421,14 @@ class ScraperBackgroundWorker:
                 # the fallback here so a malformed historical record can never
                 # silently lower the protection boundary.
                 raise ValueError(f"journal run {run.get('run_id')} has invalid metadata")
+            # An explicit, backed-up operator cleanup may legitimately lower
+            # inventory. Newer run watermarks still take precedence.
+            checkpoint = metadata.get("operator_inventory_checkpoint")
+            if checkpoint is not None and metadata.get("database_target") == database_target():
+                candidate = self._normalise_inventory_watermark(checkpoint, field="operator cleanup checkpoint")
+                watermark = self._merge_inventory_watermarks(watermark, candidate)
+                sources.append(str(run.get("run_id")))
+                break
             for key in (
                 "hotel_inventory_end",
                 "hotel_inventory_watermark",
@@ -1414,6 +1402,7 @@ class ScraperBackgroundWorker:
     # ---- durable local outbox -----------------------------------------
     def _outbox_metadata(self, batch: _PendingBatch) -> Dict[str, Any]:
         return {
+            "database_target": database_target(),
             "city": batch.city,
             "state": batch.state,
             "zip_lat": batch.lat,
@@ -1479,6 +1468,8 @@ class ScraperBackgroundWorker:
         """
         if self._outbox is None:
             raise OutboxError("Durable local outbox is not initialized")
+        # Check before claiming a ZIP or opening any remote transaction.
+        require_matching_target(entry.metadata)
         state, lat, lng = self._outbox_location(entry)
         await asyncio.to_thread(self._claim_outbox_zip, entry)
         # The outbox is durable, not implicitly trusted: validate the decoded

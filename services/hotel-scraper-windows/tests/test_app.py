@@ -381,7 +381,8 @@ def test_durable_outbox_replays_a_prior_run_before_new_scraping(client, tmp_path
         "prior-run",
         "98123",
         records,
-        metadata={"state": "WA", "zip_lat": 47.68, "zip_lng": -122.2},
+        metadata={"state": "WA", "zip_lat": 47.68, "zip_lng": -122.2,
+                  "database_target": worker_module.database_target()},
         batch_id="prior-run:98123",
     )
     replay_worker._outbox = outbox

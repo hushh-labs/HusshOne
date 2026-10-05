@@ -24,7 +24,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 
-from app.config import user_data_dir
+from app.config import runtime_state_dir, database_target
 
 
 DEFAULT_OUTBOX_FILENAME = "scrape_outbox.sqlite3"
@@ -42,6 +42,17 @@ _ZIP_RE = re.compile(r"^\d{5}$")
 
 class OutboxError(RuntimeError):
     """Base exception for local outbox failures."""
+
+
+class OutboxTargetMismatch(OutboxError):
+    """A legacy or foreign batch must never mutate the current database."""
+
+
+def require_matching_target(metadata: Mapping[str, Any]) -> None:
+    if metadata.get("database_target") != database_target():
+        raise OutboxTargetMismatch(
+            "Outbox database target is missing or different; hold for operator review."
+        )
 
 
 class OutboxNotFoundError(OutboxError):
@@ -92,7 +103,7 @@ class OutboxBatch:
 
 def default_outbox_path() -> Path:
     """Return the stable user-local path used when no path is supplied."""
-    return Path(user_data_dir()) / DEFAULT_OUTBOX_FILENAME
+    return Path(runtime_state_dir()) / DEFAULT_OUTBOX_FILENAME
 
 
 def _utc_now() -> datetime:
