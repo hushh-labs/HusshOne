@@ -1286,6 +1286,28 @@ async def queue_hotel_website(hotel_id: int, db: Session = Depends(get_db)):
     return {"status": "queued", "hotel_id": hotel_id, "message": "Website queued locally; start the worker to collect evidence."}
 
 
+@app.post("/api/hotels/{hotel_id}/website-discovery")
+def queue_website_discovery(hotel_id: int, db: Session = Depends(get_db)):
+    from app.website_discovery import maps_identity_url
+    from app.config import database_target
+    if not settings.WEBSITE_ENRICHMENT_ENABLED:
+        raise HTTPException(status_code=409, detail="Website enrichment is disabled")
+    hotel = db.get(Hotel, hotel_id)
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    if hotel.website and hotel.website.strip():
+        raise HTTPException(status_code=409, detail="Hotel already has a website")
+    record = hotel.to_dict()
+    record["raw"] = {"google_cid": (hotel.raw or {}).get("google_cid"), "scraped_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        maps_identity_url(record)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    record["_discover_website"] = True
+    _website_backfill_queue().enqueue(record, "website-discovery-" + uuid.uuid4().hex, database_target())
+    return {"status": "queued", "production_changed": False}
+
+
 def _website_backfill_queue():
     from app.website_queue import WebsiteQueue
     if worker_instance._website_queue is None:
@@ -1296,6 +1318,22 @@ def _website_backfill_queue():
 @app.get("/api/website-backfill")
 def website_backfill_status():
     return _website_backfill_queue().backfill_status()
+
+
+@app.get("/api/website-reviews")
+def website_reviews():
+    queue = _website_backfill_queue()
+    return {"items": queue.reviews(), "metrics": queue.metrics()}
+
+
+@app.post("/api/website-reviews/{review_id}/{decision}")
+def decide_website_review(review_id: str, decision: str):
+    try:
+        return _website_backfill_queue().decide_review(review_id, decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Review not found")
 
 
 @app.post("/api/website-backfill/start")

@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     # Pause this long after repeated scrape failures (e.g. Google captcha/blocking).
     FAILURE_COOLDOWN_SEC: int = 300
     WEBSITE_ENRICHMENT_ENABLED: bool = True
+    WEBSITE_BROWSER_FALLBACK: bool = True
     WEBSITE_MAX_PAGES: int = 4
     WEBSITE_TIMEOUT_SEC: int = 10
     WEBSITE_MAX_BYTES: int = 1_000_000

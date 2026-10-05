@@ -206,8 +206,8 @@ database outage or crash after commit can safely replay the same evidence.
 
 Business JSON-LD must match the Maps name and corroborate phone, ZIP or nearby
 coordinates. Ambiguous sites become `needs_review`; restrictions and uncertain
-cross-host redirects are not bypassed. This first version does not render
-JavaScript-only websites or infer facts from free-form page text. Relevant page
+cross-host redirects are not bypassed. JavaScript fallback is now restricted as described below; the collector does not
+infer facts from free-form page text. Relevant page
 excerpts remain evidence, not structured claims about amenities or policies.
 
 Evidence is stored in `hotels.raw.website_enrichment`, containing source
@@ -254,6 +254,48 @@ Defaults: `WEBSITE_BACKFILL_BATCH_SIZE=200` and
 `WEBSITE_BACKFILL_MAX_PENDING=100`. Disable
 `WEBSITE_FILL_MISSING_FIELDS` to hold historical jobs and disable canonical
 fills while retaining normal evidence collection.
+
+### Website hardening and review
+
+Website collection uses HTTP first, then an optional restricted Chrome fallback
+(`WEBSITE_BROWSER_FALLBACK=true`). Browser HTTP requests are fulfilled through
+the same DNS-pinned public-site client and robots checks, not unrestricted
+browser networking. Service workers and WebSockets are disabled. Cross-domain
+assets are blocked; some sites will consequently require review. Request,
+response-size and process deadlines remain bounded.
+
+Matching rejects conflicting known phone numbers, ZIP codes or coordinates.
+An exact structured name needs one corroborator; an explicit `alternateName`
+needs two. Canonical fills revalidate against the locked current row. Pets,
+smoking, room inventories, offer catalogs and payment information are retained
+as source-labelled structured evidence, not invented canonical columns.
+
+The hotel detail dialog has **Discover website candidate** for rows without a
+website and with an existing Maps property identity. This is an explicit,
+single-property action, counts toward the daily Maps cap, and never guesses a
+domain. Candidates and uncertain website identities go to the durable local
+review queue. Accepting evidence acknowledges it locally only; it does not
+bypass identity/blank-only guards or set a production website. Rejection of
+unchanged page evidence is remembered across observations and restarts.
+Historical backfill still skips missing-website rows; automatic bulk discovery
+and approved website promotion are not implemented in this release.
+
+The dashboard separates collection outcomes, fields filled and review decisions.
+All review actions are target-bound local SQLite writes. No production table
+or trigger is added by these features.
+
+For a read-only website canary, export one non-secret hotel record (name,
+website and independent known phone/address/coordinates) to JSON and run:
+
+```powershell
+.\venv\Scripts\python.exe scripts\website_soak.py --record hotel-canary.json
+.\venv\Scripts\python.exe scripts\website_soak.py --record hotel-canary.json --hours 72
+```
+
+The harness emits JSON lines, stops on failure, and never connects to Cloud SQL.
+It is a website reliability probe, not proof of stable browser memory, database
+deduplication, alerts or a completed end-to-end 72-hour production soak. Those
+acceptance checks still need a supervised deployment validation.
 
 ## Windows continuity (deployment)
 

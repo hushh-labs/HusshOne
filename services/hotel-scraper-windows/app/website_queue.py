@@ -32,6 +32,71 @@ class WebsiteQueue:
                 c.execute("ALTER TABLE website_jobs ADD COLUMN filled_count INTEGER NOT NULL DEFAULT 0")
             c.execute("CREATE INDEX IF NOT EXISTS website_jobs_backfill ON website_jobs(json_extract(payload,'$.backfill_id'),state,filled_count)")
             c.execute("CREATE INDEX IF NOT EXISTS website_jobs_due ON website_jobs(state,next_attempt,updated_at,id)")
+            c.execute("CREATE INDEX IF NOT EXISTS website_jobs_metrics ON website_jobs(json_extract(payload,'$.database_target.fingerprint'),json_extract(result,'$.status'),filled_count)")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_reviews (
+                fingerprint TEXT PRIMARY KEY, job_id TEXT NOT NULL, target TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT 'pending', updated_at REAL NOT NULL)""")
+            c.execute("CREATE INDEX IF NOT EXISTS website_reviews_pending ON website_reviews(target,decision,updated_at)")
+
+    def hold_for_review(self, job):
+        require_matching_target(job["payload"])
+        result = job["result"]
+        # Ignore observation timestamps: unchanged evidence retains its decision.
+        identity = [job["payload"]["database_target"], job["payload"]["record"]["dedup_key"],
+                    result.get("requested_url"), result.get("reason"),
+                    [(p.get("url"), p.get("sha256")) for p in result.get("pages", [])],
+                    {key: {part: value.get(part) for part in ("value", "source_url", "extraction")}
+                     for key, value in result.get("fields", {}).items() if isinstance(value, dict)}]
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with self.connect() as c:
+            c.execute("INSERT OR IGNORE INTO website_reviews(fingerprint,job_id,target,updated_at) VALUES(?,?,?,?)",
+                      (fingerprint, job["id"], database_target()["fingerprint"], time.time()))
+            decision = c.execute("SELECT decision FROM website_reviews WHERE fingerprint=?", (fingerprint,)).fetchone()[0]
+            c.execute("UPDATE website_jobs SET state=?,updated_at=? WHERE id=?",
+                      ("review" if decision == "pending" else "skipped", time.time(), job["id"]))
+
+    def reviews(self):
+        with self.connect() as c:
+            rows = c.execute("""SELECT r.*,j.payload,j.result FROM website_reviews r JOIN website_jobs j ON j.id=r.job_id
+                WHERE r.target=? AND r.decision='pending' ORDER BY r.updated_at LIMIT 50""",
+                (database_target()["fingerprint"],)).fetchall()
+        items = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            require_matching_target(payload)
+            items.append({"id": row["fingerprint"], "record": payload["record"], "result": json.loads(row["result"])})
+        return items
+
+    def decide_review(self, fingerprint, decision):
+        # Acceptance acknowledges evidence only. It cannot override identity or
+        # blank-field guards and does not mutate production.
+        if decision not in ("accepted_evidence", "rejected"):
+            raise ValueError("Invalid evidence decision")
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT * FROM website_reviews WHERE fingerprint=? AND target=?",
+                            (fingerprint, database_target()["fingerprint"])).fetchone()
+            if not row:
+                raise KeyError(fingerprint)
+            if row["decision"] != "pending":
+                return {"decision": row["decision"]}
+            c.execute("UPDATE website_reviews SET decision=?,updated_at=? WHERE fingerprint=?",
+                      (decision, time.time(), fingerprint))
+            c.execute("UPDATE website_jobs SET state='skipped',updated_at=? WHERE id=?", (time.time(), row["job_id"]))
+        return {"decision": decision, "production_changed": False}
+
+    def metrics(self):
+        with self.connect() as c:
+            rows = c.execute("""SELECT json_extract(result,'$.status') status,count(*) n FROM website_jobs
+                WHERE json_extract(payload,'$.database_target.fingerprint')=? GROUP BY status""",
+                (database_target()["fingerprint"],)).fetchall()
+            fills = c.execute("SELECT COALESCE(sum(filled_count),0) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=?",
+                              (database_target()["fingerprint"],)).fetchone()[0]
+            decisions = dict(c.execute("SELECT decision,count(*) FROM website_reviews WHERE target=? GROUP BY decision",
+                                      (database_target()["fingerprint"],)).fetchall())
+        collection = {r["status"] or "not_collected": r["n"] for r in rows}
+        return {"collection": collection, "corroborated_jobs": collection.get("collected", 0),
+                "filled_fields": fills, "review": decisions}
 
     @contextmanager
     def connect(self):
@@ -50,13 +115,15 @@ class WebsiteQueue:
 
     def enqueue(self, record, run_id, target, *, fill_missing=False, backfill_id=None):
         require_matching_target({"database_target": target})
-        if not record.get("website"):
+        if not record.get("website") and not record.get("_discover_website"):
             return
         # A new Maps observation can refresh a completed website; replay of
         # the same observation cannot duplicate or reset a job.
         payload = {"record": record, "run_id": run_id, "database_target": target,
                    "fill_missing": bool(fill_missing), "backfill_id": backfill_id}
-        identity = [target, record["dedup_key"], record["website"], record.get("raw", {}).get("scraped_at")]
+        identity = [target, record["dedup_key"], record.get("website"), record.get("raw", {}).get("scraped_at")]
+        if record.get("_discover_website"):
+            identity.append("maps_website_discovery")
         if fill_missing or backfill_id:
             identity.extend([bool(fill_missing), backfill_id])
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -91,6 +158,12 @@ class WebsiteQueue:
                        time.time() + min(86400, 300 * 2 ** min(attempts - 1, 8)) if retry else 0,
                        time.time(), job["id"]))
         return not retry
+
+    def defer(self, job, seconds=60):
+        require_matching_target(job["payload"])
+        with self.connect() as c:
+            c.execute("UPDATE website_jobs SET next_attempt=?,updated_at=? WHERE id=?",
+                      (time.time() + seconds, time.time(), job["id"]))
 
     def finish(self, job_id, state="applied", filled_fields=None):
         if state not in ("applied", "skipped"):

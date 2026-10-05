@@ -3,7 +3,7 @@ import re
 from urllib.parse import urlsplit
 
 from app.free_scraper import normalize_name
-from app.website_enrichment import safe_url
+from app.website_enrichment import safe_url, matched_business
 
 FIELDS = ("phone", "formatted_address", "zip", "state")
 US_STATES = set("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY AS GU MP PR VI".split())
@@ -18,7 +18,12 @@ def fill_candidates(row, result):
     if result.get("status") != "collected" or result.get("identity") != "corroborated_public_data":
         return {}
     business_name = normalize_name(str(result.get("business_name", "")))
-    if not business_name or business_name != normalize_name(row.name):
+    identity = result.get("identity_node")
+    if identity is not None:
+        current = {field: getattr(row, field, None) for field in ("name", "phone", "formatted_address", "lat", "lng")}
+        if not isinstance(identity, dict) or not matched_business(identity, current):
+            return {}
+    elif not business_name or business_name != normalize_name(row.name):
         return {}
     try:
         host = urlsplit(safe_url(row.website)).hostname.removeprefix("www.")

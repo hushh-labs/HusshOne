@@ -175,6 +175,8 @@ def test_fetch_pins_validated_ip_and_bounds_response(monkeypatch):
 
 
 def test_process_watchdog_terminates_owned_child(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: None)
     calls = []
     pipe = SimpleNamespace(close=lambda: None, poll=lambda: False)
     class Process:

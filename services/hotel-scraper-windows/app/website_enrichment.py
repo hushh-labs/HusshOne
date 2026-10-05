@@ -14,6 +14,7 @@ import ssl
 import time
 import asyncio
 import multiprocessing
+import math
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -153,28 +154,42 @@ def matched_business(node, record):
         return False
     name = normalize_name(str(node.get("name", "")))
     expected = normalize_name(record["name"])
-    if not name or name != expected:
+    aliases = node.get("alternateName", [])
+    aliases = [aliases] if isinstance(aliases, str) else aliases
+    alias_match = isinstance(aliases, list) and expected in {normalize_name(a) for a in aliases if isinstance(a, str)}
+    if not name or not expected or (name != expected and not alias_match):
         return False
+    signals = 0
     phone = _digits(record.get("phone"))
+    node_phone = _digits(node.get("telephone"))
+    if len(phone) == 10 and len(node_phone) == 10 and phone != node_phone:
+        return False
     if len(phone) == 10 and phone == _digits(node.get("telephone")):
-        return True
+        signals += 1
     address = node.get("address")
     if isinstance(address, dict):
         postal = str(address.get("postalCode", ""))[:5]
         maps_postal = re.findall(r"\b\d{5}\b", record.get("formatted_address") or "")
+        if re.fullmatch(r"\d{5}", postal) and maps_postal and postal not in maps_postal:
+            return False
         if re.fullmatch(r"\d{5}", postal) and postal in maps_postal:
-            return True
+            signals += 1
     geo = node.get("geo")
     if isinstance(geo, dict):
         try:
-            return haversine_km(float(record["lat"]), float(record["lng"]),
-                                float(geo["latitude"]), float(geo["longitude"])) < 1
+            coordinates = [float(record["lat"]), float(record["lng"]), float(geo["latitude"]), float(geo["longitude"])]
+            if not all(math.isfinite(c) and abs(c) <= (90 if i % 2 == 0 else 180) for i, c in enumerate(coordinates)):
+                return False
+            distance = haversine_km(*coordinates)
+            if distance >= 1:
+                return False
+            signals += 1
         except (KeyError, ValueError, TypeError):
             pass
-    return False
+    return signals >= (1 if name == expected else 2)
 
 
-def crawl_website(record, fetch=fetch_page, sleep=time.sleep):
+def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
     result = {"version": 1, "status": "retry", "requested_url": record.get("website"),
               "collected_at": datetime.now(timezone.utc).isoformat(), "pages": [], "fields": {},
               "identity": "unconfirmed", "scraped_via": "business_website"}
@@ -241,13 +256,28 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep):
             page = Page(body.decode("utf-8", "replace"))
             if not matched:
                 matches = [node for node in page.nodes if matched_business(node, record)]
+                if not matches and render is not None and b"<script" in body.lower():
+                    try:
+                        rendered = render(final, request)
+                        rendered_page = Page(rendered.decode("utf-8", "replace"))
+                        rendered_matches = [node for node in rendered_page.nodes if matched_business(node, record)]
+                        if rendered_matches:
+                            page, body, matches = rendered_page, rendered, rendered_matches
+                            result["render_method"] = "restricted_browser"
+                    except Exception:
+                        result["browser_fallback_failed"] = True
                 if len(matches) != 1:
+                    result["pages"].append({"url": final, "sha256": hashlib.sha256(body).hexdigest(),
+                        "description": page.description, "excerpt": " ".join(" ".join(page.text).split())[:3000]})
                     result.update(status="needs_review", reason="Business identity not corroborated by name and phone/address/coordinates")
                     return result
                 matched = True
                 result["identity"] = "corroborated_public_data"
                 result["business_name"] = matches[0]["name"]
-                for key in ("description", "telephone", "address", "checkinTime", "checkoutTime", "amenityFeature", "priceRange", "numberOfRooms"):
+                result["identity_node"] = {key: matches[0][key] for key in
+                    ("@type", "name", "alternateName", "telephone", "address", "geo") if key in matches[0]}
+                for key in ("description", "telephone", "address", "checkinTime", "checkoutTime", "amenityFeature", "priceRange", "numberOfRooms",
+                            "petsAllowed", "smokingAllowed", "starRating", "hasOfferCatalog", "containsPlace", "paymentAccepted", "currenciesAccepted"):
                     value = matches[0].get(key)
                     if value is not None and len(json.dumps(value)) <= 8000:
                         result["fields"][key] = {"value": value, "source_url": final, "extraction": "json_ld", "collected_at": result["collected_at"]}
@@ -275,7 +305,12 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep):
 
 def _crawl_child(connection, record):
     try:
-        connection.send(crawl_website(record))
+        if record.get("_discover_website"):
+            from app.website_discovery import discover_website
+            connection.send(discover_website(record))
+            return
+        from app.website_browser import render_page
+        connection.send(crawl_website(record, render=render_page if settings.WEBSITE_BROWSER_FALLBACK else None))
     except Exception:
         connection.send({"version": 1, "status": "retry", "reason": "Website process failed", "fields": {}, "pages": []})
     finally:
@@ -307,6 +342,14 @@ async def collect_website(record, timeout=150):
         child.close()
         if process.pid:
             if process.is_alive():
+                if __import__("os").name == "nt":
+                    import subprocess
+                    try:
+                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
                 process.terminate()
             process.join(timeout=1)
             if process.is_alive():

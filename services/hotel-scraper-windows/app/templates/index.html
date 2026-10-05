@@ -450,6 +450,24 @@
 
       <!-- Failed ZIPs Recovery Ledger (bound to real /api/stats/overview data) -->
       <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <h3 class="text-sm font-semibold text-white">Website evidence review</h3>
+        <p class="text-xs text-slate-400">Accept records your review of evidence only; it does not bypass identity checks or update Cloud SQL. Decisions survive restarts.</p>
+        <p class="text-xs text-slate-300" x-text="JSON.stringify(websiteReview.metrics || {})"></p>
+        <template x-for="item in websiteReview.items || []" :key="item.id">
+          <div class="p-3 border border-slate-700 rounded space-y-2">
+            <p class="text-sm" x-text="item.record.name"></p>
+            <p class="text-xs break-all" x-text="item.result.requested_url"></p>
+            <p class="text-xs text-amber-300" x-text="item.result.reason"></p>
+            <p class="text-xs break-all" x-text="JSON.stringify(item.result.fields || {})"></p>
+            <template x-for="page in item.result.pages || []" :key="page.url">
+              <p class="text-xs text-slate-400" x-text="page.excerpt"></p>
+            </template>
+            <button class="text-xs text-emerald-400 mr-3" @click="decideWebsiteReview(item.id, 'accepted_evidence')">Accept evidence only</button>
+            <button class="text-xs text-red-400" @click="decideWebsiteReview(item.id, 'rejected')">Reject</button>
+          </div>
+        </template>
+      </div>
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
         <div class="flex items-center justify-between">
           <div>
             <h3 class="text-sm font-semibold text-white">Known Failed ZIP Codes</h3>
@@ -995,6 +1013,7 @@ WHERE places_status = 'error';</pre>
         <div class="flex justify-between items-center">
           <span class="text-emerald-300 font-semibold">Business website evidence</span>
           <button x-show="selectedHotel?.website" @click="queueWebsite(selectedHotel)" class="text-emerald-400 hover:underline">Collect website</button>
+          <button x-show="!selectedHotel?.website" @click="queueWebsite(selectedHotel, true)" class="text-amber-400 hover:underline">Discover website candidate</button>
         </div>
         <p class="text-slate-400">Corroborated evidence may fill blank phone/address/ZIP/state fields. Existing values are never replaced.</p>
         <template x-for="[field, fill] in Object.entries(selectedHotel?.website_field_fills || {})" :key="field">
@@ -1049,6 +1068,7 @@ WHERE places_status = 'error';</pre>
         minRating: '',
         selectedHotel: null,
         backfill: {},
+        websiteReview: {items: [], metrics: {}},
         scraperMode: 'defined_zips',
         customZipInput: '',
         lastSyncedLabel: '—',
@@ -1099,6 +1119,10 @@ WHERE places_status = 'error';</pre>
         },
 
         async livePoll() {
+          try {
+            const review = await fetch('/api/website-reviews');
+            if (review.ok) this.websiteReview = await review.json();
+          } catch (error) { console.error('Could not load website review queue', error); }
           try {
             const response = await fetch('/api/website-backfill');
             if (response.ok) this.backfill = await response.json();
@@ -1541,12 +1565,19 @@ WHERE places_status = 'error';</pre>
           } catch (error) { console.error('Could not load website evidence', error); }
         },
 
-        async queueWebsite(hotel) {
+        async queueWebsite(hotel, discover = false) {
           try {
-            const response = await fetch(`/api/hotels/${hotel.id}/website-enrichment`, {method: 'POST'});
+            const response = await fetch(`/api/hotels/${hotel.id}/${discover ? 'website-discovery' : 'website-enrichment'}`, {method: 'POST'});
             const data = await response.json();
             alert(response.ok ? data.message : (data.detail || 'Website could not be queued'));
           } catch (error) { alert('Website could not be queued; check worker logs.'); }
+        },
+
+        async decideWebsiteReview(id, decision) {
+          if (!confirm('Record this evidence decision locally? Production data will not be changed.')) return;
+          const response = await fetch(`/api/website-reviews/${id}/${decision}`, {method: 'POST'});
+          if (!response.ok) { alert('Review decision could not be saved'); return; }
+          await this.livePoll();
         },
 
         async controlBackfill(action) {

@@ -1699,8 +1699,14 @@ class ScraperBackgroundWorker:
         self._stats["current_action"] = f"Collecting business website for {job['payload']['record']['name']}"
         if job["state"] != "fetched":
             record = job["payload"]["record"]
+            if record.get("_discover_website"):
+                if self._maps_cap_reached():
+                    await asyncio.to_thread(self._website_queue.defer, job)
+                    return True
+                self._maps_calls_today += 1
+                self._stats["api_calls"] += 1
             cached = (record.get("raw") or {}).get("website_enrichment")
-            if (job["payload"].get("backfill_id") and isinstance(cached, dict)
+            if (not record.get("_discover_website") and job["payload"].get("backfill_id") and isinstance(cached, dict)
                     and cached.get("status") == "collected" and cached.get("business_name") == record["name"]):
                 result = cached
             else:
@@ -1712,6 +1718,13 @@ class ScraperBackgroundWorker:
             job = {**job, "result": result}
             if result["status"] == "retry":
                 job["result"] = {**result, "status": "failed"}
+        if job["result"].get("status") == "needs_review":
+            await asyncio.to_thread(self._website_queue.hold_for_review, job)
+            self._log("Website identity uncertain; retained in the local review queue.", "WARNING")
+            return True
+        if job["payload"]["record"].get("_discover_website"):
+            await asyncio.to_thread(self._website_queue.finish, job["id"], "skipped")
+            return True
         applied = await asyncio.to_thread(self._apply_website_evidence, job)
         filled_fields = applied.get("filled_fields", []) if isinstance(applied, dict) else []
         await asyncio.to_thread(self._website_queue.finish, job["id"], "applied" if applied else "skipped", filled_fields)
