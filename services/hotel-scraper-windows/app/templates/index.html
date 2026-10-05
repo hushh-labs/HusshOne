@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ app_name }}</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              500: '#10b981',
+              600: '#059669',
+              900: '#064e3b'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    @keyframes flashUpdate {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+      100% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+    }
+    .flash-update { animation: flashUpdate 0.9s ease-out; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased" x-data="scraperDashboard()" x-init="init()" x-cloak>
+
+  <!-- Top Navigation Bar -->
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-base font-semibold tracking-tight text-white flex items-center gap-2">
+            HusshOne Hotel Scraper
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+              :class="overview.is_postgres_connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : (overview.db?.backend === 'sqlite' ? 'bg-slate-700/40 text-slate-300 border border-slate-600/40' : 'bg-rose-500/10 text-rose-300 border border-rose-500/30')">
+              <span x-text="overview.is_postgres_connected ? 'Cloud SQL Connected' : (overview.db?.backend === 'sqlite' ? 'Local SQLite (dev)' : 'Cloud SQL Offline')"></span>
+            </span>
+          </h1>
+          <p class="text-xs text-slate-400 font-mono">
+            GCP: <span class="text-slate-200" x-text="overview.gcp_project || 'hushh-tech-prod'"></span> &bull;
+            DB: <span class="text-slate-200" x-text="overview.cloud_sql_instance || 'hushh-directories-db'"></span> / hotel_scraper
+          </p>
+        </div>
+      </div>
+
+      <!-- Live Sync Indicator + Worker Status Pill -->
+      <div class="flex items-center space-x-4">
+        <div class="hidden sm:flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+          </span>
+          <span>Synced <span x-text="lastSyncedLabel"></span></span>
+        </div>
+
+        <div class="flex items-center space-x-2 px-3 py-1.5 rounded-lg border bg-slate-800/80"
+             :class="worker.is_running ? (worker.is_paused ? 'border-amber-500/40' : 'border-emerald-500/40') : 'border-slate-700'">
+          <span class="relative flex h-2.5 w-2.5">
+            <span x-show="worker.is_running && !worker.is_paused" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5"
+                  :class="worker.is_running ? (worker.is_paused ? 'bg-amber-400' : 'bg-emerald-500') : 'bg-slate-500'"></span>
+          </span>
+          <span class="text-xs font-mono font-medium tracking-wide uppercase"
+                :class="worker.is_running ? (worker.is_paused ? 'text-amber-300' : 'text-emerald-400') : 'text-slate-400'"
+                x-text="worker.is_running ? (worker.is_paused ? 'PAUSED' : 'RUNNING') : 'IDLE'"></span>
+        </div>
+
+        <button @click="refreshAll()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Refresh Data">
+          <svg class="w-4 h-4" :class="{'animate-spin': isRefreshing}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Database offline banner -->
+    <div x-show="overview.db && !overview.db.connected" class="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-3">
+      <span class="mt-1 inline-block w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
+      <div>
+        <div class="font-semibold">Database unreachable &mdash; retrying automatically</div>
+        <div class="text-xs text-rose-300/80 font-mono mt-0.5" x-text="overview.db?.error || 'Waiting for the Cloud SQL connection...'"></div>
+        <div class="text-xs text-rose-300/70 mt-1">Nothing is written locally while offline; the scraper pauses itself until the connection returns.</div>
+      </div>
+    </div>
+
+    <!-- Live Hotel Directory Inventory -->
+    <div class="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 border border-slate-800 space-y-5">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <h2 class="text-base font-bold text-white tracking-tight">Live Hotel Directory Inventory</h2>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">
+            Recomputed from
+            <code class="text-emerald-400 font-mono" x-text="overview.is_postgres_connected ? 'hushh-directories-db (Cloud SQL)' : 'local SQLite storage'"></code>
+            every refresh &mdash; no placeholder figures.
+          </p>
+        </div>
+        <div class="flex items-center gap-3 text-xs font-mono">
+          <span class="text-slate-400">Total Hotels Captured:</span>
+          <span class="text-emerald-400 text-xl font-bold rounded px-1 transition-shadow"
+                :class="{'flash-update': flashTotal}"
+                x-text="formatNumber(overview.hotels?.total)">0</span>
+        </div>
+      </div>
+
+      <!-- Live Stat Tiles -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- ZIP Coverage -->
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-sky-400">ZIP Coverage</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">Live Queue</span>
+          </div>
+          <div class="text-2xl font-extrabold text-white mt-1.5">
+            <span x-text="overview.zips?.completion_percentage ?? 0"></span><span class="text-base">%</span>
+          </div>
+          <div class="text-[11px] text-slate-500 mt-1">
+            <span x-text="formatNumber(overview.zips?.completed)"></span> / <span x-text="formatNumber(overview.zips?.total_loaded)"></span> ZIPs completed
+          </div>
+        </div>
+
+        <!-- Source Breakdown -->
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-amber-400">Merged Records</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">Real Counts</span>
+          </div>
+          <div class="text-2xl font-extrabold text-white mt-1.5" x-text="formatNumber(overview.hotels?.merged)">0</div>
+          <div class="text-[11px] text-slate-500 mt-1">
+            <span x-text="formatNumber(overview.hotels?.places_only)"></span> Places-only &bull; <span x-text="formatNumber(overview.hotels?.osm_only)"></span> OSM-only
+          </div>
+        </div>
+
+        <!-- Session Throughput -->
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-purple-400">This Session</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">Since Start</span>
+          </div>
+          <div class="text-2xl font-extrabold text-white mt-1.5" x-text="formatNumber(overview.system?.hotels_added_session)">0</div>
+          <div class="text-[11px] text-slate-400 mt-1">
+            new hotels (<span x-text="formatNumber(overview.system?.hotels_found_session)"></span> seen) &bull; <span x-text="overview.system?.throughput_hotels_per_hour != null ? overview.system.throughput_hotels_per_hour : '—'"></span>/hr
+          </div>
+        </div>
+
+        <!-- Failed ZIPs -->
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-rose-400">Failed ZIPs</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                  :class="(overview.zips?.failed ?? 0) > 0 ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'"
+                  x-text="(overview.zips?.failed ?? 0) > 0 ? 'Needs Retry' : 'All Clear'"></span>
+          </div>
+          <div class="text-2xl font-extrabold text-white mt-1.5" x-text="formatNumber(overview.zips?.failed)">0</div>
+          <div class="text-[11px] text-slate-500 mt-1"><span x-text="formatNumber(overview.zips?.pending)"></span> ZIPs still pending</div>
+        </div>
+      </div>
+
+      <!-- Worker & Database Health (replaces the old static "GCP VM" grid) -->
+      <div class="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2.5">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-semibold text-slate-300 flex items-center gap-2">
+            <svg class="w-3.5 h-3.5 text-slate-400" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3 1h10v8H5V6z" clip-rule="evenodd" />
+            </svg>
+            Worker & Database Health
+          </span>
+          <span class="text-slate-500 font-mono text-[11px]">This crawler runs inside this desktop process &mdash; no remote VM involved</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs font-mono">
+          <div class="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+            <div class="text-slate-500 text-[10px] uppercase">Database Backend</div>
+            <div class="text-slate-200 font-semibold" x-text="overview.is_postgres_connected ? 'PostgreSQL (Cloud SQL)' : 'SQLite (local file)'"></div>
+          </div>
+          <div class="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+            <div class="text-slate-500 text-[10px] uppercase">Worker Uptime</div>
+            <div class="text-slate-200 font-semibold" x-text="formatUptime(overview.system?.uptime_seconds)"></div>
+          </div>
+          <div class="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+            <div class="text-slate-500 text-[10px] uppercase">Last Scrape</div>
+            <div class="text-slate-200 font-semibold" x-text="formatRelativeTime(overview.system?.last_scraped_at)"></div>
+          </div>
+          <div class="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+            <div class="text-slate-500 text-[10px] uppercase">Errors (session)</div>
+            <div class="font-semibold" :class="(overview.system?.errors_session ?? 0) > 0 ? 'text-rose-400' : 'text-emerald-400'" x-text="overview.system?.errors_session ?? 0"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-2">
+      <button @click="activeTab = 'control'"
+        class="px-4 py-2 rounded-lg text-sm font-medium transition"
+        :class="activeTab === 'control' ? 'bg-slate-800 text-emerald-400 border border-slate-700' : 'text-slate-400 hover:text-white'">
+        Background Scraper Control
+      </button>
+      <button @click="activeTab = 'directory'"
+        class="px-4 py-2 rounded-lg text-sm font-medium transition"
+        :class="activeTab === 'directory' ? 'bg-slate-800 text-emerald-400 border border-slate-700' : 'text-slate-400 hover:text-white'">
+        Hotel Directory Explorer <span class="text-slate-500" x-text="'(' + formatNumber(overview.hotels?.total) + ')'"></span>
+      </button>
+      <button @click="openReviewTab()"
+        class="px-4 py-2 rounded-lg text-sm font-medium transition"
+        :class="activeTab === 'review' ? 'bg-slate-800 text-emerald-400 border border-slate-700' : 'text-slate-400 hover:text-white'">
+        Data Review &amp; Recovery
+        <span class="text-[10px] ml-1 px-1.5 py-0.5 rounded-full border border-sky-500/30 bg-sky-500/10 text-sky-300">Read-only</span>
+      </button>
+      <button @click="activeTab = 'architecture'"
+        class="px-4 py-2 rounded-lg text-sm font-medium transition"
+        :class="activeTab === 'architecture' ? 'bg-slate-800 text-emerald-400 border border-slate-700' : 'text-slate-400 hover:text-white'">
+        Database & System
+      </button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 1: BACKGROUND SCRAPER CONTROL PANEL    -->
+    <!-- ========================================== -->
+    <div x-show="activeTab === 'control'" class="space-y-6">
+
+      <!-- Action & Execution Status Card -->
+      <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
+        <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-semibold text-white">Background Scraper Worker Service</h2>
+            <p class="text-sm text-slate-400">
+              Manages the continuous crawler queue, reads Google Maps listings via one reused headless Chrome, and falls back to OpenStreetMap Overpass.
+            </p>
+          </div>
+
+          <!-- Controls Button Group -->
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Start / Resume Button -->
+            <button @click="startWorker()"
+              :disabled="worker.is_running && !worker.is_paused"
+              class="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+              </svg>
+              <span x-text="worker.is_paused ? 'Resume Worker' : 'Start Scraper in Background'"></span>
+            </button>
+
+            <!-- Pause Button -->
+            <button @click="pauseWorker()"
+              :disabled="!worker.is_running || worker.is_paused"
+              class="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+              </svg>
+              <span>Pause</span>
+            </button>
+
+            <!-- Stop Button -->
+            <button @click="stopWorker()"
+              :disabled="!worker.is_running"
+              class="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-rose-400 border border-slate-700">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd" />
+              </svg>
+              <span>Stop</span>
+            </button>
+
+            <!-- Retry Failed ZIPs Button -->
+            <button @click="retryFailedZips()"
+              class="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700"
+              title="Reset failed ZIPs back to pending">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>Retry <span x-text="overview.zips?.failed ?? 0"></span> Failed ZIPs</span>
+            </button>
+
+            <!-- Chrome Browser Profile / Login Button -->
+            <button @click="openChromeLogin()"
+              class="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700"
+              title="Open Chrome to verify or authenticate Google Account">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              <span>Chrome Account</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress Bar (bound to real worker.queue counts) -->
+        <div class="space-y-2">
+          <div class="flex justify-between text-xs font-mono text-slate-400">
+            <span>Places Queue Progress:
+              <strong class="text-white" x-text="formatNumber(worker.queue?.places_done) + ' / ' + formatNumber(worker.queue?.total_zips)"></strong>
+              Completed
+            </span>
+            <span class="text-emerald-400 font-semibold" x-text="(worker.queue?.pct_completed ?? 0) + '%'"></span>
+          </div>
+          <div class="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+            <div class="bg-gradient-to-r from-emerald-500 to-teal-400 h-2.5 rounded-full transition-all duration-500"
+                 :style="'width: ' + (worker.queue?.pct_completed ?? 0) + '%'"></div>
+          </div>
+        </div>
+
+        <!-- Scraping Mode Toggle & Configuration -->
+        <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <div class="text-xs font-semibold text-slate-300 flex items-center gap-2">
+              <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+              </svg>
+              Scraping Execution Mode
+            </div>
+            <p class="text-[11px] text-slate-400 mt-0.5">
+              Choose between strict defined ZIP code targeting or outward radial proximity sweep. Both run with <strong>$0.00 API cost</strong> (no paid Google Places API key is used).
+            </p>
+          </div>
+
+          <div class="flex items-center space-x-2 bg-slate-900 p-1 rounded-xl border border-slate-800">
+            <button @click="setScraperMode('defined_zips')"
+              class="px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5"
+              :class="(worker.scraper_mode === 'defined_zips' || scraperMode === 'defined_zips') ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'">
+              <span class="w-1.5 h-1.5 rounded-full" :class="(worker.scraper_mode === 'defined_zips' || scraperMode === 'defined_zips') ? 'bg-white' : 'bg-slate-600'"></span>
+              <span>Defined ZIP Code Mode (Targeted)</span>
+            </button>
+            <button @click="setScraperMode('radial')"
+              class="px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5"
+              :class="(worker.scraper_mode === 'radial' || scraperMode === 'radial') ? 'bg-sky-600 text-white shadow' : 'text-slate-400 hover:text-white'">
+              <span class="w-1.5 h-1.5 rounded-full" :class="(worker.scraper_mode === 'radial' || scraperMode === 'radial') ? 'bg-white' : 'bg-slate-600'"></span>
+              <span>Radial Proximity Mode (Sweep)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Current Action Banner -->
+        <div class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm">
+          <div class="flex items-center space-x-3">
+            <span class="inline-block w-2 h-2 rounded-full"
+                  :class="worker.is_running ? (worker.is_paused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse') : 'bg-slate-600'"></span>
+            <span class="text-slate-400">Current Action:</span>
+            <span class="text-white font-mono text-xs" x-text="worker.stats?.current_action || 'Idle'"></span>
+          </div>
+          <div class="text-xs text-slate-400 font-mono">
+            Active Mode: <span class="text-emerald-400 font-bold" x-text="(worker.scraper_mode === 'radial' ? 'Radial Sweep' : 'Defined ZIP Code')"></span> &bull;
+            API Cost: <span class="text-emerald-400 font-bold">$0.00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Queue Ingestion & Presets Card -->
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+              <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Queue Defined Locations (Exact ZIPs)
+            </h3>
+            <p class="text-xs text-slate-400">Add defined US ZIPs, comma-separated lists, or load top tourism markets for immediate background crawling.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button @click="queueMajorCities()" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-1.5 shadow">
+              <span>+ Queue {{ major_cities_count }} Major US Cities</span>
+            </button>
+            <button @click="requeueAll()" class="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+              <span>Re-queue All for Recrawl</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex gap-2">
+            <input type="text" x-model="customZipInput" @keydown.enter="addCustomZip()"
+              placeholder="Enter defined ZIP code(s) (e.g. 98101, 10019, 90210, 33139, 89109) or City..."
+              class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono">
+            <button @click="addCustomZip()" :disabled="!customZipInput"
+              class="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-emerald-400 border border-slate-700 text-xs font-semibold rounded-lg transition flex items-center gap-1.5">
+              <span>+ Queue Defined ZIPs</span>
+            </button>
+          </div>
+          <div class="text-[11px] text-slate-500 flex items-center justify-between">
+            <span>Enter single or comma-separated ZIP codes. High priority (priority=10) &bull; Zero boundary spillover.</span>
+            <span class="font-mono text-emerald-400">Zero API Cost &bull; Local Browser DOM</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Real-Time Activity Logs Console -->
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Background Worker Live Terminal Stream
+          </h3>
+          <span class="text-xs text-slate-500 font-mono">Live &mdash; refreshes every 3s</span>
+        </div>
+
+        <div id="logConsole" class="bg-slate-950 p-4 rounded-xl border border-slate-800/80 font-mono text-xs h-64 overflow-y-auto space-y-1">
+          <template x-for="(log, idx) in worker.logs" :key="idx">
+            <div class="flex items-start space-x-2">
+              <span class="text-slate-500 select-none" x-text="log.timestamp"></span>
+              <span class="px-1.5 py-0.2 rounded text-[10px] font-semibold uppercase"
+                :class="{
+                  'bg-emerald-500/10 text-emerald-400': log.level === 'INFO',
+                  'bg-amber-500/10 text-amber-300': log.level === 'WARNING',
+                  'bg-rose-500/10 text-rose-400': log.level === 'ERROR'
+                }" x-text="log.level"></span>
+              <span class="text-slate-300" x-text="log.message"></span>
+            </div>
+          </template>
+          <div x-show="!worker.logs || worker.logs.length === 0" class="text-slate-600 italic">No logs recorded yet.</div>
+        </div>
+      </div>
+
+      <!-- Failed ZIPs Recovery Ledger (bound to real /api/stats/overview data) -->
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-white">Known Failed ZIP Codes</h3>
+            <p class="text-xs text-slate-400">ZIP codes that hit an error while scraping and are waiting to be retried.</p>
+          </div>
+          <button @click="retryFailedZips()" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">Requeue All Failed</button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs font-mono">
+            <thead class="text-slate-500 border-b border-slate-800">
+              <tr>
+                <th class="py-2 px-3">ZIP</th>
+                <th class="py-2 px-3">Location</th>
+                <th class="py-2 px-3">Distance from Kirkland</th>
+                <th class="py-2 px-3">Status</th>
+                <th class="py-2 px-3">Last Error</th>
+                <th class="py-2 px-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/60">
+              <template x-for="z in (overview.zips?.failed_zips_detail || [])" :key="z.zip">
+                <tr class="hover:bg-slate-800/30">
+                  <td class="py-2.5 px-3 font-semibold text-white" x-text="z.zip"></td>
+                  <td class="py-2.5 px-3 text-slate-300" x-text="(z.city || 'Unknown') + ', ' + (z.state || '')"></td>
+                  <td class="py-2.5 px-3 text-slate-400" x-text="z.dist_km_from_kirkland ? z.dist_km_from_kirkland.toFixed(1) + ' km' : '—'"></td>
+                  <td class="py-2.5 px-3"><span class="px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20">error</span></td>
+                  <td class="py-2.5 px-3 text-rose-300" x-text="z.last_error || 'Unknown error'"></td>
+                  <td class="py-2.5 px-3 text-right">
+                    <button @click="retryFailedZips()" class="text-emerald-400 hover:underline">Re-try</button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!(overview.zips?.failed_zips_detail || []).length">
+                <td colspan="6" class="py-6 text-center text-slate-600 italic">No failed ZIPs right now.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 2: HOTEL DIRECTORY EXPLORER            -->
+    <!-- ========================================== -->
+    <div x-show="activeTab === 'directory'" class="space-y-4">
+
+      <!-- Search & Filter Controls -->
+      <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <!-- Text Search -->
+          <div class="md:col-span-2 relative">
+            <input type="text" x-model="searchQuery" @keydown.enter="fetchHotels(1)"
+              placeholder="Search hotel name, address, or brand..."
+              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 pl-10">
+            <svg class="w-4 h-4 text-slate-500 absolute left-3 top-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+
+          <!-- Source Filter (labels bound to real live counts) -->
+          <div>
+            <select x-model="selectedSource" @change="fetchHotels(1)"
+              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="all" x-text="sourceLabel('all')"></option>
+              <option value="places" x-text="sourceLabel('places')"></option>
+              <option value="osm" x-text="sourceLabel('osm')"></option>
+              <option value="merged" x-text="sourceLabel('merged')"></option>
+            </select>
+          </div>
+
+          <!-- Min Rating Filter -->
+          <div>
+            <select x-model="minRating" @change="fetchHotels(1)"
+              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="">Any Rating</option>
+              <option value="4.5">★ 4.5 & above</option>
+              <option value="4.0">★ 4.0 & above</option>
+              <option value="3.5">★ 3.5 & above</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between text-xs text-slate-400 pt-1">
+          <div>
+            Showing <strong class="text-white" x-text="hotels.length"></strong> results
+            <span x-show="totalHotelCount"> of <span class="text-white" x-text="formatNumber(totalHotelCount)"></span></span>
+          </div>
+          <button @click="fetchHotels(1)" class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium transition">
+            Filter Results
+          </button>
+        </div>
+      </div>
+
+      <!-- Hotel Cards Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <template x-for="hotel in hotels" :key="hotel.id">
+          <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition flex flex-col justify-between space-y-3">
+            <div>
+              <div class="flex items-start justify-between gap-2">
+                <h4 class="font-semibold text-white text-sm line-clamp-1" x-text="hotel.name"></h4>
+                <div class="flex gap-1 flex-shrink-0">
+                  <template x-for="src in (Array.isArray(hotel.sources) ? hotel.sources : [hotel.sources])" :key="src">
+                    <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded"
+                      :class="{
+                        'bg-sky-500/10 text-sky-400 border border-sky-500/20': src === 'places' || src === 'places_chrome',
+                        'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20': src === 'osm',
+                        'bg-purple-500/10 text-purple-400 border border-purple-500/20': src === 'web_scrape'
+                      }" x-text="sourceBadgeLabel(src)"></span>
+                  </template>
+                </div>
+              </div>
+
+              <p class="text-xs text-slate-400 mt-1 line-clamp-2" x-text="hotel.formatted_address || 'Address unlisted'"></p>
+
+              <!-- Rating & Reviews -->
+              <div class="flex items-center space-x-2 mt-2">
+                <div class="flex items-center text-amber-400 text-xs font-semibold">
+                  <span>★</span>
+                  <span class="ml-1" x-text="hotel.rating ? hotel.rating.toFixed(1) : 'Unrated'"></span>
+                </div>
+                <span class="text-[11px] text-slate-500" x-text="hotel.user_ratings_total ? '(' + hotel.user_ratings_total + ' reviews)' : ''"></span>
+                <span class="text-slate-600">&bull;</span>
+                <span class="text-xs text-slate-400 font-mono" x-text="hotel.state || hotel.zip"></span>
+              </div>
+            </div>
+
+            <!-- Footer Details -->
+            <div class="pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+              <span class="text-[11px] text-slate-500 font-mono truncate max-w-[140px]" x-text="hotel.primary_type || 'hotel'"></span>
+              <div class="flex items-center space-x-2">
+                <template x-if="hotel.google_maps_uri">
+                  <a :href="hotel.google_maps_uri" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline">Google Maps</a>
+                </template>
+                <template x-if="hotel.website">
+                  <a :href="hotel.website" target="_blank" rel="noopener noreferrer" class="text-emerald-400 hover:underline">Website</a>
+                </template>
+                <button @click="openHotelDetail(hotel)" class="text-slate-300 hover:text-white font-medium">Details</button>
+              </div>
+            </div>
+          </div>
+        </template>
+        <div x-show="!hotels.length" class="col-span-full text-center text-slate-600 italic py-10">No hotels match these filters yet.</div>
+      </div>
+
+      <!-- Pagination -->
+      <div class="flex items-center justify-between p-4 bg-slate-900 rounded-xl border border-slate-800 text-xs">
+        <button @click="changePage(currentPage - 1)" :disabled="currentPage <= 1"
+          class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 disabled:opacity-40">Previous</button>
+        <span class="text-slate-400 font-mono">Page <span class="text-white font-semibold" x-text="currentPage"></span> of <span class="text-white" x-text="totalPages"></span></span>
+        <button @click="changePage(currentPage + 1)" :disabled="currentPage >= totalPages"
+          class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 disabled:opacity-40">Next</button>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 3: READ-ONLY DATA REVIEW & RECOVERY    -->
+    <!-- ========================================== -->
+    <div x-show="activeTab === 'review'" x-cloak class="space-y-6">
+      <div class="p-5 rounded-2xl border border-sky-500/25 bg-gradient-to-r from-sky-950/50 via-slate-900 to-slate-900 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="inline-flex h-2.5 w-2.5 rounded-full bg-sky-400"></span>
+            <h2 class="text-base font-bold text-white tracking-tight">Production Data Review &amp; Recovery Ledger</h2>
+            <span class="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-sky-400/30 bg-sky-500/10 text-sky-200">Read-only</span>
+          </div>
+          <p class="text-xs text-slate-300 mt-1.5 max-w-3xl">
+            Compare the pre-existing directory with records traced to this scraper, inspect immutable before/after evidence, and check whether a safe restart can replay locally durable work. This screen never edits or deletes Cloud SQL data.
+          </p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-[11px] font-mono text-slate-400" x-text="review.lastRefreshed ? 'Checked ' + formatRelativeTime(review.lastRefreshed) : 'Not checked yet'"></span>
+          <button @click="refreshReview()" :disabled="review.loading"
+            class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white transition flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" :class="{'animate-spin': review.loading}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh review
+          </button>
+        </div>
+      </div>
+
+      <div x-show="review.error" class="p-4 rounded-xl border border-rose-500/35 bg-rose-500/10 text-sm text-rose-100 flex items-start justify-between gap-3">
+        <div>
+          <strong class="font-semibold">Some review data could not be loaded.</strong>
+          <p class="text-xs text-rose-200/80 mt-1" x-text="review.error"></p>
+        </div>
+        <button @click="refreshReview()" class="shrink-0 text-xs text-rose-100 hover:text-white underline">Try again</button>
+      </div>
+
+      <!-- Provenance accounting: current entire directory vs records this worker can prove it touched. -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800">
+          <div class="text-[10px] uppercase tracking-wide text-slate-500">Entire directory</div>
+          <div class="mt-1 text-2xl font-bold text-white" x-text="formatNumber(review.summary?.all?.total ?? overview.hotels?.total)"></div>
+          <p class="mt-1 text-[11px] text-slate-400">All existing and scraper-filled hotels currently visible to the app.</p>
+        </div>
+        <div class="p-4 rounded-xl bg-slate-900 border border-emerald-500/25">
+          <div class="text-[10px] uppercase tracking-wide text-emerald-400">Scraper-traced</div>
+          <div class="mt-1 text-2xl font-bold text-emerald-300" x-text="formatNumber(review.summary?.scraper_traced?.total)"></div>
+          <p class="mt-1 text-[11px] text-slate-400"><span x-text="formatNumber(review.summary?.scraper_traced?.with_run_id)"></span> have a durable run ID.</p>
+        </div>
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800">
+          <div class="text-[10px] uppercase tracking-wide text-amber-400">Legacy / untraced</div>
+          <div class="mt-1 text-2xl font-bold text-amber-300" x-text="formatNumber(review.summary?.legacy_or_untraced?.total)"></div>
+          <p class="mt-1 text-[11px] text-slate-400">Pre-existing or historical records without this worker's trace fields.</p>
+        </div>
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800">
+          <div class="text-[10px] uppercase tracking-wide text-sky-400">Local recovery queue</div>
+          <div class="mt-1 text-2xl font-bold" :class="(review.recovery?.outbox?.pending_batch_count ?? worker.stats?.outbox_pending ?? 0) > 0 ? 'text-amber-300' : 'text-sky-300'"
+               x-text="formatNumber(review.recovery?.outbox?.pending_batch_count ?? worker.stats?.outbox_pending)"></div>
+          <p class="mt-1 text-[11px] text-slate-400">Validated batches saved locally before Cloud SQL delivery.</p>
+        </div>
+      </div>
+
+      <!-- Safe-to-resume / guardrail evidence. This intentionally has no mutation controls. -->
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-white">Schema write gate</h3>
+            <span class="px-2 py-0.5 rounded text-[10px] uppercase font-mono border"
+              :class="review.schema?.compatible ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/30 bg-amber-500/10 text-amber-300'"
+              x-text="review.schema?.checked ? (review.schema?.compatible ? 'compatible' : 'blocked') : 'not checked'"></span>
+          </div>
+          <p class="text-xs text-slate-400" x-text="schemaReviewMessage()"></p>
+          <div x-show="review.schema?.diagnostics?.length" class="text-[11px] font-mono text-amber-200 bg-amber-500/5 border border-amber-500/10 rounded-lg p-2 max-h-20 overflow-y-auto">
+            <template x-for="(issue, index) in (review.schema?.diagnostics || []).slice(0, 3)" :key="index">
+              <div x-text="typeof issue === 'string' ? issue : (issue.message || JSON.stringify(issue))"></div>
+            </template>
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-white">Abrupt-shutdown recovery</h3>
+            <span class="px-2 py-0.5 rounded text-[10px] uppercase font-mono border"
+              :class="recoveryBadgeClass()" x-text="recoveryBadgeLabel()"></span>
+          </div>
+          <p class="text-xs text-slate-400" x-text="recoveryMessage()"></p>
+          <div x-show="review.recovery?.outbox?.oldest_pending_at" class="text-[11px] font-mono text-slate-500">
+            Oldest pending batch: <span class="text-slate-300" x-text="formatTimestamp(review.recovery?.outbox?.oldest_pending_at)"></span>
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-sm font-semibold text-white">Immutable write journal</h3>
+            <span class="px-2 py-0.5 rounded text-[10px] uppercase font-mono border border-sky-500/30 bg-sky-500/10 text-sky-300">local evidence</span>
+          </div>
+          <p class="text-xs text-slate-400">
+            Inserts, touches, ZIP outcomes, and quarantines are retained separately from the production database. Use a run below to compare the original snapshot and current record.
+          </p>
+          <div class="text-[11px] font-mono text-slate-500">
+            Today: <span class="text-slate-200" x-text="formatNumber(review.dailyReport?.counts?.runs)"></span> runs &bull;
+            <span class="text-slate-200" x-text="formatNumber(review.dailyReport?.counts?.report_rows)"></span> report rows
+          </div>
+        </div>
+      </div>
+
+      <!-- Directory provenance filters. All requests are GETs and leave production untouched. -->
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-white">Verify directory records by provenance</h3>
+            <p class="text-xs text-slate-400 mt-0.5">Review old records alongside scraper-traced records. A missing trace means only that this worker cannot prove it touched the record; it is never a deletion candidate.</p>
+          </div>
+          <span class="text-xs font-mono text-slate-400">Showing <strong class="text-white" x-text="formatNumber(review.hotelsTotal)"></strong> matching records</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+          <select x-model="review.filters.scope" @change="fetchReviewHotels(1)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500">
+            <option value="all">All records</option>
+            <option value="scraper_traced">Scraper-traced only</option>
+            <option value="legacy_or_untraced">Legacy / untraced only</option>
+          </select>
+          <input type="date" x-model="review.filters.dateFrom" @change="fetchReviewHotels(1)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500" title="Trace date from">
+          <input type="date" x-model="review.filters.dateTo" @change="fetchReviewHotels(1)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500" title="Trace date to">
+          <input type="text" x-model="review.filters.runId" @keydown.enter="fetchReviewHotels(1)" placeholder="Exact run ID (optional)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-sky-500">
+          <button @click="fetchReviewHotels(1)" class="px-3 py-2 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white transition">Apply review filters</button>
+        </div>
+
+        <div class="overflow-x-auto rounded-xl border border-slate-800">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-950 text-slate-500 uppercase tracking-wide text-[10px]">
+              <tr>
+                <th class="py-2.5 px-3">Hotel</th>
+                <th class="py-2.5 px-3">Directory source</th>
+                <th class="py-2.5 px-3">Provenance</th>
+                <th class="py-2.5 px-3">Run / CID</th>
+                <th class="py-2.5 px-3">Last trace</th>
+                <th class="py-2.5 px-3 text-right">Verify</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <template x-for="hotel in review.hotels" :key="hotel.id">
+                <tr class="hover:bg-slate-800/30">
+                  <td class="py-3 px-3 min-w-56">
+                    <div class="font-medium text-white" x-text="hotel.name || 'Unnamed hotel'"></div>
+                    <div class="text-[11px] text-slate-500 mt-0.5 max-w-xs truncate" x-text="hotel.formatted_address || hotel.address || 'Address unlisted'"></div>
+                  </td>
+                  <td class="py-3 px-3 text-slate-300 font-mono" x-text="sourceText(hotel.sources)"></td>
+                  <td class="py-3 px-3">
+                    <span class="px-2 py-0.5 rounded border text-[10px] font-mono" :class="traceBadgeClass(hotel.trace)" x-text="traceBadgeLabel(hotel.trace)"></span>
+                  </td>
+                  <td class="py-3 px-3 font-mono text-[11px] text-slate-400">
+                    <div class="truncate max-w-40" :title="hotel.trace?.run_id || ''" x-text="shortId(hotel.trace?.run_id) || '—'"></div>
+                    <div class="truncate max-w-40 text-slate-600" :title="hotel.trace?.google_cid || ''" x-text="hotel.trace?.google_cid ? 'cid ' + hotel.trace.google_cid : ''"></div>
+                  </td>
+                  <td class="py-3 px-3 text-slate-400 font-mono whitespace-nowrap" x-text="formatTimestamp(hotel.trace?.scraped_at)"></td>
+                  <td class="py-3 px-3 text-right whitespace-nowrap">
+                    <template x-if="hotel.trace?.source_url || hotel.google_maps_uri">
+                      <a :href="hotel.trace?.source_url || hotel.google_maps_uri" target="_blank" rel="noopener noreferrer" class="text-sky-300 hover:text-sky-100 hover:underline">Open source</a>
+                    </template>
+                    <button @click="openHotelDetail(hotel)" class="ml-2 text-slate-300 hover:text-white">Details</button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!review.loading && !review.hotels.length">
+                <td colspan="6" class="py-10 text-center text-slate-600 italic">No records match this review filter.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex items-center justify-between text-xs">
+          <button @click="changeReviewPage(review.page - 1)" :disabled="review.page <= 1 || review.loading"
+            class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40">Previous</button>
+          <span class="font-mono text-slate-500">Page <span class="text-white" x-text="review.page"></span> of <span class="text-white" x-text="review.totalPages"></span></span>
+          <button @click="changeReviewPage(review.page + 1)" :disabled="review.page >= review.totalPages || review.loading"
+            class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40">Next</button>
+        </div>
+      </div>
+
+      <!-- Run ledger lets an operator prove a given write, without exposing a generic revert button. -->
+      <div class="grid grid-cols-1 xl:grid-cols-5 gap-4">
+        <div class="xl:col-span-2 p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold text-white">Scraper run ledger</h3>
+              <p class="text-xs text-slate-400 mt-0.5">Select a run to inspect immutable change evidence and its current reconciliation.</p>
+            </div>
+            <button @click="fetchReviewRuns()" class="text-xs text-sky-300 hover:text-sky-100">Refresh runs</button>
+          </div>
+          <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
+            <template x-for="run in review.runs" :key="run.run_id">
+              <button @click="loadRunReview(run.run_id)" class="w-full text-left p-3 rounded-lg border transition"
+                :class="review.selectedRunId === run.run_id ? 'bg-sky-500/10 border-sky-500/40' : 'bg-slate-950 border-slate-800 hover:border-slate-700'">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-mono text-slate-200 truncate" x-text="shortId(run.run_id)"></span>
+                  <span class="px-1.5 py-0.5 rounded text-[10px] uppercase border" :class="runStatusClass(run.status)" x-text="run.status || 'unknown'"></span>
+                </div>
+                <div class="mt-1 text-[11px] text-slate-500" x-text="formatTimestamp(run.started_at) + (run.finished_at ? ' → ' + formatTimestamp(run.finished_at) : ' → unfinished')"></div>
+                <div x-show="run.error" class="mt-1 text-[11px] text-rose-300 truncate" x-text="run.error"></div>
+              </button>
+            </template>
+            <div x-show="!review.runs.length" class="p-5 text-center text-xs text-slate-600 italic">No local scraper runs have been journaled yet.</div>
+          </div>
+        </div>
+
+        <div class="xl:col-span-3 p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+          <template x-if="review.runDetail">
+            <div class="space-y-4">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-white">Run evidence</h3>
+                  <p class="text-[11px] font-mono text-slate-500" x-text="review.runDetail?.run?.run_id"></p>
+                </div>
+                <span class="text-xs text-slate-400">Inserted <strong class="text-emerald-300" x-text="formatNumber(review.runDetail?.counts?.records_inserted_returned)"></strong> &bull; Touched <strong class="text-sky-300" x-text="formatNumber(review.runDetail?.counts?.records_touched_returned)"></strong> &bull; Quarantined ZIPs <strong class="text-amber-300" x-text="formatNumber(review.runDetail?.counts?.quarantined_zips_returned)"></strong></span>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div class="text-[10px] uppercase text-slate-500">Run lifecycle</div>
+                  <div class="mt-1 text-xs text-slate-200" x-text="formatTimestamp(review.runDetail?.run?.started_at) + ' → ' + (review.runDetail?.run?.finished_at ? formatTimestamp(review.runDetail.run.finished_at) : 'unfinished')"></div>
+                </div>
+                <div class="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div class="text-[10px] uppercase text-slate-500">Reconciliation</div>
+                  <div class="mt-1 text-xs text-slate-200" x-text="runReconciliationText(review.runDetail?.database)"></div>
+                </div>
+              </div>
+              <div class="overflow-x-auto rounded-lg border border-slate-800">
+                <table class="w-full text-left text-xs">
+                  <thead class="bg-slate-950 text-slate-500 uppercase tracking-wide text-[10px]">
+                    <tr><th class="py-2 px-3">Operation</th><th class="py-2 px-3">Hotel ID</th><th class="py-2 px-3">CID / identity</th><th class="py-2 px-3">Evidence</th></tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-800/70">
+                    <template x-for="record in (review.runDetail?.records || []).slice(0, 25)" :key="record.change?.change_id">
+                      <tr>
+                        <td class="py-2.5 px-3"><span class="px-1.5 py-0.5 rounded text-[10px] border" :class="record.change?.operation === 'inserted' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-sky-500/30 bg-sky-500/10 text-sky-300'" x-text="record.change?.operation || 'unknown'"></span></td>
+                        <td class="py-2.5 px-3 font-mono text-slate-300" x-text="record.change?.hotel_id || '—'"></td>
+                        <td class="py-2.5 px-3 font-mono text-slate-400 truncate max-w-44" :title="record.change?.cid || record.change?.dedup_key || ''" x-text="record.change?.cid || record.change?.dedup_key || '—'"></td>
+                        <td class="py-2.5 px-3 text-slate-500"><span x-text="record.verification?.status || (record.current_record ? 'current record found' : 'current record missing')"></span></td>
+                      </tr>
+                    </template>
+                    <tr x-show="!(review.runDetail?.records || []).length"><td colspan="4" class="py-5 text-center text-slate-600 italic">This run did not change hotel rows.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div x-show="(review.runDetail?.records || []).length > 25" class="text-[11px] text-slate-500">Only the first 25 changes are shown here; the journal retains the full run evidence.</div>
+              <div x-show="(review.runDetail?.zip_outcomes || []).length" class="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-100">
+                <strong>ZIP outcomes:</strong>
+                <template x-for="outcome in (review.runDetail?.zip_outcomes || []).slice(0, 5)" :key="outcome.outcome_id">
+                  <span class="ml-2 font-mono" x-text="outcome.zip_code + ': ' + outcome.outcome + (outcome.quarantined ? ' (quarantined)' : '')"></span>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div x-show="!review.runDetail" class="h-full min-h-52 flex items-center justify-center text-center text-sm text-slate-600 italic">Choose a scraper run to view its immutable before/after evidence.</div>
+        </div>
+      </div>
+
+      <!-- Data-quality audit is explicitly user initiated because it reads production data. -->
+      <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-white">Read-only production quality audit</h3>
+            <p class="text-xs text-slate-400 mt-0.5">Checks duplicate CIDs, coordinates outside the operating area, and record-shape violations. It does not repair or mutate any row.</p>
+          </div>
+          <button @click="loadDataQualityAudit()" :disabled="review.auditLoading"
+            class="px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 text-sky-300 transition">
+            <span x-text="review.auditLoading ? 'Scanning read-only…' : 'Run quality audit'"></span>
+          </button>
+        </div>
+        <template x-if="review.quality">
+          <div class="space-y-3">
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+              <div class="p-3 rounded-lg bg-slate-950 border border-slate-800"><div class="text-slate-500 text-[10px] uppercase">CID duplicates</div><div class="text-lg mt-1" :class="review.quality?.summary?.duplicate_google_cids ? 'text-rose-300' : 'text-emerald-300'" x-text="formatNumber(review.quality?.summary?.duplicate_google_cids)"></div></div>
+              <div class="p-3 rounded-lg bg-slate-950 border border-slate-800"><div class="text-slate-500 text-[10px] uppercase">Coordinate issues</div><div class="text-lg mt-1" :class="review.quality?.summary?.coordinate_issues ? 'text-rose-300' : 'text-emerald-300'" x-text="formatNumber(review.quality?.summary?.coordinate_issues)"></div></div>
+              <div class="p-3 rounded-lg bg-slate-950 border border-slate-800"><div class="text-slate-500 text-[10px] uppercase">Shape issues</div><div class="text-lg mt-1" :class="review.quality?.summary?.shape_issues ? 'text-rose-300' : 'text-emerald-300'" x-text="formatNumber(review.quality?.summary?.shape_issues)"></div></div>
+              <div class="p-3 rounded-lg bg-slate-950 border border-slate-800"><div class="text-slate-500 text-[10px] uppercase">Rows scanned</div><div class="text-lg mt-1 text-slate-200" x-text="formatNumber(review.quality?.summary?.shape_rows_scanned)"></div></div>
+              <div class="p-3 rounded-lg bg-slate-950 border border-slate-800"><div class="text-slate-500 text-[10px] uppercase">Result</div><div class="text-sm mt-2 font-semibold" :class="review.quality?.summary?.is_clean ? 'text-emerald-300' : 'text-amber-300'" x-text="review.quality?.summary?.is_clean ? 'Clean' : (review.quality?.summary?.is_partial ? 'Partial scan' : 'Findings')"></div></div>
+            </div>
+            <div x-show="qualityFindingText()" class="p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 text-xs text-amber-100" x-text="qualityFindingText()"></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- TAB 4: INFRASTRUCTURE & SYNC               -->
+    <!-- ========================================== -->
+    <div x-show="activeTab === 'architecture'" class="space-y-6">
+
+      <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+        <h3 class="text-base font-semibold text-white">Database & Process Status</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
+          <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+            <div class="text-slate-400">GCP Project (target): <strong class="text-white" x-text="overview.gcp_project"></strong></div>
+            <div class="text-slate-400">Cloud SQL Instance (target): <strong class="text-white" x-text="overview.cloud_sql_instance"></strong></div>
+            <div class="text-slate-400">Database Name: <strong class="text-white" x-text="overview.database"></strong></div>
+            <div class="text-slate-400">Active Backend:
+              <strong :class="overview.is_postgres_connected ? 'text-emerald-400' : 'text-rose-400'"
+                      x-text="overview.is_postgres_connected ? 'PostgreSQL (connected, live writes)' : (overview.db?.backend === 'sqlite' ? 'SQLite (dev only)' : 'PostgreSQL (unreachable)')"></strong>
+            </div>
+          </div>
+          <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+            <div class="text-slate-400">Scraper Process: <strong class="text-white">Runs inside this desktop app</strong> (no separate VM)</div>
+            <div class="text-slate-400">Worker State:
+              <strong :class="worker.is_running ? (worker.is_paused ? 'text-amber-400' : 'text-emerald-400') : 'text-slate-400'"
+                      x-text="worker.is_running ? (worker.is_paused ? 'PAUSED' : 'RUNNING') : 'IDLE'"></strong>
+            </div>
+            <div class="text-slate-400">Worker Uptime: <strong class="text-white" x-text="formatUptime(overview.system?.uptime_seconds)"></strong></div>
+            <div class="text-slate-400">Last Scrape Batch: <strong class="text-white" x-text="formatRelativeTime(overview.system?.last_scraped_at)"></strong></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SQL Verification Queries Reference -->
+      <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <h3 class="text-sm font-semibold text-white">Database Verification Queries</h3>
+        <p class="text-xs text-slate-400">Run against the PostgreSQL <code class="text-emerald-400">hotel_scraper</code> database via the Cloud SQL Auth Proxy (read-only checks recommended).</p>
+        <pre class="bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs font-mono text-emerald-300 overflow-x-auto leading-relaxed">
+-- Total hotels count
+SELECT count(*) FROM hotels;
+
+-- Sources breakdown (Places-only vs OSM-only vs Merged)
+SELECT sources, count(*)
+FROM hotels
+GROUP BY sources
+ORDER BY count(*) DESC;
+
+-- ZIP queue completion breakdown
+SELECT
+  count(*) AS total_zips,
+  count(*) FILTER (WHERE places_status = 'done') AS places_done,
+  count(*) FILTER (WHERE places_status = 'error') AS places_failed
+FROM zips;
+
+-- List currently failed ZIP codes
+SELECT zip, city, state, dist_km_from_kirkland, places_status, last_error
+FROM zips
+WHERE places_status = 'error';</pre>
+      </div>
+    </div>
+  </main>
+
+  <!-- Modal: Hotel Details -->
+  <div x-show="selectedHotel" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" x-cloak>
+    <div @click.away="selectedHotel = null" class="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 class="text-lg font-bold text-white" x-text="selectedHotel?.name"></h3>
+          <p class="text-xs text-slate-400 mt-0.5" x-text="selectedHotel?.formatted_address"></p>
+        </div>
+        <button @click="selectedHotel = null" class="text-slate-400 hover:text-white text-lg">&times;</button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 text-xs font-mono">
+        <div class="p-3 bg-slate-950 rounded-lg">
+          <div class="text-slate-500">Dedup Key</div>
+          <div class="text-slate-200 truncate mt-1" x-text="selectedHotel?.dedup_key || 'N/A'"></div>
+        </div>
+        <div class="p-3 bg-slate-950 rounded-lg">
+          <div class="text-slate-500">Google Place ID</div>
+          <div class="text-slate-200 truncate mt-1" x-text="selectedHotel?.place_id || 'N/A'"></div>
+        </div>
+        <div class="p-3 bg-slate-950 rounded-lg">
+          <div class="text-slate-500">Coordinates</div>
+          <div class="text-slate-200 mt-1" x-text="(selectedHotel?.lat || '0') + ', ' + (selectedHotel?.lng || '0')"></div>
+        </div>
+        <div class="p-3 bg-slate-950 rounded-lg">
+          <div class="text-slate-500">Phone Number</div>
+          <div class="text-slate-200 mt-1" x-text="selectedHotel?.phone || 'Not available'"></div>
+        </div>
+      </div>
+
+      <div x-show="selectedHotel?.trace" class="p-3 rounded-lg bg-sky-500/5 border border-sky-500/20 text-xs font-mono space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sky-300 font-semibold">Scraper provenance</span>
+          <span class="px-1.5 py-0.5 rounded border text-[10px]" :class="traceBadgeClass(selectedHotel?.trace)" x-text="traceBadgeLabel(selectedHotel?.trace)"></span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+          <div><span class="text-slate-500">Run:</span> <span class="text-slate-200 break-all" x-text="selectedHotel?.trace?.run_id || 'Not recorded'"></span></div>
+          <div><span class="text-slate-500">CID:</span> <span class="text-slate-200 break-all" x-text="selectedHotel?.trace?.google_cid || 'Not recorded'"></span></div>
+          <div><span class="text-slate-500">Via:</span> <span class="text-slate-200" x-text="selectedHotel?.trace?.scraped_via || 'Not recorded'"></span></div>
+          <div><span class="text-slate-500">At:</span> <span class="text-slate-200" x-text="formatTimestamp(selectedHotel?.trace?.scraped_at)"></span></div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button @click="selectedHotel = null" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs rounded-lg font-medium">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function scraperDashboard() {
+      return {
+        activeTab: 'control',
+        isRefreshing: false,
+        worker: {
+          is_running: false,
+          is_paused: false,
+          stats: {},
+          logs: [],
+          queue: {}
+        },
+        overview: {},
+        hotels: [],
+        totalHotelCount: 0,
+        currentPage: 1,
+        totalPages: 1,
+        searchQuery: '',
+        selectedSource: 'all',
+        minRating: '',
+        selectedHotel: null,
+        scraperMode: 'defined_zips',
+        customZipInput: '',
+        lastSyncedLabel: '—',
+        flashTotal: false,
+        review: {
+          loaded: false,
+          loading: false,
+          recordsLoading: false,
+          auditLoading: false,
+          error: '',
+          lastRefreshed: null,
+          summary: null,
+          schema: null,
+          recovery: null,
+          dailyReport: null,
+          quality: null,
+          hotels: [],
+          hotelsTotal: 0,
+          page: 1,
+          totalPages: 1,
+          runs: [],
+          selectedRunId: null,
+          runDetail: null,
+          filters: {
+            scope: 'all',
+            dateFrom: '',
+            dateTo: '',
+            runId: ''
+          }
+        },
+
+        async init() {
+          await this.refreshAll();
+          this.$watch('overview.hotels.total', (val, oldVal) => {
+            if (oldVal !== undefined && val !== oldVal) {
+              this.flashTotal = true;
+              setTimeout(() => { this.flashTotal = false; }, 900);
+            }
+          });
+          // One request per tick. 3s while the window is visible, 15s when hidden
+          // (keeps a 24/7 desktop session light on CPU and on the database).
+          const tick = async () => {
+            await this.livePoll();
+            setTimeout(tick, document.hidden ? 15000 : 3000);
+          };
+          document.addEventListener('visibilitychange', () => { if (!document.hidden) this.livePoll(); });
+          setTimeout(tick, 3000);
+        },
+
+        async livePoll() {
+          try {
+            const res = await fetch('/api/live');
+            if (res.ok) {
+              const data = await res.json();
+              this.worker = data.status;
+              this.overview = data.overview;
+              this.lastSyncedLabel = new Date().toLocaleTimeString();
+              this.$nextTick(() => {
+                const el = document.getElementById('logConsole');
+                if (el) el.scrollTop = el.scrollHeight;
+              });
+            }
+          } catch (e) {
+            console.error('Live poll failed', e);
+          }
+        },
+
+        async refreshAll() {
+          this.isRefreshing = true;
+          try {
+            const refreshes = [this.livePoll(), this.fetchHotels(this.currentPage)];
+            if (this.activeTab === 'review') refreshes.push(this.refreshReview());
+            await Promise.all(refreshes);
+          } finally {
+            this.isRefreshing = false;
+          }
+        },
+
+        // ---- Read-only production review ---------------------------------
+        // These routes are deliberately GET-only.  This panel is evidence for
+        // an operator; it never exposes a generic update, delete, or replay
+        // control against Cloud SQL.
+        async openReviewTab() {
+          this.activeTab = 'review';
+          if (!this.review.loaded && !this.review.loading) {
+            await this.refreshReview();
+          }
+        },
+
+        async reviewGet(url, optional = false) {
+          let response;
+          try {
+            response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+          } catch (error) {
+            if (optional) return null;
+            throw new Error('Network request failed: ' + (error?.message || error));
+          }
+
+          if (!response.ok) {
+            let message = 'Request failed (' + response.status + ')';
+            try {
+              const body = await response.json();
+              if (typeof body?.detail === 'string') message = body.detail;
+              else if (typeof body?.message === 'string') message = body.message;
+            } catch (_) {
+              // Keep the HTTP status if a proxy returned a non-JSON response.
+            }
+            if (optional) return null;
+            throw new Error(message);
+          }
+
+          try {
+            return await response.json();
+          } catch (_) {
+            if (optional) return null;
+            throw new Error('The review endpoint returned invalid JSON.');
+          }
+        },
+
+        setReviewError(prefix, error) {
+          const message = prefix + ': ' + (error?.message || error || 'Unknown error');
+          if (!this.review.error) this.review.error = message;
+          console.error(message, error);
+        },
+
+        async refreshReview() {
+          if (this.review.loading) return;
+          this.review.loading = true;
+          this.review.error = '';
+          try {
+            await Promise.all([
+              this.fetchReviewSummary(),
+              this.fetchReviewHotels(1),
+              this.fetchReviewRuns(),
+              this.fetchDailyWriteReport(),
+              this.fetchSchemaReview(),
+              this.fetchRecoveryReview()
+            ]);
+            this.review.loaded = true;
+            this.review.lastRefreshed = new Date().toISOString();
+          } finally {
+            this.review.loading = false;
+          }
+        },
+
+        async fetchReviewSummary() {
+          try {
+            const data = await this.reviewGet('/api/review/summary');
+            this.review.summary = data?.summary || data || null;
+          } catch (error) {
+            this.setReviewError('Could not load directory provenance totals', error);
+          }
+        },
+
+        async fetchReviewHotels(page = 1) {
+          this.review.recordsLoading = true;
+          this.review.page = page;
+          const params = new URLSearchParams({
+            page: String(page),
+            limit: '20',
+            scope: this.review.filters.scope || 'all'
+          });
+          if (this.review.filters.runId) params.set('run_id', this.review.filters.runId.trim());
+          if (this.review.filters.dateFrom) params.set('date_from', this.review.filters.dateFrom);
+          if (this.review.filters.dateTo) params.set('date_to', this.review.filters.dateTo);
+          try {
+            const data = await this.reviewGet('/api/review/hotels?' + params.toString());
+            this.review.hotels = data?.items || [];
+            this.review.hotelsTotal = Number(data?.total || 0);
+            this.review.totalPages = Math.max(1, Number(data?.total_pages || 1));
+            this.review.page = Number(data?.page || page);
+          } catch (error) {
+            this.review.hotels = [];
+            this.review.hotelsTotal = 0;
+            this.review.totalPages = 1;
+            this.setReviewError('Could not load provenance-filtered hotels', error);
+          } finally {
+            this.review.recordsLoading = false;
+          }
+        },
+
+        changeReviewPage(page) {
+          if (page >= 1 && page <= this.review.totalPages) this.fetchReviewHotels(page);
+        },
+
+        async fetchReviewRuns() {
+          try {
+            const data = await this.reviewGet('/api/review/runs?limit=50');
+            this.review.runs = Array.isArray(data) ? data : (data?.items || data?.runs || []);
+          } catch (error) {
+            this.review.runs = [];
+            this.setReviewError('Could not load the local run ledger', error);
+          }
+        },
+
+        async loadRunReview(runId) {
+          if (!runId) return;
+          this.review.selectedRunId = runId;
+          this.review.runDetail = null;
+          try {
+            this.review.runDetail = await this.reviewGet('/api/review/runs/' + encodeURIComponent(runId) + '?limit=250');
+          } catch (error) {
+            this.setReviewError('Could not load run evidence', error);
+          }
+        },
+
+        async fetchDailyWriteReport() {
+          try {
+            const day = new Date().toISOString().slice(0, 10);
+            this.review.dailyReport = await this.reviewGet('/api/reports/writes-today?day=' + encodeURIComponent(day));
+          } catch (error) {
+            this.review.dailyReport = null;
+            this.setReviewError('Could not load today\'s local write report', error);
+          }
+        },
+
+        async fetchSchemaReview() {
+          try {
+            this.review.schema = await this.reviewGet('/api/schema/compatibility');
+          } catch (error) {
+            this.review.schema = null;
+            this.setReviewError('Could not check the schema write gate', error);
+          }
+        },
+
+        async fetchRecoveryReview() {
+          // Older builds do not expose this endpoint.  Its absence must never
+          // be mistaken for a healthy recovery state, so the UI says that it
+          // is not reported rather than inferring success.
+          const data = await this.reviewGet('/api/recovery', true);
+          this.review.recovery = data || null;
+        },
+
+        async loadDataQualityAudit() {
+          if (this.review.auditLoading) return;
+          this.review.auditLoading = true;
+          try {
+            this.review.quality = await this.reviewGet('/api/audits/data-quality?finding_limit=100&shape_scan_limit=10000');
+          } catch (error) {
+            this.setReviewError('Could not complete the read-only quality audit', error);
+          } finally {
+            this.review.auditLoading = false;
+          }
+        },
+
+        schemaReviewMessage() {
+          const schema = this.review.schema;
+          if (!schema) return 'No schema result has been reported yet. The worker must refuse production writes when this guard cannot verify the expected contract.';
+          if (!schema.checked) return schema.reason || 'The production PostgreSQL schema guard is unavailable on this backend; production writes should remain disabled.';
+          if (schema.compatible) return 'The live catalog matches the schema contract this worker expects before it writes.';
+          return 'The catalog does not match the expected production contract. The worker should remain write-blocked until the mismatch is reviewed.';
+        },
+
+        recoveryBadgeLabel() {
+          const recovery = this.review.recovery;
+          if (!recovery) return 'not reported';
+          if (recovery.needs_operator_review) return 'review needed';
+          return recovery.safe_to_resume ? 'safe to resume' : 'held';
+        },
+
+        recoveryBadgeClass() {
+          const recovery = this.review.recovery;
+          if (!recovery) return 'border-slate-600 bg-slate-800 text-slate-400';
+          if (recovery.needs_operator_review) return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
+          return recovery.safe_to_resume ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+        },
+
+        recoveryMessage() {
+          const recovery = this.review.recovery;
+          if (!recovery) return 'Recovery status is not available from this build. Pending local work is not assumed delivered; review the worker log and restart status before resuming.';
+          const actions = Array.isArray(recovery.recommended_actions) ? recovery.recommended_actions : [];
+          if (actions.length) {
+            return actions.map((action) => {
+              if (typeof action === 'string') return action;
+              return action?.message || action?.action || 'Operator review is required.';
+            }).join(' ');
+          }
+          if (recovery.safe_to_resume) return 'No unresolved journal or outbox condition was found. A restart will replay pending durable batches idempotently.';
+          return 'Recovery has held automatic progress pending operator review. No destructive repair is attempted automatically.';
+        },
+
+        traceBadgeLabel(trace) {
+          if (!trace) return 'legacy / untraced';
+          if (trace.run_id) return 'scraper-traced';
+          return trace.scraped_via ? 'scraper trace' : 'legacy / untraced';
+        },
+
+        traceBadgeClass(trace) {
+          if (trace?.run_id) return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+          if (trace?.scraped_via) return 'border-sky-500/30 bg-sky-500/10 text-sky-300';
+          return 'border-slate-700 bg-slate-800 text-slate-400';
+        },
+
+        sourceText(sources) {
+          if (Array.isArray(sources)) return sources.join(' + ') || '—';
+          return sources || '—';
+        },
+
+        shortId(value) {
+          if (!value) return '';
+          const text = String(value);
+          return text.length > 20 ? text.slice(0, 10) + '…' + text.slice(-6) : text;
+        },
+
+        runStatusClass(status) {
+          const value = String(status || '').toLowerCase();
+          if (value === 'completed' || value === 'success' || value === 'finished') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+          if (value === 'running' || value === 'started') return 'border-sky-500/30 bg-sky-500/10 text-sky-300';
+          if (value === 'failed' || value === 'error') return 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+          return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
+        },
+
+        runReconciliationText(reconciliation) {
+          if (!reconciliation) return 'No reconciliation summary was reported.';
+          if (typeof reconciliation === 'string') return reconciliation;
+          if (typeof reconciliation.message === 'string') return reconciliation.message;
+          const present = reconciliation.current_records_present;
+          const missing = reconciliation.current_records_missing;
+          const changed = reconciliation.records_changed_since_snapshot;
+          if (present !== undefined || missing !== undefined || changed !== undefined) {
+            return String(present || 0) + ' current record(s) present, ' + String(missing || 0) + ' missing, ' + String(changed || 0) + ' changed since the journal snapshot.';
+          }
+          return 'Current records were read back for comparison with the journal snapshot.';
+        },
+
+        qualityFindingText() {
+          const summary = this.review.quality?.summary;
+          if (!summary) return '';
+          const items = [];
+          if (summary.duplicate_google_cids) items.push(summary.duplicate_google_cids + ' duplicate CID group(s)');
+          if (summary.coordinate_issues) items.push(summary.coordinate_issues + ' coordinate issue(s)');
+          if (summary.shape_issues) items.push(summary.shape_issues + ' shape issue(s)');
+          if (summary.is_partial) items.push('This is a partial scan; continue with the next cursor before treating it as conclusive.');
+          return items.join(' • ');
+        },
+
+        async fetchOverview() {
+          try {
+            const res = await fetch('/api/stats/overview');
+            if (res.ok) {
+              this.overview = await res.json();
+            }
+          } catch (e) {
+            console.error('Failed to fetch overview stats', e);
+          }
+        },
+
+        async pollWorkerStatus() {
+          try {
+            const res = await fetch('/api/status');
+            if (res.ok) {
+              this.worker = await res.json();
+              this.$nextTick(() => {
+                const el = document.getElementById('logConsole');
+                if (el) el.scrollTop = el.scrollHeight;
+              });
+            }
+          } catch (e) {
+            console.error('Failed to poll status', e);
+          }
+        },
+
+        async startWorker() {
+          await fetch('/api/control/start', { method: 'POST' });
+          await this.pollWorkerStatus();
+        },
+
+        async pauseWorker() {
+          await fetch('/api/control/pause', { method: 'POST' });
+          await this.pollWorkerStatus();
+        },
+
+        async stopWorker() {
+          await fetch('/api/control/stop', { method: 'POST' });
+          await this.pollWorkerStatus();
+        },
+
+        async retryFailedZips() {
+          const res = await fetch('/api/control/retry-failed', { method: 'POST' });
+          if (res.ok) {
+            await this.pollWorkerStatus();
+            await this.fetchOverview();
+          }
+        },
+
+        async openChromeLogin() {
+          try {
+            const res = await fetch('/api/chrome/login', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'Launched Google Chrome browser window.');
+          } catch (e) {
+            alert('Could not trigger Chrome window: ' + e);
+          }
+        },
+
+        async setScraperMode(mode) {
+          this.scraperMode = mode;
+          try {
+            const res = await fetch(`/api/control/mode?mode=${encodeURIComponent(mode)}`, { method: 'POST' });
+            if (res.ok) {
+              await this.pollWorkerStatus();
+            }
+          } catch (e) {
+            console.error('Failed to change mode', e);
+          }
+        },
+
+        async queueMajorCities() {
+          try {
+            const res = await fetch('/api/zips/queue-major-cities', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'Queued major cities');
+            await this.pollWorkerStatus();
+            await this.fetchOverview();
+          } catch (e) {
+            alert('Failed to queue major cities: ' + e);
+          }
+        },
+
+        async addCustomZip() {
+          if (!this.customZipInput) return;
+          try {
+            const raw = this.customZipInput.trim();
+            const res = await fetch(`/api/zips/add?query=${encodeURIComponent(raw)}`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+              this.customZipInput = '';
+              alert(data.message || 'Queued location(s) with high priority');
+              await this.pollWorkerStatus();
+              await this.fetchOverview();
+            } else {
+              alert(data.detail || 'Could not queue location(s)');
+            }
+          } catch (e) {
+            alert('Error adding location: ' + e);
+          }
+        },
+
+        async requeueAll() {
+          try {
+            if (!confirm('This re-crawls EVERY ZIP in the database (tens of thousands). Continue?')) return;
+            const res = await fetch('/api/zips/requeue-all?confirm=true', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'Re-queued all locations');
+            await this.pollWorkerStatus();
+            await this.fetchOverview();
+          } catch (e) {
+            alert('Error re-queuing: ' + e);
+          }
+        },
+
+        async fetchHotels(page = 1) {
+          this.currentPage = page;
+          const params = new URLSearchParams({
+            page: this.currentPage,
+            limit: 12,
+            source: this.selectedSource
+          });
+          if (this.searchQuery) params.append('q', this.searchQuery);
+          if (this.minRating) params.append('min_rating', this.minRating);
+
+          try {
+            const res = await fetch(`/api/hotels?${params.toString()}`);
+            if (res.ok) {
+              const data = await res.json();
+              this.hotels = data.items || [];
+              this.totalHotelCount = data.total;
+              this.totalPages = data.total_pages || 1;
+            }
+          } catch (e) {
+            console.error('Failed to load hotels', e);
+          }
+        },
+
+        changePage(newPage) {
+          if (newPage >= 1 && newPage <= this.totalPages) {
+            this.fetchHotels(newPage);
+          }
+        },
+
+        openHotelDetail(hotel) {
+          this.selectedHotel = hotel;
+        },
+
+        sourceLabel(key) {
+          const h = this.overview.hotels || {};
+          switch (key) {
+            case 'all': return `All Sources (${this.formatNumber(h.total)})`;
+            case 'places': return `Google Places Only (${this.formatNumber(h.places_only)})`;
+            case 'osm': return `OSM Only (${this.formatNumber(h.osm_only)})`;
+            case 'merged': return `Merged OSM + Places (${this.formatNumber(h.merged)})`;
+            default: return key;
+          }
+        },
+
+        sourceBadgeLabel(src) {
+          const map = { places: 'PLACES', places_chrome: 'MAPS', osm: 'OSM', web_scrape: 'WEB' };
+          return map[src] || (src || '').toUpperCase();
+        },
+
+        formatNumber(num) {
+          return (num || 0).toLocaleString();
+        },
+
+        formatTimestamp(value) {
+          if (!value) return '—';
+          const raw = String(value);
+          const normalized = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : raw + 'Z';
+          const date = new Date(normalized);
+          if (Number.isNaN(date.getTime())) return raw;
+          return date.toLocaleString();
+        },
+
+        formatUptime(seconds) {
+          if (!seconds || seconds <= 0) return '—';
+          const h = Math.floor(seconds / 3600);
+          const m = Math.floor((seconds % 3600) / 60);
+          if (h > 0) return `${h}h ${m}m`;
+          const s = Math.floor(seconds % 60);
+          return m > 0 ? `${m}m ${s}s` : `${s}s`;
+        },
+
+        formatRelativeTime(isoString) {
+          if (!isoString) return 'Never';
+          const normalized = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(isoString) ? isoString : isoString + 'Z';
+          const then = new Date(normalized);
+          if (isNaN(then.getTime())) return 'Unknown';
+          const diffSec = Math.max(0, Math.floor((Date.now() - then.getTime()) / 1000));
+          if (diffSec < 5) return 'Just now';
+          if (diffSec < 60) return `${diffSec}s ago`;
+          const m = Math.floor(diffSec / 60);
+          if (m < 60) return `${m}m ago`;
+          const hh = Math.floor(m / 60);
+          return hh < 48 ? `${hh}h ago` : `${Math.floor(hh / 24)}d ago`;
+        }
+      }
+    }
+  </script>
+</body>
+</html>
