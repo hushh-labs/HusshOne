@@ -29,6 +29,8 @@ from app.free_scraper import generate_dedup_key
 from app.models import Hotel, ZipCode
 from app.outbox import LocalOutbox, OutboxBatch, OutboxError, require_matching_target
 from app.power import worker_wake_lock
+from app.website_queue import WebsiteQueue
+from app.website_enrichment import collect_website
 from app.recovery import inspect_startup_recovery
 from app.run_journal import RunJournal
 from app.scrape_contract import ScrapeResult, ScrapeStatus, google_cid, validate_records
@@ -177,6 +179,7 @@ class ScraperBackgroundWorker:
         self._inventory_watermark: Optional[Dict[str, Any]] = None
         self._inventory_blocked: Optional[Dict[str, Any]] = None
         self._startup_recovery: Optional[Dict[str, Any]] = None
+        self._website_queue = None
         self._logs: deque = deque(maxlen=200)
         self._stats = {
             "started_at": None,
@@ -226,6 +229,8 @@ class ScraperBackgroundWorker:
             except Exception as exc:
                 self._log(f"Could not read local outbox status: {_reason(exc)}", "ERROR")
         return {
+            "website_enrichment": {"enabled": settings.WEBSITE_ENRICHMENT_ENABLED,
+                                   "jobs": self._website_queue.counts() if self._website_queue else {}},
             "is_running": self._is_running,
             "is_paused": self._is_paused,
             "scraper_mode": self._scraper_mode,
@@ -1470,6 +1475,8 @@ class ScraperBackgroundWorker:
             raise OutboxError("Durable local outbox is not initialized")
         # Check before claiming a ZIP or opening any remote transaction.
         require_matching_target(entry.metadata)
+        if settings.WEBSITE_ENRICHMENT_ENABLED:
+            await asyncio.to_thread(self._queue_websites, entry)
         state, lat, lng = self._outbox_location(entry)
         await asyncio.to_thread(self._claim_outbox_zip, entry)
         # The outbox is durable, not implicitly trusted: validate the decoded
@@ -1568,6 +1575,79 @@ class ScraperBackgroundWorker:
         return True
 
     # ---- persistence ---------------------------------------------------
+    def _queue_websites(self, entry):
+        if self._website_queue is None:
+            self._website_queue = WebsiteQueue()
+        for record in entry.records:
+            self._website_queue.enqueue(record, entry.run_id, entry.metadata["database_target"])
+
+    def _apply_website_evidence(self, job):
+        require_matching_target(job["payload"])
+        self._assert_current_write_contract()
+        self._assert_inventory_safe("before_website_enrichment")
+        record = job["payload"]["record"]
+        db = get_db_session()
+        try:
+            indexes = self._existing_rows(db, [record])
+            row = self._resolve_existing(record.get("query_zip") or "", record, *indexes)
+            if row is None:
+                # A quarantined/uncommitted Maps batch must never create a row
+                # through the website path. Retain its evidence locally only.
+                db.rollback()
+                return False
+            if row.website != record.get("website"):
+                db.rollback()
+                return False
+            raw = dict(row.raw or {})
+            previous = raw.get("website_enrichment") or {}
+            result = job["result"]
+            if previous.get("collected_at", "") > result.get("collected_at", ""):
+                db.rollback()
+                return False
+            if previous.get("status") == "collected" and result.get("status") != "collected":
+                db.rollback()
+                return False
+            before = self._snapshot(row)
+            # Evidence only: leave phone, address, rating, sources, photos,
+            # Maps raw trace and last_seen unchanged.
+            raw["website_enrichment"] = {**result, "run_id": job["payload"]["run_id"],
+                                          "job_id": job["id"]}
+            row.raw = raw
+            db.commit()
+            after = self._snapshot(row)
+            self._journal_safe("record_hotel_touch", before=before, after=after,
+                               hotel_id=row.id, dedup_key=row.dedup_key,
+                               cid=self._snapshot_cid(after))
+            return True
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    async def _flush_one_website_job(self):
+        if not settings.WEBSITE_ENRICHMENT_ENABLED:
+            return False
+        if self._website_queue is None:
+            self._website_queue = await asyncio.to_thread(WebsiteQueue)
+        job = await asyncio.to_thread(self._website_queue.next_job)
+        if not job:
+            return False
+        self._stats["current_action"] = f"Collecting business website for {job['payload']['record']['name']}"
+        if job["state"] != "fetched":
+            result = await collect_website(job["payload"]["record"])
+            ready = await asyncio.to_thread(self._website_queue.save_result, job, result)
+            if not ready:
+                self._log("Business website unavailable; durable retry scheduled.", "WARNING")
+                return True
+            job = {**job, "result": result}
+            if result["status"] == "retry":
+                job["result"] = {**result, "status": "failed"}
+        applied = await asyncio.to_thread(self._apply_website_evidence, job)
+        await asyncio.to_thread(self._website_queue.finish, job["id"], "applied" if applied else "skipped")
+        self._log(f"Business website evidence: {job['result']['status']} ({'saved' if applied else 'stale or unmatched job skipped'}) for {job['payload']['record']['name']}")
+        return True
+
     def _save_results(
         self,
         zip_code: str,
@@ -2049,6 +2129,22 @@ class ScraperBackgroundWorker:
                         self._stats["errors_encountered"] += 1
                         self._log(f"Could not flush local outbox: {_reason(exc)}", "ERROR")
                         await asyncio.sleep(5.0)
+                        continue
+                    try:
+                        # One website job per loop keeps discovery moving;
+                        # idle queues and daily Maps caps still drain websites.
+                        await self._flush_one_website_job()
+                    except DataLossSuspected as exc:
+                        await self._pause_for_inventory_loss(exc)
+                        continue
+                    except Exception as exc:
+                        if database.is_database_exception(exc):
+                            await self._database_retry(None, exc)
+                            continue
+                        # Corrupt/foreign local jobs fail closed, never silently
+                        # skipped or converted into a production write.
+                        self._is_paused = True
+                        self._log(f"Website queue held for review: {_reason(exc)}", "ERROR")
                         continue
                     if self._maps_cap_reached():
                         self._stats["current_action"] = (

@@ -3,6 +3,7 @@ import re
 import sys
 import time
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Mapping, Tuple, Callable
@@ -268,6 +269,7 @@ def _review_trace(raw: Any) -> Dict[str, Any]:
 def _review_hotel_payload(hotel: Hotel, *, include_raw: bool = False) -> Dict[str, Any]:
     payload = hotel.to_dict()
     payload["trace"] = _review_trace(hotel.raw)
+    payload["website_enrichment"] = (hotel.raw or {}).get("website_enrichment") if isinstance(hotel.raw, dict) else None
     if include_raw:
         # The raw record is source evidence, never credentials.  It is opt-in
         # so routine dashboard polling stays small even for verbose records.
@@ -1255,4 +1257,28 @@ def get_hotel(hotel_id: int, db: Session = Depends(get_db)):
     hotel = db.get(Hotel, hotel_id)
     if not hotel:
         raise HTTPException(status_code=404, detail="Hotel not found")
-    return hotel.to_dict()
+    return _review_hotel_payload(hotel)
+
+
+@app.post("/api/hotels/{hotel_id}/website-enrichment")
+async def queue_hotel_website(hotel_id: int, db: Session = Depends(get_db)):
+    """Queue one existing hotel's public website; no remote mutation here."""
+    from app.website_queue import WebsiteQueue
+    from app.website_enrichment import safe_url
+    from app.config import database_target
+    if not settings.WEBSITE_ENRICHMENT_ENABLED:
+        raise HTTPException(status_code=409, detail="Website enrichment is disabled")
+    hotel = db.get(Hotel, hotel_id)
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    try:
+        safe_url(hotel.website)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Hotel has no usable public website URL")
+    record = hotel.to_dict()
+    record["raw"] = {**(hotel.raw or {}), "scraped_at": datetime.now(timezone.utc).isoformat()}
+    target = database_target()
+    def enqueue():
+        WebsiteQueue().enqueue(record, "website-review-" + uuid.uuid4().hex, target)
+    await asyncio.to_thread(enqueue)
+    return {"status": "queued", "hotel_id": hotel_id, "message": "Website queued locally; start the worker to collect evidence."}

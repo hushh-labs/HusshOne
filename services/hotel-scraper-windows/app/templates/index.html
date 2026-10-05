@@ -979,6 +979,29 @@ WHERE places_status = 'error';</pre>
         </div>
       </div>
 
+      <div class="p-3 rounded-lg border border-emerald-500/20 text-xs space-y-2">
+        <div class="flex justify-between items-center">
+          <span class="text-emerald-300 font-semibold">Business website evidence</span>
+          <button x-show="selectedHotel?.website" @click="queueWebsite(selectedHotel)" class="text-emerald-400 hover:underline">Collect website</button>
+        </div>
+        <p class="text-slate-400">Public-source suggestions only; existing hotel fields are not replaced.</p>
+        <p class="text-slate-200" x-text="selectedHotel?.website_enrichment?.status || 'Not collected yet'"></p>
+        <p class="text-slate-400" x-text="selectedHotel?.website_enrichment?.reason || ''"></p>
+        <template x-for="[field, evidence] in Object.entries(selectedHotel?.website_enrichment?.fields || {})" :key="field">
+          <div class="border-t border-slate-800 pt-2">
+            <span class="text-emerald-300" x-text="field"></span>
+            <div class="text-slate-200 whitespace-pre-wrap break-words" x-text="typeof evidence.value === 'string' ? evidence.value : JSON.stringify(evidence.value)"></div>
+            <span class="text-slate-500 break-all" x-text="evidence.source_url"></span>
+          </div>
+        </template>
+        <template x-for="page in (selectedHotel?.website_enrichment?.pages || [])" :key="page.url">
+          <details class="border-t border-slate-800 pt-2">
+            <summary class="text-slate-300 break-all" x-text="page.url"></summary>
+            <p class="text-slate-400 whitespace-pre-wrap" x-text="page.excerpt"></p>
+          </details>
+        </template>
+      </div>
+
       <div class="flex justify-end pt-2">
         <button @click="selectedHotel = null" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs rounded-lg font-medium">Close</button>
       </div>
@@ -1486,8 +1509,20 @@ WHERE places_status = 'error';</pre>
           }
         },
 
-        openHotelDetail(hotel) {
+        async openHotelDetail(hotel) {
           this.selectedHotel = hotel;
+          try {
+            const response = await fetch(`/api/hotels/${hotel.id}`);
+            if (response.ok && this.selectedHotel?.id === hotel.id) this.selectedHotel = await response.json();
+          } catch (error) { console.error('Could not load website evidence', error); }
+        },
+
+        async queueWebsite(hotel) {
+          try {
+            const response = await fetch(`/api/hotels/${hotel.id}/website-enrichment`, {method: 'POST'});
+            const data = await response.json();
+            alert(response.ok ? data.message : (data.detail || 'Website could not be queued'));
+          } catch (error) { alert('Website could not be queued; check worker logs.'); }
         },
 
         sourceLabel(key) {

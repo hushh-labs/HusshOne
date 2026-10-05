@@ -185,7 +185,40 @@ Create and grant that role through a reviewed production change, then set
 `DB_USER` for the worker to that dedicated account. Do not apply the role
 change from the scraper process.
 
-## Windows continuity
+## Business website enrichment
+
+With `WEBSITE_ENRICHMENT_ENABLED=true`, replaying a validated Maps batch queues
+each available business website into `website_jobs.sqlite3` before the remote
+Maps commit. Jobs carry the same non-secret database fingerprint as the outbox.
+The worker interleaves one website job with each discovery-loop iteration and
+continues draining jobs when Maps is capped or idle. Hotel Details also has an
+explicit **Collect website** action for existing hotels; it only queues local
+work and requires a running worker to collect and apply evidence.
+
+Collection checks robots.txt, respects delays, follows at most three redirects,
+and reads at most four relevant same-host HTML pages by default. Connections
+are pinned to validated public IPs, TLS retains hostname verification, private
+and metadata IPs are blocked, and no credentials/cookies/proxy settings are
+inherited by HTTP requests. A child-process supervisor enforces a 150-second
+deadline, including DNS hangs. Transient failures retry with backoff, up to
+three attempts. Fetched evidence is persisted before any remote update, so a
+database outage or crash after commit can safely replay the same evidence.
+
+Business JSON-LD must match the Maps name and corroborate phone, ZIP or nearby
+coordinates. Ambiguous sites become `needs_review`; restrictions and uncertain
+cross-host redirects are not bypassed. This first version does not render
+JavaScript-only websites or infer facts from free-form page text. Relevant page
+excerpts remain evidence, not structured claims about amenities or policies.
+
+The only remote change is `hotels.raw.website_enrichment`, containing source
+URLs, timestamps, page hashes, status and proposed structured fields. Existing
+columns, Maps trace, photos and `last_seen` are preserved. Older results and
+failures cannot replace previously successful newer evidence. A changed URL or
+missing/ambiguous hotel identity skips the remote update. No Cloud SQL DDL or
+deletes are introduced. Review evidence in the hotel detail modal; no automatic
+approval or overwrite of canonical business fields is implemented.
+
+## Windows continuity (deployment)
 
 Tests set an isolated temporary `LOCALAPPDATA` before importing the application.
 SQLite development outboxes and journals are also separated by database target.

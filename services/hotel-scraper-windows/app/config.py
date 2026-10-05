@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     REFRESH_AFTER_DAYS: int = 30
     # Pause this long after repeated scrape failures (e.g. Google captcha/blocking).
     FAILURE_COOLDOWN_SEC: int = 300
+    WEBSITE_ENRICHMENT_ENABLED: bool = True
+    WEBSITE_MAX_PAGES: int = 4
+    WEBSITE_TIMEOUT_SEC: int = 10
+    WEBSITE_MAX_BYTES: int = 1_000_000
+    WEBSITE_MAX_ATTEMPTS: int = 3
 
     model_config = SettingsConfigDict(
         env_file=(".env", os.path.join(user_data_dir(), ".env")),
