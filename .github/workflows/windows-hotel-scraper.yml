@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-hotel-scraper-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   postgres-tests:
     runs-on: ubuntu-latest

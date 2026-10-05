@@ -1288,7 +1288,7 @@ class ScraperBackgroundWorker:
             conditions.append(Hotel.place_id.in_(place_ids))
         if cids:
             conditions.append(Hotel.raw["google_cid"].as_string().in_(cids))
-        rows = db.query(Hotel).filter(or_(*conditions)).all()
+        rows = db.query(Hotel).filter(or_(*conditions)).order_by(Hotel.id).with_for_update().all()
         by_key: Dict[str, List[Hotel]] = {}
         by_place: Dict[str, List[Hotel]] = {}
         by_cid: Dict[str, List[Hotel]] = {}
@@ -1351,7 +1351,7 @@ class ScraperBackgroundWorker:
             "formatted_address": address,
             "zip": _clean(record.get("zip")) or (zip_match[-1] if zip_match else None),
             "query_zip": zip_code,
-            "state": (state or "")[:2] or None,
+            "state": (_clean(record.get("state")) or state or "")[:2] or None,
             "lat": record["lat"],
             "lng": record["lng"],
             "rating": record.get("rating"),
@@ -1435,7 +1435,10 @@ class ScraperBackgroundWorker:
             return await asyncio.to_thread(self._outbox.get, batch.outbox_batch_id)
 
         # This stable ID makes a retry after a process interruption harmless.
-        batch_id = f"{self._run_id}:{batch.zip_code}"
+        # One run can remain alive across multiple 30-day refresh cycles.
+        # Include the stable claim token so a later pass is a new delivery.
+        claim_token = getattr(self, "_zip_claims", {}).get(batch.zip_code)
+        batch_id = f"{self._run_id}:{batch.zip_code}:{claim_token or batch.records[0]['raw']['scraped_at']}"
         entry = await asyncio.to_thread(
             self._outbox.enqueue,
             self._run_id,

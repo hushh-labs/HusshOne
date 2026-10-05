@@ -129,6 +129,28 @@ def test_clean_shutdown_releases_only_owned_claims(queue):
     assert worker._zip_claims == {}
 
 
+def test_multiple_refresh_passes_in_one_run_have_distinct_outbox_ids(tmp_path):
+    import asyncio
+    from app.outbox import LocalOutbox
+    from app.scrape_contract import ScrapeResult, ScrapeStatus
+    from app.worker import _PendingBatch
+
+    worker = ScraperBackgroundWorker()
+    worker._run_id = "long-running-worker"
+    worker._outbox = LocalOutbox(tmp_path / "outbox.sqlite3")
+    records = [{"name": "Hotel", "raw": {"scraped_at": _now().isoformat()}}]
+    ids = []
+    for token in ("husshone-browser:first", "husshone-browser:refresh"):
+        worker._zip_claims = {"98033": token}
+        batch = _PendingBatch("98033", "Kirkland", "WA", 47.68, -122.2,
+                              ScrapeResult(ScrapeStatus.SUCCESS, records))
+        batch.records = records
+        entry = asyncio.run(worker._enqueue_outbox_batch(batch))
+        ids.append(entry.batch_id)
+        assert entry.metadata["claim_token"] == token
+    assert ids[0] != ids[1]
+
+
 class Element:
     def __init__(self, label=None, href=None):
         self.label, self.href = label, href
