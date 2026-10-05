@@ -436,6 +436,18 @@
         </div>
       </div>
 
+      <div class="p-5 rounded-2xl bg-slate-900 border border-emerald-500/20 space-y-3">
+        <h3 class="text-sm font-semibold text-white">Fill missing data in existing hotels</h3>
+        <p class="text-xs text-slate-400">Scans old rows with missing phone, address, ZIP or state. Uses existing website links and corroborated evidence only. Existing values, ratings, coordinates and photos stay unchanged. Start the worker to process queued jobs.</p>
+        <div class="flex gap-3 text-xs">
+          <button @click="controlBackfill('start')" class="text-emerald-400 hover:underline">Start / resume backfill</button>
+          <button @click="controlBackfill('pause')" class="text-amber-400 hover:underline">Pause backfill</button>
+        </div>
+        <p class="text-xs text-slate-300" x-text="'State: ' + (backfill.state || 'not_started') + ' · Incomplete rows scanned: ' + (backfill.scanned || 0) + ' · No website: ' + (backfill.missing_website || 0) + ' · Fields filled: ' + (backfill.filled_fields || 0)"></p>
+        <p class="text-xs text-slate-500" x-text="'Website jobs: ' + JSON.stringify(backfill.jobs || {})"></p>
+        <p class="text-xs text-slate-500">Pause takes effect after any in-flight website job finishes. No-website rows need a separate discovery pass.</p>
+      </div>
+
       <!-- Failed ZIPs Recovery Ledger (bound to real /api/stats/overview data) -->
       <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
         <div class="flex items-center justify-between">
@@ -984,7 +996,14 @@ WHERE places_status = 'error';</pre>
           <span class="text-emerald-300 font-semibold">Business website evidence</span>
           <button x-show="selectedHotel?.website" @click="queueWebsite(selectedHotel)" class="text-emerald-400 hover:underline">Collect website</button>
         </div>
-        <p class="text-slate-400">Public-source suggestions only; existing hotel fields are not replaced.</p>
+        <p class="text-slate-400">Corroborated evidence may fill blank phone/address/ZIP/state fields. Existing values are never replaced.</p>
+        <template x-for="[field, fill] in Object.entries(selectedHotel?.website_field_fills || {})" :key="field">
+          <div class="text-emerald-300 border-t border-slate-800 pt-2">
+            <span x-text="'Filled blank ' + field + ': ' + fill.value"></span>
+            <div class="text-slate-500 break-all" x-text="fill.source_url"></div>
+            <span class="text-slate-500" x-text="formatTimestamp(fill.collected_at)"></span>
+          </div>
+        </template>
         <p class="text-slate-200" x-text="selectedHotel?.website_enrichment?.status || 'Not collected yet'"></p>
         <p class="text-slate-400" x-text="selectedHotel?.website_enrichment?.reason || ''"></p>
         <template x-for="[field, evidence] in Object.entries(selectedHotel?.website_enrichment?.fields || {})" :key="field">
@@ -1029,6 +1048,7 @@ WHERE places_status = 'error';</pre>
         selectedSource: 'all',
         minRating: '',
         selectedHotel: null,
+        backfill: {},
         scraperMode: 'defined_zips',
         customZipInput: '',
         lastSyncedLabel: '—',
@@ -1079,6 +1099,10 @@ WHERE places_status = 'error';</pre>
         },
 
         async livePoll() {
+          try {
+            const response = await fetch('/api/website-backfill');
+            if (response.ok) this.backfill = await response.json();
+          } catch (error) { console.error('Could not load backfill progress', error); }
           try {
             const res = await fetch('/api/live');
             if (res.ok) {
@@ -1523,6 +1547,16 @@ WHERE places_status = 'error';</pre>
             const data = await response.json();
             alert(response.ok ? data.message : (data.detail || 'Website could not be queued'));
           } catch (error) { alert('Website could not be queued; check worker logs.'); }
+        },
+
+        async controlBackfill(action) {
+          if (action === 'start' && !confirm('Start/resume a bounded backfill of existing hotels? Only blank phone/address/ZIP/state fields will be filled from corroborated business websites. The worker must be running.')) return;
+          try {
+            const response = await fetch(`/api/website-backfill/${action}`, {method: 'POST'});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Backfill control failed');
+            this.backfill = data;
+          } catch (error) { alert(error.message); }
         },
 
         sourceLabel(key) {

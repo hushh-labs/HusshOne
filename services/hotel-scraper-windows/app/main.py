@@ -270,6 +270,7 @@ def _review_hotel_payload(hotel: Hotel, *, include_raw: bool = False) -> Dict[st
     payload = hotel.to_dict()
     payload["trace"] = _review_trace(hotel.raw)
     payload["website_enrichment"] = (hotel.raw or {}).get("website_enrichment") if isinstance(hotel.raw, dict) else None
+    payload["website_field_fills"] = (hotel.raw or {}).get("website_field_fills", {}) if isinstance(hotel.raw, dict) else {}
     if include_raw:
         # The raw record is source evidence, never credentials.  It is opt-in
         # so routine dashboard polling stays small even for verbose records.
@@ -1279,6 +1280,34 @@ async def queue_hotel_website(hotel_id: int, db: Session = Depends(get_db)):
     record["raw"] = {**(hotel.raw or {}), "scraped_at": datetime.now(timezone.utc).isoformat()}
     target = database_target()
     def enqueue():
-        WebsiteQueue().enqueue(record, "website-review-" + uuid.uuid4().hex, target)
+        WebsiteQueue().enqueue(record, "website-review-" + uuid.uuid4().hex, target,
+                               fill_missing=settings.WEBSITE_FILL_MISSING_FIELDS)
     await asyncio.to_thread(enqueue)
     return {"status": "queued", "hotel_id": hotel_id, "message": "Website queued locally; start the worker to collect evidence."}
+
+
+def _website_backfill_queue():
+    from app.website_queue import WebsiteQueue
+    if worker_instance._website_queue is None:
+        worker_instance._website_queue = WebsiteQueue()
+    return worker_instance._website_queue
+
+
+@app.get("/api/website-backfill")
+def website_backfill_status():
+    return _website_backfill_queue().backfill_status()
+
+
+@app.post("/api/website-backfill/start")
+def start_website_backfill(db: Session = Depends(get_db)):
+    if not settings.WEBSITE_ENRICHMENT_ENABLED or not settings.WEBSITE_FILL_MISSING_FIELDS:
+        raise HTTPException(status_code=409, detail="Website enrichment / missing-field fills are disabled")
+    # Snapshot ceiling never grows during a run. Newly discovered hotels use
+    # their normal website jobs; this scanner is exclusively a historical pass.
+    ceiling = db.query(func.max(Hotel.id)).scalar() or 0
+    return _website_backfill_queue().start_backfill(ceiling)
+
+
+@app.post("/api/website-backfill/pause")
+def pause_website_backfill():
+    return _website_backfill_queue().pause_backfill()

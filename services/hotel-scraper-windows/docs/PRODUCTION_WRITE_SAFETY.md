@@ -210,13 +210,50 @@ cross-host redirects are not bypassed. This first version does not render
 JavaScript-only websites or infer facts from free-form page text. Relevant page
 excerpts remain evidence, not structured claims about amenities or policies.
 
-The only remote change is `hotels.raw.website_enrichment`, containing source
-URLs, timestamps, page hashes, status and proposed structured fields. Existing
-columns, Maps trace, photos and `last_seen` are preserved. Older results and
+Evidence is stored in `hotels.raw.website_enrichment`, containing source
+URLs, timestamps, page hashes, status and proposed structured fields. With
+`WEBSITE_FILL_MISSING_FIELDS=true`, new jobs may also fill blank phone, address,
+ZIP and state columns using corroborated JSON-LD. Nonblank values, Maps trace,
+photos and `last_seen` are preserved. Older results and
 failures cannot replace previously successful newer evidence. A changed URL or
 missing/ambiguous hotel identity skips the remote update. No Cloud SQL DDL or
-deletes are introduced. Review evidence in the hotel detail modal; no automatic
-approval or overwrite of canonical business fields is implemented.
+deletes are introduced. Review evidence and field-fill provenance in the hotel
+detail modal. Other proposed business attributes are not promoted automatically.
+
+### Historical missing-data backfill
+
+Use **Start / resume backfill** on the worker dashboard, then run the worker.
+Nothing starts automatically on upgrade. The start action snapshots the current
+maximum hotel ID and saves a target-bound local run ID. The scanner pages
+incomplete rows by ID, excludes later inventory, limits pending website jobs,
+enqueues before checkpointing, and resumes the same cursor after a restart.
+**Pause backfill** holds its queued jobs after the current in-flight job ends;
+start/resume retains the original snapshot. Maps discovery remains independent.
+
+Only public website URLs already present in `hotels` are used. No-website rows
+are counted and skipped; this feature does not discover their missing URLs.
+Cached corroborated evidence can be reused without another website request.
+Progress reports incomplete rows scanned, jobs by state, skipped missing links
+and the number of fields filled—not a count of guaranteed successful websites.
+
+Missing means NULL, empty or whitespace-only, not a nonempty placeholder.
+Before filling, the worker locks the hotel, checks current blanks again, verifies
+the evidence's business name and same-site source URL, and rejects address data
+contradicting existing state/ZIP/address-postcode evidence. Unsupported or
+uncorroborated fields stay blank. Ratings, names, identity keys, coordinates,
+photos and existing values are never changed by this path. No Cloud SQL schema
+change is needed. Additive queue upgrades/indexes apply only to local SQLite.
+
+Each fill retains its exact prior value, source URL, collection time, run ID
+and job ID in `raw.website_field_fills`, plus the run journal's before/after
+snapshot when available. Any operator revert must restore only the affected
+field after confirming its current value still equals the recorded fill; never
+restore an entire old hotel snapshot over subsequent VM/user changes.
+
+Defaults: `WEBSITE_BACKFILL_BATCH_SIZE=200` and
+`WEBSITE_BACKFILL_MAX_PENDING=100`. Disable
+`WEBSITE_FILL_MISSING_FIELDS` to hold historical jobs and disable canonical
+fills while retaining normal evidence collection.
 
 ## Windows continuity (deployment)
 

@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     WEBSITE_TIMEOUT_SEC: int = 10
     WEBSITE_MAX_BYTES: int = 1_000_000
     WEBSITE_MAX_ATTEMPTS: int = 3
+    WEBSITE_FILL_MISSING_FIELDS: bool = True
+    WEBSITE_BACKFILL_BATCH_SIZE: int = 200
+    WEBSITE_BACKFILL_MAX_PENDING: int = 100
 
     model_config = SettingsConfigDict(
         env_file=(".env", os.path.join(user_data_dir(), ".env")),

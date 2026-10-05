@@ -246,6 +246,7 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep):
                     return result
                 matched = True
                 result["identity"] = "corroborated_public_data"
+                result["business_name"] = matches[0]["name"]
                 for key in ("description", "telephone", "address", "checkinTime", "checkoutTime", "amenityFeature", "priceRange", "numberOfRooms"):
                     value = matches[0].get(key)
                     if value is not None and len(json.dumps(value)) <= 8000:
