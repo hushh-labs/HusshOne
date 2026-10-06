@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+import shutil
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
@@ -9,7 +11,20 @@ datas = [
     ('app/templates', 'app/templates'),
     ('app/static', 'app/static'),
     ('.env.example', '.'),
+    ('app/vm_sources', 'app/vm_sources'),
 ]
+
+node = os.environ.get('VM_NODE_PATH') or shutil.which('node')
+unzip = os.environ.get('VM_UNZIP_PATH') or shutil.which('unzip') or 'C:/Program Files/Git/usr/bin/unzip.exe'
+if not node or not Path(node).is_file() or not Path(unzip).is_file():
+    raise RuntimeError('Install Node.js and Git unzip before packaging the four directory workers')
+if not Path('app/vm_sources/node_modules/pg/package.json').is_file():
+    raise RuntimeError('Run npm ci --ignore-scripts in app/vm_sources before packaging')
+vm_binaries = [(node, 'vm_runtime'), (unzip, 'vm_runtime/unzip')]
+for dependency in ('msys-2.0.dll', 'msys-bz2-1.dll'):
+    path = Path(unzip).parent / dependency
+    if path.is_file():
+        vm_binaries.append((str(path), 'vm_runtime/unzip'))
 
 hiddenimports = [
     'brotli',
@@ -48,7 +63,7 @@ hiddenimports = [
 a = Analysis(
     ['desktop.py'],
     pathex=[],
-    binaries=[],
+    binaries=vm_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

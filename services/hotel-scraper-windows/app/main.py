@@ -37,7 +37,11 @@ async def lifespan(app: FastAPI):
         configure_logging()
     cloud_proxy.start_watchdog()
     await asyncio.to_thread(init_db)
+    from app.directory_fleet import fleet
+    await fleet.resume()
     yield
+    for vertical in list(fleet.desired):
+        await fleet.stop(vertical, remember=False)
     if worker_instance.is_running:
         await worker_instance.stop()
     await chrome_scraper.close_browser()
@@ -49,6 +53,12 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+from app.business_lookup import router as business_lookup_router
+app.include_router(business_lookup_router)
+from app.directory_fleet import router as directory_fleet_router
+app.include_router(directory_fleet_router)
+from app.worker_updates import router as worker_updates_router
+app.include_router(worker_updates_router)
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     bundle_dir = getattr(sys, "_MEIPASS")

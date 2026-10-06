@@ -1023,7 +1023,11 @@ class ScraperBackgroundWorker:
             result = await chrome_scraper.scrape_google_maps_hotels(
                 city, state, zip_code, settings.MAPS_MAX_RESULTS
             )
-            return self._normalize_scrape_result(result)
+            result = self._normalize_scrape_result(result)
+            if result.status == ScrapeStatus.SUCCESS:
+                from app.vm_runtime import map_browser_results
+                result.records = await map_browser_results(result.records, city, state, zip_code)
+            return result
         except chrome_scraper.ScrapeBlocked as exc:
             return ScrapeResult(ScrapeStatus.BLOCKED, reason=_reason(exc))
         except Exception as exc:

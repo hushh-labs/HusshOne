@@ -243,6 +243,45 @@
     <!-- TAB 1: BACKGROUND SCRAPER CONTROL PANEL    -->
     <!-- ========================================== -->
     <div x-show="activeTab === 'control'" class="space-y-6">
+      <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+        <h2 class="text-lg font-semibold">Imported directory VM workers</h2>
+        <p class="text-xs text-slate-400">Native Cloud SQL databases stay separate. Registry workers use official NPPES, SEC and DOI feeds, not Maps. Start each once; enabled registry workers resume after restart. Schema mismatches block writes.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <template x-for="vertical in ['hotel', 'healthcare', 'ria', 'insurance']" :key="vertical">
+            <div class="bg-slate-800/60 rounded-xl p-4 space-y-3">
+              <h3 class="uppercase text-sm font-semibold" x-text="vertical"></h3>
+              <p class="text-xs text-emerald-300" x-text="fleet[vertical]?.state || 'Loading status…'"></p>
+              <p class="text-xs text-slate-400" x-text="fleet[vertical]?.database || ''"></p>
+              <p class="text-xs text-amber-300 break-words" x-text="fleet[vertical]?.reason || ''"></p>
+              <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
+              <div class="flex gap-2">
+                <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
+                <button @click="fleetAction(vertical, 'stop')" :disabled="fleetBusy" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-xs">Stop</button>
+              </div>
+              <p class="text-xs text-slate-500" x-text="fleet[vertical]?.last_event?.event || ''"></p>
+            </div>
+          </template>
+        </div>
+        <p class="text-xs text-amber-300" role="status" x-text="fleetNotice"></p>
+        <div class="border-t border-slate-800 pt-3 text-xs space-y-2">
+          <h3 class="font-semibold">Live worker updates</h3>
+          <p class="text-slate-400">Reviewed Node worker releases apply between ingest cycles while this dashboard stays open. Python, UI and EXE changes still need a desktop restart. No remote code is downloaded automatically.</p>
+          <p x-text="workerUpdate.message || workerUpdate.state || 'No update requested'"></p>
+          <button @click="applyWorkerUpdate()" :disabled="!workerUpdate.pending || ['checking','draining'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40">Apply staged worker update</button>
+        </div>
+        <form @submit.prevent="lookupBusinesses()" class="border-t border-slate-800 pt-3 flex flex-wrap gap-2">
+          <label class="text-xs self-center" for="business-query">Search all four directories</label>
+          <input id="business-query" x-model="businessQuery" maxlength="200" required placeholder="Name or five-digit ZIP" class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm">
+          <button type="submit" :disabled="businessBusy" class="rounded-lg bg-sky-800 px-3 py-2 text-sm disabled:opacity-40">Search stored data</button>
+        </form>
+        <p class="text-xs text-amber-300" x-text="businessNotice"></p>
+        <template x-for="record in businessResults" :key="record.vertical + record.canonical_table + record.id">
+          <details class="text-xs border border-slate-800 rounded-lg p-3">
+            <summary x-text="record.name + ' · ' + record.vertical + ' · ' + record.canonical_table"></summary>
+            <pre class="whitespace-pre-wrap break-words mt-2 text-slate-400" x-text="JSON.stringify(record, null, 2)"></pre>
+          </details>
+        </template>
+      </section>
 
       <!-- Action & Execution Status Card -->
       <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
@@ -1075,6 +1114,39 @@ WHERE places_status = 'error';</pre>
     function scraperDashboard() {
       return {
         activeTab: 'control',
+        fleet: {}, fleetBusy: false, fleetNotice: '', workerUpdate: {},
+        businessQuery: '', businessResults: [], businessBusy: false, businessNotice: '',
+        async fleetAction(vertical, action) {
+          this.fleetBusy = true; this.fleetNotice = '';
+          try {
+            const response = await fetch(`/api/directory-fleet/${vertical}/${action}`, {method: 'POST'});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Worker action failed');
+            this.fleetNotice = `${vertical}: ${data.status}`;
+          } catch (error) { this.fleetNotice = error.message; }
+          finally { this.fleetBusy = false; }
+        },
+        async applyWorkerUpdate() {
+          try {
+            const response = await fetch('/api/worker-updates/apply', {method: 'POST'});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Update could not be scheduled');
+            this.workerUpdate.state = 'checking';
+          } catch (error) { this.fleetNotice = error.message; }
+        },
+        async lookupBusinesses() {
+          this.businessBusy = true; this.businessNotice = ''; this.businessResults = [];
+          try {
+            const query = this.businessQuery.trim();
+            const params = new URLSearchParams({[/^\d{5}$/.test(query) ? 'zip' : 'q']: query, limit: '20'});
+            const response = await fetch('/api/v1/businesses?' + params);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Search unavailable');
+            this.businessResults = data.results;
+            this.businessNotice = `${data.count} records returned. ${data.warnings.join('; ')}`;
+          } catch (error) { this.businessNotice = error.message; }
+          finally { this.businessBusy = false; }
+        },
         isRefreshing: false,
         worker: {
           is_running: false,
@@ -1159,6 +1231,8 @@ WHERE places_status = 'error';</pre>
           try {
             const now = Date.now();
             const requests = [
+              load('/api/directory-fleet', data => { this.fleet = data; }),
+              load('/api/worker-updates', data => { this.workerUpdate = data; }),
               load('/api/website-backfill', data => { this.backfill = data; }),
               load('/api/worker/live', data => {
                 this.worker = data.status;

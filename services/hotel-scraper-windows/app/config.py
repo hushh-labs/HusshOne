@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     WEBSITE_BACKLOG_LOW: int = 100
     WEBSITE_FETCH_CONCURRENCY: int = 2
     WEBSITE_MIN_FREE_RAM_GB: int = 4
+    # Imported VM pipelines. Registry workers are started explicitly from the
+    # dashboard; their desired state then survives restarts. No auto-DDL.
+    VM_USE_IMPORTED_HOTEL_PIPELINE: bool = True
+    VM_NODE_PATH: Optional[str] = None
+    VM_MIN_FREE_DISK_GB: int = 20
 
     model_config = SettingsConfigDict(
         env_file=(".env", os.path.join(user_data_dir(), ".env")),

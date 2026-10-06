@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import subprocess
 import PyInstaller.__main__
 
 def build():
@@ -12,6 +13,11 @@ def build():
     dist_dir = os.path.join(base_dir, "dist")
     build_dir = os.path.join(base_dir, "build")
     spec_file = os.path.join(base_dir, "husshone_hotel_scraper.spec")
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise RuntimeError("Node.js/npm are required to package the imported directory workers")
+    subprocess.run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                   cwd=os.path.join(base_dir, "app", "vm_sources"), check=True)
 
     args = [
         spec_file,

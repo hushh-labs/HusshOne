@@ -273,4 +273,22 @@ def main():
             launch_tkinter_gui(base_url)
 
 if __name__ == "__main__":
-    main()
+    if '--self-test' in sys.argv:
+        # Frozen-bundle check only: no proxy, production DB, browser or worker.
+        if os.getenv('HUSSHONE_TEST_MODE') != '1' or settings.DB_BACKEND != 'sqlite':
+            raise SystemExit('Self-test requires HUSSHONE_TEST_MODE=1 and DB_BACKEND=sqlite')
+        import json
+        import subprocess
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from app.vm_runtime import node_path, source_root
+        from app.directory_fleet import unzip_directory
+        subprocess.run([node_path(), '--check', str(source_root() / 'local-worker.mjs')], check=True)
+        subprocess.run([os.path.join(unzip_directory(), 'unzip.exe'), '-v'], check=True, capture_output=True)
+        client = TestClient(app)
+        assert client.get('/api/directory-fleet').status_code == 200
+        assert client.get('/api/v1/businesses').status_code == 422
+        assert client.get('/api/worker-updates').status_code == 200
+        print(json.dumps({'self_test': 'passed', 'directories': ['hotel', 'healthcare', 'ria', 'insurance']}))
+    else:
+        main()
