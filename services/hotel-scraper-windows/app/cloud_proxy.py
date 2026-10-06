@@ -155,6 +155,10 @@ def _windows_process_details(pid: int) -> Optional[dict[str, str]]:
 
 def _process_exists(pid: int) -> Optional[bool]:
     """Return whether a PID exists, preserving uncertainty as ``None``."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or pid > 0xFFFFFFFF:
+        return False
+    if os.name == "nt":
+        return _windows_process_exists(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -163,6 +167,34 @@ def _process_exists(pid: int) -> Optional[bool]:
     except PermissionError:
         return True
     except OSError:
+        return None
+
+
+def _windows_process_exists(pid: int) -> Optional[bool]:
+    """Query only; os.kill(pid, 0) is not a safe Windows liveness probe."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION only
+        if not handle:
+            # ERROR_INVALID_PARAMETER means no such process; access denied or
+            # other failures are uncertain, never authority to kill a proxy.
+            return False if ctypes.get_last_error() == 87 else None
+        try:
+            code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    except (OSError, SystemError):
         return None
 
 
