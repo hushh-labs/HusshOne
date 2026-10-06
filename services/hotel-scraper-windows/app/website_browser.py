@@ -8,7 +8,7 @@ def render_page(url, request):
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True,
             proxy={"server": "http://127.0.0.1:9", "bypass": "<-loopback>"},
-            args=["--disable-background-networking", "--disable-quic"])
+            args=["--disable-background-networking", "--disable-quic", "--disable-gpu"])
         try:
             context = browser.new_context(service_workers="block", user_agent=AGENT,
                                           accept_downloads=False)

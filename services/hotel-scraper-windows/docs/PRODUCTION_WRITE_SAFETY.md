@@ -260,6 +260,19 @@ fills while retaining normal evidence collection.
 
 ### Website hardening and review
 
+Training-friendly acceleration: `WEBSITE_FETCH_CONCURRENCY=2` permits at most
+two public website collections on different hostnames to overlap. Maps URL
+discovery and all Cloud SQL writes remain serial. Collected evidence is saved
+locally before entering the normal locked/guarded write path. The same host is
+never prefetched twice at once, and existing fetched evidence is replayed first.
+Collection child processes use below-normal Windows priority; enrichment and
+discovery browsers disable GPU acceleration. Parallel prefetch falls back to
+serial if available RAM drops below `WEBSITE_MIN_FREE_RAM_GB=4` (minimum 2 GB),
+or the memory probe is unavailable. Set concurrency to 1 for maximum training
+headroom. These are limits, not a guarantee of zero CPU/RAM contention or a
+measured throughput gain on every site. Robots, rate limits, target validation,
+timeouts and blank-only update guards remain unchanged.
+
 Website scheduling uses sequential bursts (default up to 8 jobs / 45 seconds,
 checked between jobs). Each individual collection retains its hard supervisor
 deadline; an in-flight job is not interrupted at the soft cycle budget. Fetched

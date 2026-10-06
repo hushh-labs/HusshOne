@@ -28,7 +28,7 @@ def discover_website(record):
         url = maps_identity_url(record)
         result["requested_url"] = url
         with sync_playwright() as p:
-            browser = p.chromium.launch(channel="chrome", headless=True)
+            browser = p.chromium.launch(channel="chrome", headless=True, args=["--disable-gpu"])
             try:
                 context = browser.new_context(service_workers="block", accept_downloads=False)
                 # Never follow the business website in this browser; a separate

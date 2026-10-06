@@ -124,6 +124,8 @@ class Settings(BaseSettings):
     WEBSITE_CYCLE_BUDGET_SEC: int = 45
     WEBSITE_BACKLOG_HIGH: int = 200
     WEBSITE_BACKLOG_LOW: int = 100
+    WEBSITE_FETCH_CONCURRENCY: int = 2
+    WEBSITE_MIN_FREE_RAM_GB: int = 4
 
     model_config = SettingsConfigDict(
         env_file=(".env", os.path.join(user_data_dir(), ".env")),

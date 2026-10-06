@@ -139,15 +139,17 @@ class WebsiteQueue:
             c.execute("INSERT OR IGNORE INTO website_jobs(id,payload,updated_at) VALUES(?,?,?)",
                       (key, json.dumps(payload), time.time()))
 
-    def next_job(self, prefer_backfill=False):
+    def next_job(self, prefer_backfill=False, exclude_ids=()):
+        excluded = tuple(exclude_ids)[:16]
+        exclude_clause = " AND id NOT IN (" + ",".join("?" for _ in excluded) + ")" if excluded else ""
         with self.connect() as c:
             row = c.execute("""SELECT * FROM website_jobs WHERE state IN ('pending','retry','fetched') AND next_attempt<=?
                 AND (? OR json_extract(payload,'$.backfill_id') IS NULL)
                 AND NOT EXISTS (SELECT 1 FROM website_backfill_runs b
                     WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')
-                ORDER BY CASE WHEN state='fetched' THEN 0 ELSE 1 END,
+                """ + exclude_clause + """ ORDER BY CASE WHEN state='fetched' THEN 0 ELSE 1 END,
                     CASE WHEN (json_extract(payload,'$.backfill_id') IS NOT NULL)=? THEN 0 ELSE 1 END,
-                    updated_at,id LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, prefer_backfill)).fetchone()
+                    updated_at,id LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, *excluded, prefer_backfill)).fetchone()
         if row is None:
             return None
         job = dict(row)

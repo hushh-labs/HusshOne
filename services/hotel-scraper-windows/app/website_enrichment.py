@@ -323,6 +323,13 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
 
 def _crawl_child(connection, record):
     try:
+        if __import__("os").name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL
         if record.get("_discover_website"):
             from app.website_discovery import discover_website
             discovery = discover_website(record)

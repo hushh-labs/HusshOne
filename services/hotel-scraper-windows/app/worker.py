@@ -1755,6 +1755,51 @@ class ScraperBackgroundWorker:
             self._website_pressure = False
         return self._website_pressure
 
+    def _has_website_headroom(self):
+        from app.resource_budget import available_memory_bytes
+        available = available_memory_bytes()
+        return available is not None and available >= max(2, settings.WEBSITE_MIN_FREE_RAM_GB) * 1024 ** 3
+
+    async def _prefetch_website_pair(self):
+        """Overlap two distinct hosts; remote writes remain in the normal serial path."""
+        if settings.WEBSITE_FETCH_CONCURRENCY < 2 or not settings.WEBSITE_ENRICHMENT_ENABLED or self._website_queue is None:
+            return False
+        if not self._has_website_headroom():
+            return False
+        from urllib.parse import urlsplit
+        selected, excluded, hosts = [], [], set()
+        for _ in range(8):
+            job = await asyncio.to_thread(self._website_queue.next_job,
+                prefer_backfill=bool((self._website_turn + len(selected)) % 2), exclude_ids=excluded)
+            if not job or job["state"] == "fetched":
+                return False
+            excluded.append(job["id"])
+            record = job["payload"]["record"]
+            if record.get("_discover_website"):
+                if not selected:
+                    return False  # Maps discovery stays serial and rate-capped.
+                continue
+            host = (urlsplit(record.get("website") or "").hostname or "").removeprefix("www.")
+            if not host or host in hosts:
+                continue
+            selected.append(job)
+            hosts.add(host)
+            if len(selected) == 2:
+                break
+        if len(selected) != 2 or self._is_paused or not self._is_running:
+            return False
+        names = [job["payload"]["record"]["name"] for job in selected]
+        self._website_activity = {"state": "processing", "hotel": " + ".join(names), "collectors": 2}
+        self._stats["current_action"] = "Collecting two independent websites (low-priority, GPU disabled)"
+        async def fetch_and_persist(job):
+            result = await collect_website(job["payload"]["record"])
+            await asyncio.to_thread(self._website_queue.save_result, job, result)
+        results = await asyncio.gather(*(fetch_and_persist(job) for job in selected), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return True
+
     async def _drain_website_cycle(self):
         """Bounded, sequential burst; retain the single-writer/process guards."""
         deadline = time.monotonic() + max(1, min(120, settings.WEBSITE_CYCLE_BUDGET_SEC))
@@ -1763,6 +1808,7 @@ class ScraperBackgroundWorker:
             for index in range(max(1, min(32, settings.WEBSITE_JOBS_PER_CYCLE))):
                 if not self._is_running or self._is_paused or (index and time.monotonic() >= deadline):
                     break
+                await self._prefetch_website_pair()
                 if not await self._flush_one_website_job():
                     break
                 progressed = True
