@@ -506,6 +506,18 @@
           <button @click="controlBackfill('pause')" :disabled="backfillBusy || !['running','draining'].includes(backfill.state)" class="px-4 py-2 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed">Pause enrichment</button>
         </div>
         <p x-show="backfillNotice" class="text-xs text-slate-300" role="status" x-text="backfillNotice"></p>
+        <div class="p-3 rounded-lg border border-slate-700 space-y-2">
+          <div class="flex justify-between gap-3 text-xs text-slate-300">
+            <span x-text="['running','paused'].includes(backfill.state) ? 'Scanning historical rows — job total still growing' : 'Historical scan finished — processing discovered jobs'"></span>
+            <span x-text="backfillProgress().finished + ' / ' + backfillProgress().total + ' jobs finished'"></span>
+          </div>
+          <div class="h-2 rounded-full bg-slate-800 overflow-hidden" role="progressbar" aria-label="Discovered backfill jobs finished" :aria-valuenow="backfillProgress().percent" aria-valuemin="0" aria-valuemax="100">
+            <div class="h-full bg-emerald-400 transition-all duration-500" :style="'width: ' + backfillProgress().percent + '%'"></div>
+          </div>
+          <p class="text-xs text-slate-400" x-text="backfillProgress().percent + '% of currently discovered jobs finished · ' + (backfill.jobs?.pending || 0) + ' pending · ' + (backfill.jobs?.fetched || 0) + ' collected, awaiting database application · ' + (backfill.jobs?.retry || 0) + ' retrying'"></p>
+          <p class="text-xs text-slate-400" x-text="'Outcomes: ' + (backfill.jobs?.applied || 0) + ' applied · ' + (backfill.jobs?.skipped || 0) + ' safely skipped · ' + (backfill.jobs?.failed || 0) + ' failed'"></p>
+          <p class="text-xs text-slate-500">This measures jobs finished, not fields successfully filled. The percentage can decrease while scanning adds jobs. No reliable completion time is available yet.</p>
+        </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Incomplete rows scanned</p><p class="text-lg text-white" x-text="backfill.scanned || 0"></p></div>
           <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Found without website</p><p class="text-lg text-white" x-text="backfill.missing_website || 0"></p></div>
@@ -1715,6 +1727,14 @@ WHERE places_status = 'error';</pre>
 
         safeEvidenceLink(value) {
           try { const u = new URL(value); return ['https:', 'http:'].includes(u.protocol) && !u.username && !u.password ? u.href : null; } catch { return null; }
+        },
+
+        backfillProgress() {
+          const jobs = this.backfill.jobs || {};
+          const total = Object.values(jobs).reduce((sum, count) => sum + Number(count || 0), 0);
+          const outstanding = ['pending', 'retry', 'fetched'].reduce((sum, state) => sum + Number(jobs[state] || 0), 0);
+          const finished = Math.max(0, total - outstanding);
+          return {total, finished, percent: total ? Math.floor(100 * finished / total) : (this.backfill.state === 'completed' ? 100 : 0)};
         },
 
         backfillLabel() {
