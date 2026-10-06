@@ -6,7 +6,7 @@ on:
       - 'services/hotel-scraper-windows/**'
       - '.github/workflows/windows-hotel-scraper.yml'
   push:
-    branches: [main, codex/windows-hotel-scraper]
+    branches: [main]
     paths:
       - 'services/hotel-scraper-windows/**'
       - '.github/workflows/windows-hotel-scraper.yml'
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-hotel-scraper-${{ github.head_ref || github.ref_name }}
+  group: windows-hotel-scraper-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
