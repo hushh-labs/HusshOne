@@ -68,8 +68,8 @@ def verify_release(release):
     return root
 
 
-def active_root(fallback):
-    release = pointer("active")
+def active_root(fallback, vertical=None):
+    release = (pointer("active:" + vertical) if vertical else None) or pointer("active")
     return verify_release(release) if release else fallback
 
 
@@ -119,75 +119,103 @@ def stage(folder):
     return release
 
 
-def activate(release):
+def activate(release, vertical=None):
     verify_release(release)
+    if vertical not in (None, "hotel", "healthcare", "ria", "insurance"):
+        raise RuntimeError("Unknown worker target")
+    kind = "active:" + vertical if vertical else "active"
     with state_db() as db:
-        prior = db.execute("SELECT release FROM pointers WHERE kind='active'").fetchone()
+        prior = db.execute("SELECT release FROM pointers WHERE kind=?", (kind,)).fetchone()
         if prior:
-            db.execute("INSERT OR REPLACE INTO pointers VALUES('previous',?)", prior)
-        db.execute("INSERT OR REPLACE INTO pointers VALUES('active',?)", (release,))
-        db.execute("DELETE FROM pointers WHERE kind='pending' AND release=?", (release,))
+            db.execute("INSERT OR REPLACE INTO pointers VALUES(?,?)", ("previous:" + vertical if vertical else "previous", prior[0]))
+        db.execute("INSERT OR REPLACE INTO pointers VALUES(?,?)", (kind, release))
+        if vertical is None:
+            db.execute("DELETE FROM pointers WHERE kind LIKE 'active:%'")
+            db.execute("DELETE FROM pointers WHERE kind='pending' AND release=?", (release,))
 
 
-async def apply_pending():
+async def apply_pending(target="all"):
     global _state
     from app.directory_fleet import fleet, preflight
     from app.worker import worker_instance
-    fleet.updating = True
+    selected = set(fleet.desired) if target == "all" else ({target} if target in fleet.desired else set())
+    fleet.updating = target == "all"
+    fleet.update_targets.update(selected)
     try:
         release = await asyncio.to_thread(pointer, "pending")
         if not release:
             raise RuntimeError("No staged worker release")
         root = await asyncio.to_thread(verify_release, release)
-        running = list(fleet.desired)
-        _state = {"state": "checking", "release": release}
+        running = list(selected)
+        _state = {"state": "checking", "release": release, "target": target}
         for vertical in running:
             await asyncio.to_thread(preflight, vertical, root)
-        _state = {"state": "draining", "release": release,
-                  "message": "Waiting for registry cycles; hotel mapping switches on its next batch; dashboard remains available"}
+        _state = {"state": "draining", "release": release, "target": target,
+                  "message": f"Waiting only for {target} target cycles; unrelated workers continue. Hotel mapping switches on its next batch."}
         # No forcible termination for updates. A long bulk ingest can defer the
         # update; it keeps processing normally until its source ledger commits.
-        for process in list(fleet.processes.values()):
+        processes = [p for v,p in list(fleet.processes.items()) if v in selected]
+        for process in processes:
             if process.poll() is None:
                 process.stdin.write("drain\n")
                 process.stdin.flush()
         deadline = time.monotonic() + 1800
-        while any(p.poll() is None for p in list(fleet.processes.values())):
+        while any(p.poll() is None for p in processes):
             if time.monotonic() > deadline:
                 raise RuntimeError("Update deferred: a registry cycle is still active; no job was killed")
             await asyncio.sleep(0.5)
         # Hotel mapping is a new child per ZIP. Existing mapping invocations use
         # the immutable previous directory, next invocation uses the new one.
-        await asyncio.to_thread(activate, release)
-        _state = {"state": "applied", "release": release,
+        _state = {"state": "activating", "release": release, "target": target}
+        await asyncio.to_thread(activate, release, None if target == "all" else target)
+        _state = {"state": "applied", "release": release, "target": target,
                   "message": "Registry workers resume automatically; hotel mapping updates on its next batch",
                   "hotel_running": worker_instance.is_running}
+    except asyncio.CancelledError:
+        _state = {"state": "cancelled", "message": "Activation cancelled; previous code retained. Drained workers resume unless paused."}
+        raise
     except Exception as exc:
         _state = {"state": "deferred", "message": str(exc) if isinstance(exc, RuntimeError) else "Update failed; previous release retained"}
     finally:
         fleet.updating = False
+        fleet.update_targets.difference_update(selected)
 
 
 @router.get("")
 def update_status():
     return {**_state, "pending": pointer("pending"), "active": pointer("active"),
+            "active_workers": {v: pointer("active:" + v) or pointer("active") for v in ("hotel", "healthcare", "ria", "insurance")},
             "scope": "Imported Node worker code only; Python/EXE/runtime updates still require restart"}
 
 
 @router.post("/apply")
-async def request_apply(request: Request):
+async def request_apply(request: Request, target: str = "all"):
     global _task
     if request.client and request.client.host not in ("127.0.0.1", "::1", "testclient"):
         raise HTTPException(403, "Worker updates are local-only")
     origin = request.headers.get("origin")
     if origin and origin != str(request.base_url).rstrip("/"):
         raise HTTPException(403, "Cross-origin updates are not permitted")
+    if target not in ("all", "hotel", "healthcare", "ria", "insurance"):
+        raise HTTPException(422, "Unknown worker target")
     if _task and not _task.done():
         return {"state": "already_pending"}
     if not await asyncio.to_thread(pointer, "pending"):
         raise HTTPException(409, "No reviewed worker release staged")
-    _task = asyncio.create_task(apply_pending())
+    _task = asyncio.create_task(apply_pending(target))
     return {"state": "scheduled"}
+
+
+@router.post("/cancel")
+async def cancel_apply(request: Request):
+    from app.directory_fleet import require_local_control
+    require_local_control(request)
+    if _state.get("state") == "activating":
+        raise HTTPException(409, "Activation is committing; wait for completion")
+    if _task and not _task.done():
+        _task.cancel()
+        await asyncio.gather(_task, return_exceptions=True)
+    return {"state": "cancelled"}
 
 
 if __name__ == "__main__":

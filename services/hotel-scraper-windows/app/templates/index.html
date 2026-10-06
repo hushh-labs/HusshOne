@@ -319,7 +319,8 @@
           <h3 class="font-semibold">Live worker updates</h3>
           <p class="text-slate-400">Reviewed Node worker releases apply between ingest cycles while this dashboard stays open. Python, UI and EXE changes still need a desktop restart. No remote code is downloaded automatically.</p>
           <p x-text="workerUpdate.message || workerUpdate.state || 'No update requested'"></p>
-          <button @click="applyWorkerUpdate()" :disabled="!workerUpdate.pending || ['checking','draining'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40">Apply staged worker update</button>
+          <button @click="applyWorkerUpdate()" :disabled="!workerUpdate.pending || ['checking','draining','activating'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40" x-text="'Apply staged update: ' + selectedWorker"></button>
+          <button x-show="['checking','draining'].includes(workerUpdate.state)" @click="cancelWorkerUpdate()" class="px-3 py-2 rounded-lg bg-amber-800">Cancel waiting update</button>
         </div>
         <form @submit.prevent="lookupBusinesses()" class="border-t border-slate-800 pt-3 flex flex-wrap gap-2">
           <label class="text-xs self-center" for="business-query" x-text="selectedWorker === 'all' ? 'Search all four directories' : 'Search ' + selectedWorker + ' records'"></label>
@@ -1233,11 +1234,19 @@ WHERE places_status = 'error';</pre>
         },
         async applyWorkerUpdate() {
           try {
-            const response = await fetch('/api/worker-updates/apply', {method: 'POST'});
+            const response = await fetch('/api/worker-updates/apply?target=' + encodeURIComponent(this.selectedWorker), {method: 'POST'});
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Update could not be scheduled');
             this.workerUpdate.state = 'checking';
           } catch (error) { this.fleetNotice = error.message; }
+        },
+        async cancelWorkerUpdate() {
+          try {
+            const response = await fetch('/api/worker-updates/cancel', {method:'POST'});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Cancellation failed');
+            await this.livePoll();
+          } catch(error) { this.fleetNotice = error.message; }
         },
         async lookupBusinesses() {
           this.businessBusy = true; this.businessNotice = ''; this.businessResults = [];

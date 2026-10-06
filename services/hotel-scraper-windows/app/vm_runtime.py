@@ -16,9 +16,9 @@ def bundled_source_root():
     return Path(__file__).resolve().parent / "vm_sources"
 
 
-def source_root():
+def source_root(vertical="hotel"):
     from app.worker_updates import active_root
-    return active_root(bundled_source_root())
+    return active_root(bundled_source_root(), vertical)
 
 
 def node_path():

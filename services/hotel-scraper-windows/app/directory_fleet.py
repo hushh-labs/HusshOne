@@ -64,7 +64,7 @@ def registry_session(vertical):
 
 
 def expected_columns(vertical, root=None):
-    schema = ((root or source_root()) / SERVICES[vertical] / "schema.sql").read_text(encoding="utf-8")
+    schema = ((root or source_root(vertical)) / SERVICES[vertical] / "schema.sql").read_text(encoding="utf-8")
     expected = {}
     type_names = {"BIGSERIAL": "bigint", "BIGINT": "bigint", "INT": "integer", "TEXT": "text",
                   "DOUBLE PRECISION": "double precision", "TIMESTAMPTZ": "timestamp with time zone",
@@ -99,7 +99,7 @@ def preflight(vertical, root=None):
     if vertical not in SERVICES:
         raise ValueError("Unknown registry directory")
     node_path()
-    if not ((root or source_root()) / "node_modules" / "pg" / "package.json").is_file():
+    if not ((root or source_root(vertical)) / "node_modules" / "pg" / "package.json").is_file():
         raise RuntimeError("Imported VM dependencies are missing; run the fleet dependency installer")
     if vertical in ("healthcare", "ria"):
         unzip_directory()
@@ -183,6 +183,7 @@ class DirectoryFleet:
         self.desired = set()
         self.paused = set()
         self.updating = False
+        self.update_targets = set()
         self.control_locks = {vertical: asyncio.Lock() for vertical in SERVICES}
         self._wake_stop = None
         self._wake_thread = None
@@ -325,7 +326,7 @@ class DirectoryFleet:
     async def run(self, vertical):
         failures = 0
         while vertical in self.desired:
-            while (self.updating or vertical in self.paused) and vertical in self.desired:
+            while (self.updating or vertical in self.update_targets or vertical in self.paused) and vertical in self.desired:
                 if vertical in self.paused:
                     self.states[vertical] = {"state": "paused"}
                 await asyncio.sleep(0.2)
@@ -336,11 +337,11 @@ class DirectoryFleet:
                 self.states[vertical] = {"state": "checking"}
                 await asyncio.to_thread(preflight, vertical)
                 env = await asyncio.to_thread(worker_environment, vertical)
-                if vertical not in self.desired or self.updating or vertical in self.paused:
+                if vertical not in self.desired or self.updating or vertical in self.update_targets or vertical in self.paused:
                     continue
                 process = await asyncio.to_thread(subprocess.Popen,
-                    [node_path(), "--max-old-space-size=256", str(source_root() / "local-worker.mjs"), vertical],
-                    cwd=str(source_root()), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    [node_path(), "--max-old-space-size=256", str(source_root(vertical) / "local-worker.mjs"), vertical],
+                    cwd=str(source_root(vertical)), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
                 self.processes[vertical] = process
@@ -396,7 +397,7 @@ async def fleet_status():
 @router.post("/{vertical}/start")
 async def start_directory(vertical: str, request: Request):
     require_local_control(request)
-    if fleet.updating:
+    if fleet.updating or vertical in fleet.update_targets:
         raise HTTPException(409, "Worker update is draining registry cycles; start is deferred until activation")
     if vertical == "hotel":
         from app.worker import worker_instance

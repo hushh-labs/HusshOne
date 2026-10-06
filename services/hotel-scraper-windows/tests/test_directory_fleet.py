@@ -142,3 +142,36 @@ def test_update_drains_without_killing_or_stopping_hotel(monkeypatch, tmp_path):
     assert updates.pointer('active') == release
     assert not supervisor.updating
     assert updates._state['state'] == 'applied'
+
+
+def test_targeted_update_does_not_drain_unrelated_bulk_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, 'runtime_state_dir', lambda: str(tmp_path))
+    release = updates.stage(bundled_source_root())
+    supervisor = directories.DirectoryFleet()
+    supervisor.desired = {'insurance', 'healthcare'}
+    insurance, healthcare = MagicMock(), MagicMock()
+    insurance.poll.side_effect = [None, 0]
+    healthcare.poll.return_value = None
+    supervisor.processes = {'insurance': insurance, 'healthcare': healthcare}
+    monkeypatch.setattr(directories, 'fleet', supervisor)
+    monkeypatch.setattr(directories, 'preflight', lambda *_: {'ready': True})
+    asyncio.run(updates.apply_pending('insurance'))
+    insurance.stdin.write.assert_called_once_with('drain\n')
+    healthcare.stdin.write.assert_not_called()
+    healthcare.kill.assert_not_called()
+    assert updates.pointer('active:insurance') == release
+    assert updates.pointer('active:healthcare') is None
+    assert updates.pointer('active') is None
+    assert updates.pointer('pending') == release
+    assert not supervisor.update_targets
+
+
+def test_global_activation_replaces_prior_target_overrides(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, 'runtime_state_dir', lambda: str(tmp_path))
+    release = updates.stage(bundled_source_root())
+    updates.activate(release, 'insurance')
+    assert updates.active_root(Path('fallback'), 'insurance') == updates.verify_release(release)
+    assert updates.active_root(Path('fallback'), 'healthcare') == Path('fallback')
+    updates.activate(release)
+    assert updates.pointer('active:insurance') is None
+    assert updates.pointer('active') == release
