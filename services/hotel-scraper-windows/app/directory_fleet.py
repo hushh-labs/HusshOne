@@ -181,6 +181,8 @@ class DirectoryFleet:
         self.desired = set()
         self.updating = False
         self.control_locks = {vertical: asyncio.Lock() for vertical in SERVICES}
+        self._wake_stop = None
+        self._wake_thread = None
         self._path = None
 
     @contextmanager
@@ -213,6 +215,26 @@ class DirectoryFleet:
             if vertical in SERVICES:
                 self.desired.add(vertical)
                 self.tasks[vertical] = asyncio.create_task(self.run(vertical))
+        if self.desired:
+            self.hold_awake()
+
+    def hold_awake(self):
+        # Execution-state flags belong to a Windows thread. A dedicated thread
+        # prevents stopping the hotel worker from clearing the fleet's request.
+        if self._wake_thread and self._wake_thread.is_alive():
+            return
+        stop = threading.Event()
+        self._wake_stop = stop
+        def hold():
+            from app.power import WorkerWakeLock
+            wake = WorkerWakeLock()
+            wake.acquire()
+            try:
+                stop.wait()
+            finally:
+                wake.release()
+        self._wake_thread = threading.Thread(target=hold, name='directory-fleet-wake', daemon=True)
+        self._wake_thread.start()
 
     async def start(self, vertical):
         if vertical not in SERVICES:
@@ -223,6 +245,7 @@ class DirectoryFleet:
             await asyncio.to_thread(preflight, vertical)
             await asyncio.to_thread(self.persist, vertical, True)
             self.desired.add(vertical)
+            self.hold_awake()
             self.tasks[vertical] = asyncio.create_task(self.run(vertical))
 
     async def stop(self, vertical, remember=True):
@@ -237,6 +260,9 @@ class DirectoryFleet:
             if task:
                 await asyncio.gather(task, return_exceptions=True)
             self.states[vertical] = {"state": "stopped"}
+            if not self.desired and self._wake_stop:
+                self._wake_stop.set()
+                await asyncio.to_thread(self._wake_thread.join, 2)
 
     @staticmethod
     def kill(process):
