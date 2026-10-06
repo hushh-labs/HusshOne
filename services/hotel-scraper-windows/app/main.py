@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, and_, not_, case, cast, String
 from sqlalchemy.exc import OperationalError, InterfaceError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app import database, cloud_proxy, chrome_scraper
 from app.config import settings
@@ -591,6 +591,22 @@ def get_live():
     finally:
         if db:
             db.close()
+
+
+@app.get("/api/worker/live")
+def get_local_worker_live():
+    """Fast local control status; never opens a Cloud SQL session."""
+    status = worker_instance.get_status()
+    status["db"] = dict(db_state)
+    status["schema"] = dict(schema_state)
+    snapshot = _cache.get("snapshot")
+    if snapshot:
+        snap = snapshot[1]
+        total = snap["zips_total"]
+        status["queue"] = {"total_zips": total, "places_done": snap["done"], "places_error": snap["error"],
+                           "places_pending": snap["pending"], "pct_completed": round(snap["done"] / total * 100, 2) if total else 0}
+        status["inventory_snapshot_age_seconds"] = round(max(0, time.monotonic() - snapshot[0]), 1)
+    return {"status": status, "database_status_is_cached": True}
 
 
 @app.get("/api/schema/compatibility")
@@ -1241,7 +1257,7 @@ def list_hotels(
 
     total_matches = query.count()
     rows = (
-        query.order_by(Hotel.rating.desc().nullslast(), Hotel.id)
+        query.options(defer(Hotel.raw), defer(Hotel.photos)).order_by(Hotel.rating.desc().nullslast(), Hotel.id)
         .offset((page - 1) * limit).limit(limit).all()
     )
     return {
@@ -1322,9 +1338,17 @@ def website_backfill_status():
 
 
 @app.get("/api/website-reviews")
-def website_reviews():
+def website_reviews(compact: bool = False):
     queue = _website_backfill_queue()
-    return {"items": queue.reviews(include_deferred=settings.WEBSITE_AUTONOMOUS), "metrics": queue.metrics(),
+    items = queue.reviews(include_deferred=settings.WEBSITE_AUTONOMOUS)
+    if compact:
+        items = [{"id": item["id"], "decision": item["decision"], "updated_at": item["updated_at"],
+                  "record": {key: item["record"].get(key) for key in ("id", "name", "phone", "formatted_address", "website")},
+                  "result": {"requested_url": item["result"].get("requested_url"), "reason": item["result"].get("reason"),
+                    "fields": {}, "pages": [{"url": page.get("url"), "excerpt": (page.get("excerpt") or "")[:400]}
+                                             for page in item["result"].get("pages", [])[:2]]}}
+                 for item in items[:10]]
+    return {"items": items, "metrics": queue.metrics(),
             "autonomous": settings.WEBSITE_AUTONOMOUS}
 
 

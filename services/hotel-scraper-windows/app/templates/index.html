@@ -70,7 +70,7 @@
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
           </span>
-          <span>Synced <span x-text="lastSyncedLabel"></span></span>
+          <span>Worker synced <span x-text="lastSyncedLabel"></span> · Inventory <span x-text="inventorySyncedLabel"></span></span>
         </div>
 
         <div class="flex items-center space-x-2 px-3 py-1.5 rounded-lg border bg-slate-800/80"
@@ -464,7 +464,7 @@
 
       <!-- Failed ZIPs Recovery Ledger (bound to real /api/stats/overview data) -->
       <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-        <h3 class="text-sm font-semibold text-white">Automatic outcomes · no action required</h3>
+        <h3 class="text-sm font-semibold text-white">Recent outcomes (up to 10) · no action required</h3>
         <p class="text-xs text-slate-400">Verified evidence is processed automatically. Unverified sites are safely skipped, not held for approval. Temporary errors retry with backoff; restricted sites are not bypassed.</p>
         <div class="flex flex-wrap gap-4 text-xs">
           <span class="text-emerald-300" x-text="'Verified jobs: ' + (websiteReview.metrics.corroborated_jobs || 0)"></span>
@@ -475,12 +475,12 @@
         <template x-for="item in websiteReview.items || []" :key="item.id">
           <div class="p-3 border border-slate-700 rounded space-y-2">
             <div class="flex justify-between gap-3"><p class="text-sm font-semibold" x-text="item.record.name"></p><span class="text-xs text-amber-300">Left unchanged</span></div>
-            <p class="text-xs text-slate-400">Could not verify this exact property. The worker moved on; no approval is needed.</p>
+            <p class="text-xs text-slate-400">Could not verify this exact property. The worker moved on; no approval is needed. Showing a compact source summary.</p>
             <details class="text-xs text-slate-400">
               <summary class="cursor-pointer py-2 text-sky-300">Inspect source and matching details</summary>
               <div class="grid md:grid-cols-2 gap-3 py-2">
                 <div><p class="text-slate-200 mb-1">Known hotel details when queued</p><p x-text="'Phone: ' + (item.record.phone || 'Not available')"></p><p x-text="'Address: ' + (item.record.formatted_address || 'Not available')"></p></div>
-                <div><p class="text-slate-200 mb-1">Collector outcome</p><p x-text="item.result.reason || 'No reliable matching evidence found.'"></p><p x-show="!Object.keys(item.result.fields || {}).length">No reliable business fields extracted.</p></div>
+                <div><p class="text-slate-200 mb-1">Collector outcome</p><p x-text="item.result.reason || 'No reliable matching evidence found.'"></p><p>Unverified fields were not applied. Open the source link to inspect the original page.</p></div>
               </div>
               <a :href="safeEvidenceLink(item.result.requested_url)" target="_blank" rel="noopener noreferrer" class="text-sky-300 hover:underline break-all" x-text="item.result.requested_url || 'No source URL'"></a>
               <template x-for="entry in Object.entries(item.result.fields || {})" :key="entry[0]"><p class="mt-2" x-text="entry[0] + ': ' + (typeof entry[1].value === 'object' ? JSON.stringify(entry[1].value) : entry[1].value)"></p></template>
@@ -1093,10 +1093,13 @@ WHERE places_status = 'error';</pre>
         backfillBusy: false,
         backfillNotice: '',
         livePolling: false,
+        lastInventoryPoll: 0,
+        lastOutcomePoll: 0,
         websiteReview: {items: [], metrics: {}},
         scraperMode: 'defined_zips',
         customZipInput: '',
         lastSyncedLabel: '—',
+        inventorySyncedLabel: '—',
         flashTotal: false,
         review: {
           loaded: false,
@@ -1151,20 +1154,30 @@ WHERE places_status = 'error';</pre>
             catch (error) { console.error('Dashboard refresh failed: ' + url, error); }
           };
           try {
-            await Promise.all([
-              load('/api/website-reviews', data => { this.websiteReview = data; }),
+            const now = Date.now();
+            const requests = [
               load('/api/website-backfill', data => { this.backfill = data; }),
-              load('/api/live', data => {
+              load('/api/worker/live', data => {
                 this.worker = data.status;
-                this.overview = data.overview;
                 this.lastSyncedLabel = new Date().toLocaleTimeString();
                 this.$nextTick(() => { const el = document.getElementById('logConsole'); if (el) el.scrollTop = el.scrollHeight; });
               })
-            ]);
+            ];
+            if (now - this.lastOutcomePoll >= 30000) {
+              this.lastOutcomePoll = now;
+              requests.push(load('/api/website-reviews?compact=true', data => { this.websiteReview = data; }));
+            }
+            if (now - this.lastInventoryPoll >= 30000) {
+              this.lastInventoryPoll = now;
+              requests.push(load('/api/live', data => { this.overview = data.overview; this.inventorySyncedLabel = new Date().toLocaleTimeString(); }));
+            }
+            await Promise.all(requests);
           } finally { this.livePolling = false; }
         },
 
         async refreshAll() {
+          this.lastInventoryPoll = 0;
+          this.lastOutcomePoll = 0;
           this.isRefreshing = true;
           try {
             const refreshes = [this.livePoll(), this.fetchHotels(this.currentPage)];

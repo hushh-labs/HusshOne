@@ -260,6 +260,15 @@ fills while retaining normal evidence collection.
 
 ### Website hardening and review
 
+Dashboard responsiveness: `/api/worker/live` is a local-only status endpoint;
+it never opens Cloud SQL and explicitly labels database health as cached. The
+UI polls worker state every few seconds, but inventory totals and compact
+outcome summaries every 30 seconds (manual Refresh requests a fresh summary).
+Worker and inventory update times are shown separately. Compact outcomes show
+at most 10 cards with short excerpts, not full raw observation histories.
+Hotel-list queries defer raw/photo JSON blobs not used in the list payload;
+hotel detail reads remain available. These are read-side optimizations only.
+
 Training-friendly acceleration: `WEBSITE_FETCH_CONCURRENCY=2` permits at most
 two public website collections on different hostnames to overlap. Maps URL
 discovery and all Cloud SQL writes remain serial. Collected evidence is saved
