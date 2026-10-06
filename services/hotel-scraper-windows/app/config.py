@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # --- Scraper --------------------------------------------------------
     SCRAPER_DELAY_SEC: float = 3.0
     MAPS_MAX_RESULTS: int = 50
+    BUSINESS_DISCOVERY_ENABLED: bool = True
+    BUSINESS_DISCOVERY_CATEGORIES: str = 'restaurants,shops,car dealerships,supermarkets,clothing stores,electronics stores,furniture stores,hair salons,gyms,offices'
+    BUSINESS_MAPS_DAILY_CAP: int = 100
+    BUSINESS_MAPS_DELAY_SEC: float = 15
+    BUSINESS_MAX_DISTANCE_KM: float = 10
     ZIP_MAX_DISTANCE_KM: float = 75.0
     ZIP_MAX_NEW_HOTELS: int = 40
     # A conservative cap that can be adjusted in the user-data .env without a

@@ -27,7 +27,10 @@ from app.scrape_contract import haversine_km
 
 AGENT = "HusshOneWebsiteBot/1.0"
 RELEVANT = re.compile(r"about|contact|amenit|room|accommodat|polic|booking|reservation", re.I)
-BUSINESS_TYPES = {"Hotel", "Motel", "LodgingBusiness", "LocalBusiness", "Resort", "Hostel"}
+BUSINESS_TYPES = {"Hotel", "Motel", "LodgingBusiness", "LocalBusiness", "Resort", "Hostel",
+                  "Restaurant", "CafeOrCoffeeShop", "Store", "AutoDealer", "GroceryStore",
+                  "ClothingStore", "ElectronicsStore", "FurnitureStore", "HairSalon",
+                  "BeautySalon", "HealthClub", "ProfessionalService", "ShoppingCenter"}
 
 
 class WebsiteBlocked(ValueError):

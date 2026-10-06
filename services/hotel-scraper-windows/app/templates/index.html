@@ -302,11 +302,12 @@
               </div>
               <p class="text-xs text-amber-300 break-words" x-text="fleet[vertical]?.reason || ''"></p>
               <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
-              <p class="text-xs text-slate-400" x-show="vertical === 'business'">Restaurants, shops, offices and craft businesses. Processes imported OSM node extracts and durable intake batches; nationwide discovery and Maps enrichment are not enabled yet.</p>
+              <p class="text-xs text-slate-400" x-show="vertical === 'business'">Autonomous local Maps discovery across configurable business categories, followed by verified website enrichment. ZIP/category checkpoints and a durable outbox survive restarts. Search ZIP is not assumed to be the business's postal address.</p>
+              <p class="text-xs text-sky-300" x-show="vertical === 'business'" x-text="'Discovery: ' + (fleet.business?.discovery?.state ?? 'stopped') + ' · ZIP: ' + (fleet.business?.discovery?.zip ?? '—') + ' · category: ' + (fleet.business?.discovery?.category ?? '—') + ' · queued this session: ' + (fleet.business?.discovery?.records_queued ?? 0)"></p>
               <p class="text-xs text-sky-300" x-show="vertical === 'business'" x-text="'Queued batches: ' + (fleet.business?.progress?.pending_batches ?? '—') + ' · written batches: ' + (fleet.business?.progress?.written_batches ?? '—')"></p>
               <div class="flex gap-2">
                 <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state) || (fleet[vertical]?.state !== 'paused' && (fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'))" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
-                <button @click="fleetAction(vertical, 'pause')" :disabled="fleetBusy || !['running','degraded','retrying','checking'].includes(fleet[vertical]?.state)" class="px-3 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-xs">Pause safely</button>
+                <button @click="fleetAction(vertical, 'pause')" :disabled="fleetBusy || !fleet[vertical]?.desired_running" class="px-3 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-xs">Pause safely</button>
                 <button @click="fleetAction(vertical, 'stop')" :disabled="fleetBusy" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-xs">Stop</button>
               </div>
               <p class="text-xs text-slate-500" x-text="fleet[vertical]?.last_event?.event || ''"></p>

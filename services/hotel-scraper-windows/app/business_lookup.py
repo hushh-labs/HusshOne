@@ -68,11 +68,15 @@ def registry_results(db, vertical, request):
     rows = []
     for table_name, (key, names) in REGISTRY_TABLES[vertical].items():
         table = Table(table_name, MetaData(), schema="public", autoload_with=db.connection())
-        query = select(*(table.c[c] for c in sorted(PUBLIC_COLUMNS & set(table.c.keys()))))
+        columns=[table.c[c] for c in sorted(PUBLIC_COLUMNS & set(table.c.keys()))]
+        if vertical=='business':
+            columns.extend([table.c.raw['website_enrichment']['fields'].label('rich_fields'),
+                            table.c.raw['query_zip'].as_string().label('query_zip')])
+        query = select(*columns)
         if request.q:
             query = query.where(or_(*(table.c[c].ilike(literal_pattern(request.q), escape="\\") for c in names)))
         if request.zip:
-            query = query.where(table.c.zip == request.zip)
+            query = query.where(or_(table.c.zip == request.zip,table.c.raw['query_zip'].as_string()==request.zip)) if vertical=='business' else query.where(table.c.zip == request.zip)
         if vertical == 'business' and request.category:
             query = query.where(table.c.category == request.category)
         for row in db.execute(query.order_by(table.c[key]).limit(request.offset + request.limit + 1)).mappings():

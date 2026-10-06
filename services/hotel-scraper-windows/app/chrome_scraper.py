@@ -278,8 +278,9 @@ class _Browser:
 _browser = _Browser()
 
 
-def _scrape_sync(city: str, state: str, zip_code: str, max_results: int) -> ScrapeResult:
-    query = f"hotels in ZIP {zip_code} {city or ''} {state or ''}".strip()
+def _scrape_sync(city: str, state: str, zip_code: str, max_results: int, category: str = 'hotel') -> ScrapeResult:
+    label = 'hotels' if category == 'hotel' else category
+    query = f"{label} in ZIP {zip_code} {city or ''} {state or ''}".strip()
     search_url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}?hl=en&gl=us"
     try:
         page = _browser.page()
@@ -370,8 +371,8 @@ def _scrape_sync(city: str, state: str, zip_code: str, max_results: int) -> Scra
                     "phone": None,
                     "website": None,
                     "google_maps_uri": _canonical_maps_url(cid, maps_uri),
-                    "primary_type": "hotel",
-                    "types": ["hotel", "lodging"],
+                    "primary_type": category,
+                    "types": ["hotel", "lodging"] if category == 'hotel' else [category],
                     "raw": raw,
                 })
             except Exception as exc:
@@ -413,7 +414,11 @@ def _scrape_sync(city: str, state: str, zip_code: str, max_results: int) -> Scra
         return ScrapeResult(ScrapeStatus.TRANSPORT_FAILURE, reason=_safe_reason(exc), query=query)
 
 
-def _child_main(connection) -> None:
+def _child_main(connection, profile=None) -> None:
+    global CHROME_PROFILE_DIR
+    if profile is not None:
+        CHROME_PROFILE_DIR = profile
+        Path(profile).mkdir(parents=True, exist_ok=True)
     """Child entry point. It owns Chrome and its persistent profile."""
     try:
         while True:
@@ -421,7 +426,7 @@ def _child_main(connection) -> None:
             command = message.get("command")
             if command == "scrape":
                 result = _scrape_sync(
-                    message["city"], message["state"], message["zip_code"], message["max_results"]
+                    message["city"], message["state"], message["zip_code"], message["max_results"], message.get('category','hotel')
                 )
                 connection.send({"ok": True, "result": result.as_dict()})
             elif command == "close":
@@ -447,12 +452,17 @@ def _child_main(connection) -> None:
 
 
 class _BrowserProcess:
-    def __init__(self):
+    def __init__(self, profile=None):
+        self._profile = profile
         self._proc = None
         self._conn = None
         self._lock = threading.RLock()
         self._last_used = 0.0
         self._zip_count = 0
+
+    @property
+    def profile(self):
+        return self._profile or CHROME_PROFILE_DIR
 
     @staticmethod
     def _profile_chrome_pids(profile: Path, *, headless_only: bool = False) -> Optional[List[int]]:
@@ -564,7 +574,7 @@ class _BrowserProcess:
                 logger.warning("Could not terminate verified orphaned Chrome PID %s.", pid)
 
     def _clear_stale_profile_locks(self, *, cleanup_orphans: bool = False) -> None:
-        profile = Path(CHROME_PROFILE_DIR)
+        profile = Path(self.profile)
         locks = [
             profile / name
             for name in ("SingletonLock", "SingletonCookie", "SingletonSocket")
@@ -589,7 +599,7 @@ class _BrowserProcess:
 
     def _clear_profile_cache(self) -> None:
         """Bound profile growth without touching cookies or saved sessions."""
-        profile = Path(CHROME_PROFILE_DIR).resolve()
+        profile = Path(self.profile).resolve()
         cache_paths = (
             "Default/Cache",
             "Default/Code Cache",
@@ -619,7 +629,7 @@ class _BrowserProcess:
         parent_conn, child_conn = context.Pipe()
         proc = context.Process(
             target=_child_main,
-            args=(child_conn,),
+            args=(child_conn, self.profile),
             name="husshone-maps-scraper",
             daemon=True,
         )
@@ -669,7 +679,7 @@ class _BrowserProcess:
                 pass
         self._clear_stale_profile_locks()
 
-    def scrape(self, city: str, state: str, zip_code: str, max_results: int) -> ScrapeResult:
+    def scrape(self, city: str, state: str, zip_code: str, max_results: int, category: str = 'hotel') -> ScrapeResult:
         with self._lock:
             if self._zip_count >= settings.CHROME_RECYCLE_AFTER_ZIPS:
                 logger.info("Recycling Chrome after %d ZIPs", self._zip_count)
@@ -681,6 +691,7 @@ class _BrowserProcess:
                 self._conn.send({
                     "command": "scrape", "city": city, "state": state,
                     "zip_code": zip_code, "max_results": max_results,
+                    "category": category,
                 })
                 if not self._conn.poll(settings.SCRAPER_PROCESS_TIMEOUT_SEC):
                     self._stop_locked(force=True)

@@ -27,6 +27,8 @@ class BusinessRecord(BaseModel):
     lng: float | None = Field(None, ge=-180, le=180, allow_inf_nan=False)
     phone: str | None = Field(None, max_length=100)
     website: HttpUrl | None = None
+    query_zip: str | None = Field(None,pattern=r'^\d{5}$')
+    evidence: dict | None = None
 
     @model_validator(mode='after')
     def clean(self):
@@ -91,13 +93,13 @@ UPSERT = '''INSERT INTO public.businesses
  RETURNING id'''
 
 
-def flush_one():
+def flush_one(engine=None):
     with queue_db() as db:
         row = db.execute("SELECT id,payload FROM batches WHERE status='pending' ORDER BY rowid LIMIT 1").fetchone()
     if not row:
         return False
     from app.directory_fleet import registry_engine
-    engine = registry_engine('business')
+    engine = engine if engine is not None else registry_engine('business')
     with engine.connect() as connection:
         columns = {c['name']:c for c in inspect(connection).get_columns('businesses',schema='public')}
         required = {'id','source','source_key','name','category','source_url','formatted_address',
@@ -120,12 +122,18 @@ def flush_one():
     segments, segment, keys = [], [], set()
     for record in batch.records:
         item = record.model_dump(mode='json')
+        evidence=item.pop('evidence',None)
+        query_zip=item.pop('query_zip',None)
         key = (item['source'],item['source_key'])
         if key in keys:
             segments.append(segment); segment=[]; keys=set()
         keys.add(key)
         item['raw']={'scraped_via':item['source'],'run_id':run_id,'collected_at':collected,
                      'source_url':item['source_url'],'ownership_verified':False}
+        if query_zip:
+            item['raw']['query_zip']=query_zip
+        if evidence:
+            item['raw']['website_enrichment']=evidence
         if item['source']=='osm':
             item['raw']['license']='ODbL-1.0'
         segment.append(item)
@@ -167,8 +175,18 @@ class GeneralWorker:
         self.state='paused'
 
     async def run(self):
+        from app.general_discovery import discovery
+        await discovery.start()
+        try:
+            await self.write_loop()
+        finally:
+            await discovery.stop()
+
+    async def write_loop(self):
+        from app.general_discovery import discovery
         while await asyncio.to_thread(enabled):
             try:
+                await discovery.start()
                 self.state='running'
                 worked=await asyncio.to_thread(flush_one)
                 self.error_type=None
@@ -184,7 +202,14 @@ class GeneralWorker:
         with queue_db() as db:
             counts=dict(db.execute('SELECT status,count(*) FROM batches GROUP BY status'))
             written=db.execute("SELECT COALESCE(sum(json_array_length(payload,'$.records')),0) FROM batches WHERE status='written'").fetchone()[0]
-        return {'state':self.state,'error_type':self.error_type,'database':'business_directory','source':'OSM XML node extract / durable batch intake; Maps expansion pending',
+        from app.general_discovery import discovery
+        discovery_status=discovery.status()
+        state=self.state
+        if self.state=='waiting_for_data':
+            state={'discovering':'running','backoff':'backoff','retrying':'retrying','blocked':'degraded',
+                   'daily_cap':'daily_cap','waiting_for_refresh':'waiting_for_refresh'}.get(discovery_status['state'],self.state)
+        return {'state':state,'error_type':self.error_type,'database':'business_directory','source':'Local Maps + verified websites + OSM extract intake',
+                'discovery':discovery_status,
                 'progress':{'pending_batches':counts.get('pending',0),'written_batches':counts.get('written',0),'rowsUpserted':written},
                 'desired_running':enabled()}
 
