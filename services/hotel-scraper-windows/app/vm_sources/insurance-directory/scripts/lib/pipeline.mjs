@@ -31,17 +31,32 @@ export async function runStateAdapter(adapter, deps = {}) {
   let seen = 0;
   let upserted = 0;
   let inserted = 0;
+  let firstFailure = null, progressAt = Date.now();
+  const pending = new Set(), byIdentity = new Map();
+  const concurrency = () => Math.max(1,Math.min(8,deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 8 : 1)));
+  try {
   for await (const rec of adapter.records({ log, fetchImpl })) {
+    if (firstFailure) throw firstFailure;
     if (!rec) continue;
     seen++;
-    const out = await upsert(rec);
-    if (out) {
-      upserted++;
-      if (out.inserted) inserted++;
-    }
-    if (log && seen % 10000 === 0) {
-      log({ event: "pipeline.progress", state: adapter.code, seen, inserted });
-    }
+    while (pending.size >= concurrency()) await Promise.race(pending);
+    const identity = JSON.stringify([rec.sourceState,rec.licenseNo]);
+    const previous = byIdentity.get(identity);
+    const task = (async () => {
+      if (previous) await previous;
+      const out = await upsert(rec);
+      if (out) { upserted++; if(out.inserted) inserted++; }
+      if (log && Date.now()-progressAt>=5000) {
+        log({event:'pipeline.progress',state:adapter.code,rowsSeen:seen,upserted,inserted});
+        progressAt=Date.now();
+      }
+    })();
+    pending.add(task); byIdentity.set(identity,task);
+    const clear=()=>{pending.delete(task);if(byIdentity.get(identity)===task)byIdentity.delete(identity);};
+    task.then(clear,err=>{firstFailure ||= err;clear();});
   }
+  await Promise.all(pending);
+  if(firstFailure) throw firstFailure;
   return { state: adapter.code, kind: adapter.kind, blocked: false, seen, upserted, inserted };
+  } catch(err) {await Promise.allSettled(pending);throw err;}
 }

@@ -7,13 +7,27 @@ import { protectQuery } from './query-guard.mjs';
 const services = { healthcare: 'healthcare-directory', ria: 'ria-directory', insurance: 'insurance-directory' };
 const vertical = process.argv[2];
 if (!services[vertical] || process.env.PGDATABASE !== vertical) throw new Error('Invalid directory target');
-try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
+const pools = new Set();
+// Legacy supervisors do not pass the new profile variable. This reviewed
+// high-throughput release defaults those supervisors to the requested mode;
+// current supervisors always pass their persisted explicit choice.
+const profile = () => process.env.SCRAPER_PERFORMANCE_MODE || 'throughput';
+const poolSize = () => profile() === 'throughput' ? 8 : profile() === 'training' ? 1 : 2;
+function setProfile(mode) {
+  if (!['training','balanced','throughput'].includes(mode)) return;
+  process.env.SCRAPER_PERFORMANCE_MODE = mode;
+  if (mode === 'throughput') process.env.NPPES_BATCH_SIZE = '1000';
+  for (const pool of pools) pool.options.max = poolSize();
+  try { os.setPriority(0, mode === 'throughput' ? os.constants.priority.PRIORITY_NORMAL : os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
+}
+setProfile(profile());
 
 const NativePool = pg.Pool;
 pg.Pool = class SafePool extends NativePool {
   constructor(options) {
-    super({ ...options, max: 2, connectionTimeoutMillis: 8000,
+    super({ ...options, max: poolSize(), connectionTimeoutMillis: 8000,
       options: '-c statement_timeout=30000 -c lock_timeout=5000 -c application_name=husshone-local-vm' });
+    pools.add(this);
   }
 };
 const nativeQuery = pg.Client.prototype.query;
@@ -42,10 +56,15 @@ let control = '';
 process.stdin.on('data', chunk => {
   control += chunk;
   if (control.length > 1024) process.exit(1);
-  if (control.includes('drain\n')) {
-    draining = true;
-    originalLog(JSON.stringify({event:'local.update_pending'}));
-    if (idle) { originalLog(JSON.stringify({event:'local.drained'})); process.exit(0); }
+  while (control.includes('\n')) {
+    const end = control.indexOf('\n'), command = control.slice(0,end);
+    control = control.slice(end+1);
+    if (command.startsWith('profile:')) setProfile(command.slice(8));
+    if (command === 'drain') {
+      draining = true;
+      originalLog(JSON.stringify({event:'local.update_pending'}));
+      if (idle) { originalLog(JSON.stringify({event:'local.drained'})); process.exit(0); }
+    }
   }
 });
 

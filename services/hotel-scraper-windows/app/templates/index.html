@@ -159,12 +159,13 @@
         <!-- Session Throughput -->
         <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-medium text-purple-400">This Session</span>
+            <span class="text-xs font-medium text-purple-400">New Hotels This Session</span>
             <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">Since Start</span>
           </div>
           <div class="text-2xl font-extrabold text-white mt-1.5" x-text="formatNumber(overview.system?.hotels_added_session)">0</div>
           <div class="text-[11px] text-slate-400 mt-1">
             new hotels (<span x-text="formatNumber(overview.system?.hotels_found_session)"></span> seen) &bull; <span x-text="overview.system?.throughput_hotels_per_hour != null ? overview.system.throughput_hotels_per_hour : '—'"></span>/hr
+            <p class="text-sky-300"><span x-text="worker.stats?.website_records_written ?? 0"></span> website evidence writes &bull; registry writes below</p>
           </div>
         </div>
 
@@ -245,6 +246,14 @@
     <div x-show="activeTab === 'control'" class="space-y-6">
       <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
         <h2 class="text-lg font-semibold">Imported directory VM workers</h2>
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span>Resource profile:</span>
+          <template x-for="[mode,label] in [['training','Training-friendly'],['balanced','Balanced'],['throughput','Full throughput']]" :key="mode">
+            <button @click="setPerformance(mode)" :class="performance.mode === mode ? 'bg-emerald-700 text-white' : 'bg-slate-800 text-slate-400'" class="px-3 py-2 rounded-lg" x-text="label"></button>
+          </template>
+          <span x-text="`${performance.free_ram_gib ?? '—'} GiB free · up to ${performance.collector_limit_now ?? '—'} new website collectors`"></span>
+        </div>
+        <p class="text-xs text-slate-400">Website collectors run independently; slow sites no longer stop Maps. Completed evidence is saved locally before guarded Cloud SQL application. Blocked websites stay blocked.</p>
         <p class="text-xs text-slate-400">Native Cloud SQL databases stay separate. Registry workers use official NPPES, SEC and DOI feeds, not Maps. Start each once; enabled registry workers resume after restart. Schema mismatches block writes.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           <template x-for="vertical in ['hotel', 'healthcare', 'ria', 'insurance']" :key="vertical">
@@ -252,6 +261,17 @@
               <h3 class="uppercase text-sm font-semibold" x-text="vertical"></h3>
               <p class="text-xs text-emerald-300" x-text="fleet[vertical]?.state || 'Loading status…'"></p>
               <p class="text-xs text-slate-400" x-text="fleet[vertical]?.database || ''"></p>
+              <div class="text-xs text-sky-300" x-show="vertical !== 'hotel'">
+                <p x-text="`Feed rows read: ${(fleet[vertical]?.progress?.rowsSeen ?? 0).toLocaleString()}`"></p>
+                <p x-text="`Rows written / refreshed: ${(fleet[vertical]?.progress?.rowsUpserted ?? fleet[vertical]?.progress?.upserted ?? 0).toLocaleString()}`"></p>
+                <p class="text-slate-500">Current / most recent feed; not new-row count.</p>
+              </div>
+              <div class="text-xs text-sky-300" x-show="vertical === 'hotel'">
+                <p x-text="`New hotels: ${fleet.hotel?.progress?.new_hotels ?? 0}`"></p>
+                <p x-text="`Website evidence saved to Cloud SQL: ${fleet.hotel?.progress?.website_records_written ?? 0}`"></p>
+                <p x-text="`Blank fields filled: ${fleet.hotel?.progress?.blank_fields_filled ?? 0}`"></p>
+                <p x-text="`Active website collectors: ${worker.website_enrichment?.activity?.collectors ?? 0}`"></p>
+              </div>
               <p class="text-xs text-amber-300 break-words" x-text="fleet[vertical]?.reason || ''"></p>
               <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
               <div class="flex gap-2">
@@ -1115,6 +1135,15 @@ WHERE places_status = 'error';</pre>
       return {
         activeTab: 'control',
         fleet: {}, fleetBusy: false, fleetNotice: '', workerUpdate: {},
+        performance: {},
+        async setPerformance(mode) {
+          try {
+            const response = await fetch('/api/performance/' + mode, {method:'POST'});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Profile change failed');
+            this.performance = data; this.fleetNotice = data.message;
+          } catch(error) { this.fleetNotice = error.message; }
+        },
         businessQuery: '', businessResults: [], businessBusy: false, businessNotice: '',
         async fleetAction(vertical, action) {
           this.fleetBusy = true; this.fleetNotice = '';
@@ -1232,6 +1261,7 @@ WHERE places_status = 'error';</pre>
             const now = Date.now();
             const requests = [
               load('/api/directory-fleet', data => { this.fleet = data; }),
+              load('/api/performance', data => { this.performance = data; }),
               load('/api/worker-updates', data => { this.workerUpdate = data; }),
               load('/api/website-backfill', data => { this.backfill = data; }),
               load('/api/worker/live', data => {

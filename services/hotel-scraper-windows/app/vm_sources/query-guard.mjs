@@ -7,7 +7,10 @@ export function protectQuery(input, vertical) {
     throw new Error('Destructive or schema-changing query blocked');
   if (vertical) {
     const allowed = {healthcare:['providers','ingest_runs'], ria:['firms','advisers','ingest_runs'], insurance:['producers','state_progress']}[vertical];
-    const writes = [...code.matchAll(/\b(?:INSERT\s+INTO|UPDATE)\s+(\w+)/gi)];
+    // FOR UPDATE [OF ...] [SKIP LOCKED] is a SELECT row-lock clause,
+    // not an UPDATE table statement. Keep the native queue claim atomic.
+    const statements = code.replace(/\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b(?:\s+OF\s+[\w., ]+?)?(?=\s+(?:SKIP|NOWAIT)|\s*$)/gi, '');
+    const writes = [...statements.matchAll(/\b(?:INSERT\s+INTO|UPDATE)\s+(\w+)/gi)];
     for (const write of writes) {
       // ON CONFLICT DO UPDATE SET is not an UPDATE table statement.
       if (write[1].toLowerCase() !== 'set' && !allowed?.includes(write[1].toLowerCase()))

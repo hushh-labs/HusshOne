@@ -107,6 +107,8 @@
   "policy": "Imported source snapshot. No schema/deploy/photo/email commands are run by the local supervisor.",
   "local_overlays": {
     "ria-directory/scripts/lib/pipeline.mjs": "Record multipart compilation completion only after all parts succeed; label individual parts separately.",
-    "ria-directory/scripts/lib/db.mjs": "Exclude partial XML-part ledger entries from compilation freshness checks."
+    "ria-directory/scripts/lib/db.mjs": "Exclude partial XML-part ledger entries from compilation freshness checks.",
+    "healthcare-directory/scripts/lib/pipeline.mjs": "Emit committed batch progress every five seconds.",
+    "insurance-directory/scripts/lib/pipeline.mjs": "Bound concurrent independent license writes, serialize matching state/license keys, expose committed progress."
   }
 }

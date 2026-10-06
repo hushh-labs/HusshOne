@@ -236,7 +236,9 @@ class ScraperBackgroundWorker:
             "website_enrichment": {"enabled": settings.WEBSITE_ENRICHMENT_ENABLED,
                                    "jobs": self._website_queue.counts() if self._website_queue else {},
                                    "scheduler": self._website_queue.scheduler_status() if self._website_queue else {},
-                                   "activity": dict(self._website_activity), "maps_throttled": self._website_pressure,
+                                   "activity": {**dict(self._website_activity), "collectors": sum(not t.done() for t in getattr(self, '_website_fetches', {}).values()),
+                                                "fetch_progress": dict(getattr(self, '_website_fetch_stats', {}))},
+                                   "maps_throttled": False, "backlog_pressure": self._website_pressure,
                                    "backfill": self._website_queue.backfill_status() if self._website_queue else {"state": "not_loaded"}},
             "is_running": self._is_running,
             "is_paused": self._is_paused,
@@ -790,11 +792,13 @@ class ScraperBackgroundWorker:
         self._stats["current_action"] = "Stopped"
         if self._task and not self._task.done():
             self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
         self._release_lock()
         worker_wake_lock.release()
         await chrome_scraper.close_browser()
         await asyncio.to_thread(self._finish_journal_run, "stopped")
         self._log("Background worker stopped by operator.")
+        self._stats['current_action'] = 'Stopped'
         return {"status": "stopped", "message": "Worker stopped."}
 
     async def retry_failed_zips(self) -> Dict[str, Any]:
@@ -1804,6 +1808,86 @@ class ScraperBackgroundWorker:
                 raise result
         return True
 
+    async def _fill_website_fetch_pool(self):
+        """Launch independent collectors; only local durable evidence is saved.
+
+        Database application stays in the main worker loop. Slow hosts cannot
+        block other collectors or Maps, and restart leaves unfinished jobs due.
+        """
+        if not settings.WEBSITE_ENRICHMENT_ENABLED or not self._is_running or self._is_paused:
+            return
+        if not hasattr(self, '_fetch_fill_lock'):
+            self._fetch_fill_lock = asyncio.Lock()
+        async with self._fetch_fill_lock:
+            from app.performance import collector_limit
+            from urllib.parse import urlsplit
+            for key, task in list(self._website_fetches.items()):
+                if task.done():
+                    task.result()
+                    self._website_fetches.pop(key)
+            if self._website_queue is None:
+                self._website_queue = await asyncio.to_thread(WebsiteQueue)
+            cap = collector_limit(len(self._website_fetches))
+            excluded = list(self._website_fetches)
+            for _ in range(128):
+                if len(self._website_fetches) >= cap or self._is_paused:
+                    break
+                job = await asyncio.to_thread(self._website_queue.next_job, network_only=True,
+                                             exclude_ids=excluded, prefer_backfill=bool(self._website_turn % 2))
+                if not job:
+                    break
+                excluded.append(job['id'])
+                record = job['payload']['record']
+                discovery = bool(record.get('_discover_website'))
+                host = '__maps_discovery__' if discovery else (urlsplit(record.get('website') or '').hostname or '').removeprefix('www.')
+                if not host or host in self._website_hosts:
+                    continue
+                if discovery:
+                    if self._maps_cap_reached():
+                        await asyncio.to_thread(self._website_queue.defer, job, 300)
+                        continue
+                    self._maps_calls_today += 1
+                    self._stats['api_calls'] += 1
+                self._website_hosts.add(host)
+                self._website_turn += 1
+                async def fetch_one(job=job, host=host):
+                    try:
+                        result = await collect_website(job['payload']['record'], timeout=max(15, min(150, settings.WEBSITE_PROCESS_TIMEOUT_SEC)))
+                        await asyncio.to_thread(self._website_queue.save_result, job, result)
+                        self._website_fetch_stats['completed'] += 1
+                        self._website_fetch_stats['last_finished_at'] = _now().isoformat()
+                        if result.get('status') == 'retry':
+                            self._website_fetch_stats['retries'] += 1
+                    except asyncio.CancelledError:
+                        # No dequeue/delete. The next launch safely retries this job.
+                        raise
+                    except Exception as exc:
+                        self._is_paused = True
+                        self._log(f'Website evidence persistence failed; writes paused: {_reason(exc)}', 'ERROR')
+                    finally:
+                        self._website_hosts.discard(host)
+                self._website_fetches[job['id']] = asyncio.create_task(fetch_one())
+
+    async def _website_fetch_loop(self):
+        next_scan = 0
+        while self._is_running:
+            try:
+                if not self._is_paused:
+                    if time.monotonic() >= next_scan:
+                        await asyncio.to_thread(self._scan_website_backfill)
+                        next_scan = time.monotonic() + 15
+                    await self._fill_website_fetch_pool()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if database.is_database_exception(exc):
+                    self._log('Backfill database temporarily unavailable; collectors retry without discarding jobs', 'WARNING')
+                    await asyncio.sleep(5)
+                else:
+                    self._is_paused = True
+                    self._log(f'Website scheduler paused safely: {_reason(exc)}', 'ERROR')
+            await asyncio.sleep(0.25)
+
     async def _drain_website_cycle(self):
         """Bounded, sequential burst; retain the single-writer/process guards."""
         deadline = time.monotonic() + max(1, min(120, settings.WEBSITE_CYCLE_BUDGET_SEC))
@@ -1812,7 +1896,10 @@ class ScraperBackgroundWorker:
             for index in range(max(1, min(32, settings.WEBSITE_JOBS_PER_CYCLE))):
                 if not self._is_running or self._is_paused or (index and time.monotonic() >= deadline):
                     break
-                await self._prefetch_website_pair()
+                if getattr(self, '_website_pipeline_enabled', False):
+                    await self._fill_website_fetch_pool()
+                else:
+                    await self._prefetch_website_pair()
                 if not await self._flush_one_website_job():
                     break
                 progressed = True
@@ -1825,14 +1912,20 @@ class ScraperBackgroundWorker:
             return False
         if self._website_queue is None:
             self._website_queue = await asyncio.to_thread(WebsiteQueue)
-        await asyncio.to_thread(self._scan_website_backfill)
-        job = await asyncio.to_thread(self._website_queue.next_job, prefer_backfill=bool(self._website_turn % 2))
+        pipeline = getattr(self, '_website_pipeline_enabled', False)
+        if not pipeline:
+            await asyncio.to_thread(self._scan_website_backfill)
+        job = await asyncio.to_thread(self._website_queue.next_job, prefer_backfill=bool(self._website_turn % 2), fetched_only=pipeline)
         if not job:
             return False
         self._website_turn += 1
         self._website_activity = {"state": "processing", "hotel": job["payload"]["record"]["name"]}
         self._stats["current_action"] = f"Collecting business website for {job['payload']['record']['name']}"
         if job["state"] != "fetched":
+            if getattr(self, '_website_pipeline_enabled', False):
+                # Collectors run independently. Never wait for a slow network
+                # job in the Maps/database application loop.
+                return False
             record = job["payload"]["record"]
             if record.get("_discover_website"):
                 if self._maps_cap_reached():
@@ -1861,7 +1954,10 @@ class ScraperBackgroundWorker:
             await asyncio.to_thread(self._website_queue.finish, job["id"], "skipped")
             return True
         applied = await asyncio.to_thread(self._apply_website_evidence, job)
+        if applied:
+            self._stats['website_records_written'] = self._stats.get('website_records_written',0) + 1
         filled_fields = applied.get("filled_fields", []) if isinstance(applied, dict) else []
+        self._stats['blank_fields_filled'] = self._stats.get('blank_fields_filled',0) + len(filled_fields)
         await asyncio.to_thread(self._website_queue.finish, job["id"], "applied" if applied else "skipped", filled_fields)
         self._log(f"Business website evidence: {job['result']['status']} ({'saved' if applied else 'stale or unmatched job skipped'}) for {job['payload']['record']['name']}")
         return True
@@ -2309,6 +2405,11 @@ class ScraperBackgroundWorker:
         pending: Optional[_PendingBatch] = None
         self._log("Worker background task entered execution loop.")
         heartbeat_task = asyncio.create_task(self._lease_heartbeat_loop())
+        self._website_pipeline_enabled = True
+        self._website_fetches = {}
+        self._website_hosts = set()
+        self._website_fetch_stats = {'completed': 0, 'retries': 0, 'last_finished_at': None}
+        fetch_task = asyncio.create_task(self._website_fetch_loop())
         try:
             while self._is_running:
                 if self._is_paused:
@@ -2365,12 +2466,9 @@ class ScraperBackgroundWorker:
                         self._is_paused = True
                         self._log(f"Website queue held for review: {_reason(exc)}", "ERROR")
                         continue
-                    if website_pressure:
-                        self._stats["current_action"] = "Website backlog recovery — fresh Maps discovery temporarily throttled; no queued work discarded."
-                        self._stats["current_zip"] = None
-                        if not website_progress:
-                            await asyncio.sleep(5.0)
-                        continue
+                    # Website pressure is a monitoring signal, not a blanket
+                    # Maps veto. Independent collectors drain the durable queue
+                    # while each main-loop cycle still advances a ZIP.
                     if self._maps_cap_reached():
                         self._stats["current_action"] = (
                             f"Daily Maps call cap ({settings.DAILY_MAPS_CALL_CAP}) reached; "
@@ -2480,6 +2578,13 @@ class ScraperBackgroundWorker:
             self._log("Background worker task cancellation received.")
         finally:
             self._is_running = False
+            fetch_task.cancel()
+            await asyncio.gather(fetch_task, return_exceptions=True)
+            for task in self._website_fetches.values():
+                task.cancel()
+            await asyncio.gather(*self._website_fetches.values(), return_exceptions=True)
+            self._website_fetches.clear()
+            self._website_pipeline_enabled = False
             heartbeat_task.cancel()
             try:
                 await heartbeat_task

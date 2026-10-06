@@ -168,7 +168,9 @@ def worker_environment(vertical):
     env.update(PGHOST=str(url.host), PGPORT=str(url.port), PGDATABASE=vertical,
                PGUSER=str(url.username), PGPASSWORD=str(url.password), PGPOOL_MAX="2",
                NPPES_DOWNLOAD_DIR=str(inputs), SEC_DOWNLOAD_DIR=str(inputs), OUTPUT_DIR=str(inputs.parent),
-               NPPES_BATCH_SIZE="250", SOCRATA_PAGE_SIZE="1000", INSURANCE_STATES="WA,CA,TX,FL,NY")
+               NPPES_BATCH_SIZE="1000" if settings.SCRAPER_PERFORMANCE_MODE == 'throughput' else "250",
+               SCRAPER_PERFORMANCE_MODE=settings.SCRAPER_PERFORMANCE_MODE,
+               SOCRATA_PAGE_SIZE="1000", INSURANCE_STATES="WA,CA,TX,FL,NY")
     if vertical in ("healthcare", "ria"):
         env["PATH"] = unzip_directory() + os.pathsep + env.get("PATH", "")
     return env
@@ -183,6 +185,7 @@ class DirectoryFleet:
         self.control_locks = {vertical: asyncio.Lock() for vertical in SERVICES}
         self._wake_stop = None
         self._wake_thread = None
+        self.progress = {vertical: {} for vertical in SERVICES}
         self._path = None
 
     @contextmanager
@@ -289,6 +292,8 @@ class DirectoryFleet:
                     if isinstance(item.get(key), (str, int, float, bool)):
                         entry[key] = item[key]
                 self.logs[vertical].append(entry)
+                if 'rowsUpserted' in entry or 'upserted' in entry:
+                    self.progress[vertical] = {**entry, 'scope': 'Current/most recent feed, includes refreshes of existing rows'}
                 self.states[vertical] = {"state": "degraded" if "error" in event_name else "running", "last_event": entry}
                 logger.info("Imported %s pipeline: %s", vertical, event_name)
             except (ValueError, TypeError):
@@ -341,9 +346,12 @@ class DirectoryFleet:
         from app.worker import worker_instance
         hotel = worker_instance.get_status()
         return {"hotel": {"state": "running" if hotel["is_running"] else "stopped", "database": settings.DB_NAME,
-                          "source": "imported hotel VM pipeline + local Chrome", "places_api": False},
+                          "source": "imported hotel VM pipeline + local Chrome", "places_api": False,
+                          "progress": {"new_hotels": hotel['stats'].get('hotels_added',0),
+                                       "website_records_written": hotel['stats'].get('website_records_written',0),
+                                       "blank_fields_filled": hotel['stats'].get('blank_fields_filled',0)}},
                 **{v: {**self.states.get(v, {"state": "stopped"}), "database": v, "service": SERVICES[v],
-                       "desired_running": v in self.desired, "events": list(self.logs[v])[-5:]} for v in SERVICES}}
+                       "desired_running": v in self.desired, "progress": dict(self.progress[v]), "events": list(self.logs[v])[-5:]} for v in SERVICES}}
 
 
 fleet = DirectoryFleet()

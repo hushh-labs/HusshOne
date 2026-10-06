@@ -126,22 +126,43 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
   const runId = await startRun({ kind, sourceFile: label });
   let rowsSeen = 0;
   let rowsUpserted = 0;
+  const pending = new Set(), byIdentity = new Map();
+  let firstFailure = null;
+  let progressAt = Date.now();
+  const concurrency = () => Math.max(1, Math.min(8, deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 8 : 1)));
   try {
     const extractor = createXmlElementExtractor(tag);
     const stream = fs.createReadStream(filePath, { encoding: "latin1" });
     for await (const chunk of stream) {
       for (const block of extractor.push(chunk)) {
+        if (firstFailure) throw firstFailure;
         rowsSeen++;
         const rec = mapEl(block);
         if (!rec) continue;
         rec.source = kind;
-        const out = await upsert(rec);
-        if (out) rowsUpserted++;
+        while (pending.size >= concurrency()) await Promise.race(pending);
+        const previous = byIdentity.get(rec.crd);
+        const task = (async () => {
+          if (previous) await previous;
+          const out = await upsert(rec);
+          if (out) rowsUpserted++;
+          if (Date.now() - progressAt >= 5000) {
+            console.log(JSON.stringify({event:'ingest.progress',kind,rowsSeen,rowsUpserted}));
+            progressAt = Date.now();
+          }
+        })();
+        pending.add(task);
+        byIdentity.set(rec.crd, task);
+        const clear = () => { pending.delete(task); if (byIdentity.get(rec.crd) === task) byIdentity.delete(rec.crd); };
+        task.then(clear, err => { firstFailure ||= err; clear(); });
       }
     }
+    await Promise.all(pending);
+    if (firstFailure) throw firstFailure;
     await finishRun(runId, { rowsSeen, rowsUpserted, ok: true });
     return { kind, sourceFile: label, rowsSeen, rowsUpserted, ok: true };
   } catch (err) {
+    await Promise.allSettled(pending);
     await finishRun(runId, { rowsSeen, rowsUpserted, ok: false, error: err.message }).catch(() => {});
     throw err;
   }

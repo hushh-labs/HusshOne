@@ -45,12 +45,17 @@ export async function streamIngestRecords(
   let rowsUpserted = 0;
   let batch = [];
   let capped = false;
+  let progressAt = Date.now();
 
   const flush = async () => {
     if (!batch.length) return;
     const res = await upsert(batch);
     rowsUpserted += (res && res.upserted) || 0;
     batch = [];
+    if (Date.now() - progressAt >= 5000) {
+      console.log(JSON.stringify({event:'ingest.progress', rowsSeen, rowsUpserted, kind:'bulk'}));
+      progressAt = Date.now();
+    }
   };
 
   const handleRecord = async (recordRaw) => {

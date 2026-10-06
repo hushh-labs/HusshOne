@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
         configure_logging()
     cloud_proxy.start_watchdog()
     await asyncio.to_thread(init_db)
+    from app.performance import restore_mode
+    await asyncio.to_thread(restore_mode)
     from app.directory_fleet import fleet
     await fleet.resume()
     yield
@@ -59,6 +61,8 @@ from app.directory_fleet import router as directory_fleet_router
 app.include_router(directory_fleet_router)
 from app.worker_updates import router as worker_updates_router
 app.include_router(worker_updates_router)
+from app.performance import router as performance_router
+app.include_router(performance_router)
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     bundle_dir = getattr(sys, "_MEIPASS")

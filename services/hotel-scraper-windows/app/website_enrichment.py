@@ -468,7 +468,7 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
     return result
 
 
-def _crawl_child(connection, record):
+def _crawl_child(connection, record, throughput=False):
     try:
         if __import__("os").name == "nt":
             import ctypes
@@ -476,7 +476,7 @@ def _crawl_child(connection, record):
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel.GetCurrentProcess.restype = wintypes.HANDLE
             kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-            kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL
+            kernel.SetPriorityClass(kernel.GetCurrentProcess(), 0x20 if throughput else 0x4000)
         if record.get("_discover_website"):
             from app.website_discovery import discover_website
             discovery = discover_website(record)
@@ -503,7 +503,7 @@ async def collect_website(record, timeout=150):
     """Hard supervisor deadline also covers DNS and slow-response hangs."""
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=_crawl_child, args=(child, record), daemon=True)
+    process = context.Process(target=_crawl_child, args=(child, record, settings.SCRAPER_PERFORMANCE_MODE == 'throughput'), daemon=True)
     try:
         process.start()
         child.close()
