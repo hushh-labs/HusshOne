@@ -61,7 +61,8 @@ def test_dedup_key_matches_production_format():
 def test_index_page(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "HusshOne Hotel Scraper" in r.text
+    assert "HusshOne Directory Workers" in r.text
+    assert "Directory fleet overview" in r.text
 
 
 def test_live_endpoint_shape(client):
