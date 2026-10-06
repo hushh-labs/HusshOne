@@ -266,11 +266,26 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
                             result["render_method"] = "restricted_browser"
                     except Exception:
                         result["browser_fallback_failed"] = True
-                if len(matches) != 1:
+                if len(matches) > 1:
                     result["pages"].append({"url": final, "sha256": hashlib.sha256(body).hexdigest(),
                         "description": page.description, "excerpt": " ".join(" ".join(page.text).split())[:3000]})
-                    result.update(status="needs_review", reason="Business identity not corroborated by name and phone/address/coordinates")
+                    result.update(status="needs_review", reason="Multiple matching business entries found; existing data left unchanged")
                     return result
+                if not matches:
+                    result["pages"].append({"url": final, "sha256": hashlib.sha256(body).hexdigest(),
+                        "description": page.description, "excerpt": " ".join(" ".join(page.text).split())[:3000]})
+                    for href, label in page.links[:200]:
+                        try:
+                            link = safe_url(urljoin(final, href))
+                            parts = urlsplit(link)
+                            if (parts.hostname.removeprefix("www.") == origin_host and not parts.query
+                                    and RELEVANT.search(parts.path + " " + label)
+                                    and not re.search(r"\.(pdf|jpg|png|zip)$", parts.path, re.I)
+                                    and link not in visited and link not in urls):
+                                urls.append(link)
+                        except (ValueError, UnicodeError):
+                            continue
+                    continue
                 matched = True
                 result["identity"] = "corroborated_public_data"
                 result["business_name"] = matches[0]["name"]
@@ -295,7 +310,10 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
                             urls.append(link)
                 except (ValueError, UnicodeError):
                     continue
-        result["status"] = "collected"
+        if matched:
+            result["status"] = "collected"
+        else:
+            result.update(status="needs_review", reason="No structured hotel entry matched the known name and contact/location details on the checked pages; existing data left unchanged")
     except WebsiteBlocked as exc:
         result.update(status="blocked", reason=str(exc)[:300])
     except (OSError, http.client.HTTPException, ValueError, UnicodeError, RecursionError) as exc:
@@ -307,7 +325,17 @@ def _crawl_child(connection, record):
     try:
         if record.get("_discover_website"):
             from app.website_discovery import discover_website
-            connection.send(discover_website(record))
+            discovery = discover_website(record)
+            candidate = discovery.get("fields", {}).get("website", {}).get("value")
+            if candidate:
+                from app.website_browser import render_page
+                result = crawl_website({**record, "website": candidate},
+                    render=render_page if settings.WEBSITE_BROWSER_FALLBACK else None)
+                result["discovery_source_url"] = discovery.get("requested_url")
+                result["discovered_website"] = candidate
+                connection.send(result)
+            else:
+                connection.send(discovery)
             return
         from app.website_browser import render_page
         connection.send(crawl_website(record, render=render_page if settings.WEBSITE_BROWSER_FALLBACK else None))

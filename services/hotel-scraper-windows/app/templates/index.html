@@ -437,33 +437,49 @@
       </div>
 
       <div class="p-5 rounded-2xl bg-slate-900 border border-emerald-500/20 space-y-3">
-        <h3 class="text-sm font-semibold text-white">Fill missing data in existing hotels</h3>
-        <p class="text-xs text-slate-400">Scans old rows with missing phone, address, ZIP or state. Uses existing website links and corroborated evidence only. Existing values, ratings, coordinates and photos stay unchanged. Start the worker to process queued jobs.</p>
-        <div class="flex gap-3 text-xs">
-          <button @click="controlBackfill('start')" class="text-emerald-400 hover:underline">Start / resume backfill</button>
-          <button @click="controlBackfill('pause')" class="text-amber-400 hover:underline">Pause backfill</button>
+        <div class="flex flex-wrap justify-between items-center gap-3">
+          <h3 class="text-sm font-semibold text-white">Automatic missing-data enrichment</h3>
+          <span class="px-3 py-1 rounded-full bg-slate-800 text-xs text-emerald-300" x-text="backfillLabel()"></span>
         </div>
-        <p class="text-xs text-slate-300" x-text="'State: ' + (backfill.state || 'not_started') + ' · Incomplete rows scanned: ' + (backfill.scanned || 0) + ' · No website: ' + (backfill.missing_website || 0) + ' · Fields filled: ' + (backfill.filled_fields || 0)"></p>
-        <p class="text-xs text-slate-500" x-text="'Website jobs: ' + JSON.stringify(backfill.jobs || {})"></p>
-        <p class="text-xs text-slate-500">Pause takes effect after any in-flight website job finishes. No-website rows need a separate discovery pass.</p>
+        <p class="text-xs text-slate-400">Once started, runs without approvals. Finds missing websites through existing Maps identities and fills blank website, phone, address, ZIP and state only after verification. Uncertain results leave your data unchanged.</p>
+        <div class="flex flex-wrap gap-3">
+          <button @click="controlBackfill('start')" :disabled="backfillBusy || ['running','draining'].includes(backfill.state)" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed" x-text="backfillBusy ? 'Saving…' : (backfill.state?.startsWith('paused') ? 'Resume enrichment' : 'Start enrichment')"></button>
+          <button @click="controlBackfill('pause')" :disabled="backfillBusy || !['running','draining'].includes(backfill.state)" class="px-4 py-2 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed">Pause enrichment</button>
+        </div>
+        <p x-show="backfillNotice" class="text-xs text-slate-300" role="status" x-text="backfillNotice"></p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Incomplete rows scanned</p><p class="text-lg text-white" x-text="backfill.scanned || 0"></p></div>
+          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Found without website</p><p class="text-lg text-white" x-text="backfill.missing_website || 0"></p></div>
+          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Queued / retrying</p><p class="text-lg text-white" x-text="['pending','retry','fetched'].reduce((n,s) => n + (backfill.jobs?.[s] || 0), 0)"></p></div>
+          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Blank fields filled</p><p class="text-lg text-emerald-300" x-text="backfill.filled_fields || 0"></p></div>
+        </div>
+        <p class="text-xs text-slate-400">Existing values, ratings, coordinates and photos are preserved. Pausing waits for the current job to finish. Completed means the pass finished, not that every missing field could be verified.</p>
       </div>
 
       <!-- Failed ZIPs Recovery Ledger (bound to real /api/stats/overview data) -->
       <div class="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-        <h3 class="text-sm font-semibold text-white">Website evidence review</h3>
-        <p class="text-xs text-slate-400">Accept records your review of evidence only; it does not bypass identity checks or update Cloud SQL. Decisions survive restarts.</p>
-        <p class="text-xs text-slate-300" x-text="JSON.stringify(websiteReview.metrics || {})"></p>
+        <h3 class="text-sm font-semibold text-white">Automatic outcomes · no action required</h3>
+        <p class="text-xs text-slate-400">Verified evidence is processed automatically. Unverified sites are safely skipped, not held for approval. Temporary errors retry with backoff; restricted sites are not bypassed.</p>
+        <div class="flex flex-wrap gap-4 text-xs">
+          <span class="text-emerald-300" x-text="'Verified jobs: ' + (websiteReview.metrics.corroborated_jobs || 0)"></span>
+          <span class="text-slate-300" x-text="'Left unverified: ' + (websiteReview.metrics.review?.automatically_deferred || 0)"></span>
+          <span class="text-amber-300" x-text="'Blocked / retries exhausted: ' + ((websiteReview.metrics.collection?.blocked || 0) + (websiteReview.metrics.collection?.failed || 0))"></span>
+        </div>
+        <p x-show="!(websiteReview.items || []).length" class="text-xs text-slate-500">No unverified outcomes recorded yet. There is nothing to approve.</p>
         <template x-for="item in websiteReview.items || []" :key="item.id">
           <div class="p-3 border border-slate-700 rounded space-y-2">
-            <p class="text-sm" x-text="item.record.name"></p>
-            <p class="text-xs break-all" x-text="item.result.requested_url"></p>
-            <p class="text-xs text-amber-300" x-text="item.result.reason"></p>
-            <p class="text-xs break-all" x-text="JSON.stringify(item.result.fields || {})"></p>
-            <template x-for="page in item.result.pages || []" :key="page.url">
-              <p class="text-xs text-slate-400" x-text="page.excerpt"></p>
-            </template>
-            <button class="text-xs text-emerald-400 mr-3" @click="decideWebsiteReview(item.id, 'accepted_evidence')">Accept evidence only</button>
-            <button class="text-xs text-red-400" @click="decideWebsiteReview(item.id, 'rejected')">Reject</button>
+            <div class="flex justify-between gap-3"><p class="text-sm font-semibold" x-text="item.record.name"></p><span class="text-xs text-amber-300">Left unchanged</span></div>
+            <p class="text-xs text-slate-400">Could not verify this exact property. The worker moved on; no approval is needed.</p>
+            <details class="text-xs text-slate-400">
+              <summary class="cursor-pointer py-2 text-sky-300">Inspect source and matching details</summary>
+              <div class="grid md:grid-cols-2 gap-3 py-2">
+                <div><p class="text-slate-200 mb-1">Known hotel details when queued</p><p x-text="'Phone: ' + (item.record.phone || 'Not available')"></p><p x-text="'Address: ' + (item.record.formatted_address || 'Not available')"></p></div>
+                <div><p class="text-slate-200 mb-1">Collector outcome</p><p x-text="item.result.reason || 'No reliable matching evidence found.'"></p><p x-show="!Object.keys(item.result.fields || {}).length">No reliable business fields extracted.</p></div>
+              </div>
+              <a :href="safeEvidenceLink(item.result.requested_url)" target="_blank" rel="noopener noreferrer" class="text-sky-300 hover:underline break-all" x-text="item.result.requested_url || 'No source URL'"></a>
+              <template x-for="entry in Object.entries(item.result.fields || {})" :key="entry[0]"><p class="mt-2" x-text="entry[0] + ': ' + (typeof entry[1].value === 'object' ? JSON.stringify(entry[1].value) : entry[1].value)"></p></template>
+              <template x-for="page in item.result.pages || []" :key="page.url"><p class="mt-2" x-text="page.excerpt ? 'Page excerpt: ' + page.excerpt : 'No readable excerpt collected.'"></p></template>
+            </details>
           </div>
         </template>
       </div>
@@ -1068,6 +1084,9 @@ WHERE places_status = 'error';</pre>
         minRating: '',
         selectedHotel: null,
         backfill: {},
+        backfillBusy: false,
+        backfillNotice: '',
+        livePolling: false,
         websiteReview: {items: [], metrics: {}},
         scraperMode: 'defined_zips',
         customZipInput: '',
@@ -1119,29 +1138,24 @@ WHERE places_status = 'error';</pre>
         },
 
         async livePoll() {
+          if (this.livePolling) return;
+          this.livePolling = true;
+          const load = async (url, apply) => {
+            try { const response = await fetch(url, {signal: AbortSignal.timeout(10000)}); if (response.ok) apply(await response.json()); }
+            catch (error) { console.error('Dashboard refresh failed: ' + url, error); }
+          };
           try {
-            const review = await fetch('/api/website-reviews');
-            if (review.ok) this.websiteReview = await review.json();
-          } catch (error) { console.error('Could not load website review queue', error); }
-          try {
-            const response = await fetch('/api/website-backfill');
-            if (response.ok) this.backfill = await response.json();
-          } catch (error) { console.error('Could not load backfill progress', error); }
-          try {
-            const res = await fetch('/api/live');
-            if (res.ok) {
-              const data = await res.json();
-              this.worker = data.status;
-              this.overview = data.overview;
-              this.lastSyncedLabel = new Date().toLocaleTimeString();
-              this.$nextTick(() => {
-                const el = document.getElementById('logConsole');
-                if (el) el.scrollTop = el.scrollHeight;
-              });
-            }
-          } catch (e) {
-            console.error('Live poll failed', e);
-          }
+            await Promise.all([
+              load('/api/website-reviews', data => { this.websiteReview = data; }),
+              load('/api/website-backfill', data => { this.backfill = data; }),
+              load('/api/live', data => {
+                this.worker = data.status;
+                this.overview = data.overview;
+                this.lastSyncedLabel = new Date().toLocaleTimeString();
+                this.$nextTick(() => { const el = document.getElementById('logConsole'); if (el) el.scrollTop = el.scrollHeight; });
+              })
+            ]);
+          } finally { this.livePolling = false; }
         },
 
         async refreshAll() {
@@ -1573,21 +1587,28 @@ WHERE places_status = 'error';</pre>
           } catch (error) { alert('Website could not be queued; check worker logs.'); }
         },
 
-        async decideWebsiteReview(id, decision) {
-          if (!confirm('Record this evidence decision locally? Production data will not be changed.')) return;
-          const response = await fetch(`/api/website-reviews/${id}/${decision}`, {method: 'POST'});
-          if (!response.ok) { alert('Review decision could not be saved'); return; }
-          await this.livePoll();
+        safeEvidenceLink(value) {
+          try { const u = new URL(value); return ['https:', 'http:'].includes(u.protocol) && !u.username && !u.password ? u.href : null; } catch { return null; }
+        },
+
+        backfillLabel() {
+          const state = this.backfill.state || 'not_started';
+          if (['running','draining'].includes(state) && !this.worker.is_running) return 'Waiting for worker — start it above';
+          return {not_started: 'Not started', running: 'Scanning and enriching', draining: 'Finishing queued jobs', paused: 'Paused', paused_draining: 'Paused', completed: 'Pass completed'}[state] || state;
         },
 
         async controlBackfill(action) {
-          if (action === 'start' && !confirm('Start/resume a bounded backfill of existing hotels? Only blank phone/address/ZIP/state fields will be filled from corroborated business websites. The worker must be running.')) return;
+          if (this.backfillBusy) return;
+          this.backfillBusy = true;
+          this.backfillNotice = '';
           try {
             const response = await fetch(`/api/website-backfill/${action}`, {method: 'POST'});
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Backfill control failed');
             this.backfill = data;
-          } catch (error) { alert(error.message); }
+            this.backfillNotice = action === 'pause' ? 'Pause saved. The current job will finish safely.' : (this.worker.is_running ? 'Enrichment started. No approvals needed; progress saves automatically.' : 'Enrichment queued. Start the background worker above to process it.');
+          } catch (error) { this.backfillNotice = error.message; }
+          finally { this.backfillBusy = false; }
         },
 
         sourceLabel(key) {

@@ -44,6 +44,84 @@ def seed(sessions, **values):
         return row
 
 
+def test_missing_website_queues_identity_discovery(setup):
+    worker, sessions = setup
+    row = seed(sessions, website=None, raw={"google_cid": "123"})
+    worker._website_queue.start_backfill(row.id)
+    worker._scan_website_backfill()
+    queued = worker._website_queue.next_job()
+    assert queued["payload"]["record"]["_discover_website"] is True
+    assert queued["payload"]["fill_missing"] is True
+    with sessions() as db:
+        assert db.get(Hotel, row.id).website is None
+
+
+def test_discovered_website_requires_current_identity_and_preserves_replay(setup):
+    worker, sessions = setup
+    row = seed(sessions, website=None, phone="2065551234")
+    result = evidence()
+    result.update(requested_url="https://hotel.example/", discovery_source_url="https://www.google.com/maps?cid=123",
+                  identity_node={"@type": "Hotel", "name": row.name, "telephone": row.phone})
+    queued = job(row, result)
+    queued["payload"]["record"]["_discover_website"] = True
+    applied = worker._apply_website_evidence(queued)
+    assert "website" in applied["filled_fields"]
+    assert "website" in worker._apply_website_evidence(queued)["filled_fields"]
+    with sessions() as db:
+        stored = db.get(Hotel, row.id)
+        assert stored.website == "https://hotel.example/"
+        assert stored.phone == "2065551234"
+        assert stored.raw["website_field_fills"]["website"]["previous"] is None
+        assert stored.photos == [{"preserve": True}]
+
+
+def test_discovered_website_does_not_override_concurrent_operator_change(setup):
+    worker, sessions = setup
+    row = seed(sessions, website=None, phone="2065551234")
+    result = evidence()
+    result.update(requested_url="https://hotel.example/", identity_node={"@type": "Hotel", "name": row.name, "telephone": row.phone})
+    queued = job(row, result)
+    queued["payload"]["record"]["_discover_website"] = True
+    with sessions() as db:
+        db.get(Hotel, row.id).website = "https://operator.example/"
+        db.commit()
+    assert worker._apply_website_evidence(queued) is False
+    with sessions() as db:
+        assert db.get(Hotel, row.id).website == "https://operator.example/"
+
+
+def test_autonomous_backfill_starts_and_respects_pause(setup, monkeypatch):
+    worker, sessions = setup
+    monkeypatch.setattr(settings, "WEBSITE_AUTONOMOUS", True)
+    monkeypatch.setattr(settings, "WEBSITE_BACKFILL_AUTO_START", True)
+    row = seed(sessions)
+    worker._scan_website_backfill()
+    assert worker._website_queue.backfill_status()["ceiling"] == row.id
+    worker._website_queue.pause_backfill()
+    worker._scan_website_backfill()
+    assert worker._website_queue.backfill_status()["state"] == "paused"
+
+
+def test_autonomous_completed_pass_waits_for_refresh_interval(setup, monkeypatch):
+    import time
+    worker, sessions = setup
+    monkeypatch.setattr(settings, "WEBSITE_AUTONOMOUS", True)
+    monkeypatch.setattr(settings, "WEBSITE_BACKFILL_AUTO_START", True)
+    seed(sessions)
+    worker._scan_website_backfill()
+    queue = worker._website_queue
+    original = queue.backfill_status()["run_id"]
+    queue.finish(queue.next_job()["id"], "skipped")
+    worker._scan_website_backfill()
+    worker._scan_website_backfill()
+    assert queue.backfill_status()["state"] == "completed"
+    assert queue.backfill_status()["run_id"] == original
+    with queue.connect() as c:
+        c.execute("UPDATE website_backfill_runs SET updated_at=?", (time.time() - settings.WEBSITE_BACKFILL_REFRESH_SEC - 1,))
+    worker._scan_website_backfill()
+    assert queue.backfill_status()["run_id"] != original
+
+
 def evidence():
     def field(value):
         return {"value": value, "source_url": "https://hotel.example/", "extraction": "json_ld", "collected_at": "2026-10-06T02:00:00+00:00"}

@@ -1304,7 +1304,8 @@ def queue_website_discovery(hotel_id: int, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     record["_discover_website"] = True
-    _website_backfill_queue().enqueue(record, "website-discovery-" + uuid.uuid4().hex, database_target())
+    _website_backfill_queue().enqueue(record, "website-discovery-" + uuid.uuid4().hex, database_target(),
+                                    fill_missing=settings.WEBSITE_FILL_MISSING_FIELDS)
     return {"status": "queued", "production_changed": False}
 
 
@@ -1323,7 +1324,8 @@ def website_backfill_status():
 @app.get("/api/website-reviews")
 def website_reviews():
     queue = _website_backfill_queue()
-    return {"items": queue.reviews(), "metrics": queue.metrics()}
+    return {"items": queue.reviews(include_deferred=settings.WEBSITE_AUTONOMOUS), "metrics": queue.metrics(),
+            "autonomous": settings.WEBSITE_AUTONOMOUS}
 
 
 @app.post("/api/website-reviews/{review_id}/{decision}")

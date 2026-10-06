@@ -9,3 +9,4 @@ os.environ["DATABASE_URL"] = "sqlite:///" + _root.replace("\\", "/") + "/tests.d
 os.environ["AUTO_START_PROXY"] = "false"
 os.environ["HUSSHONE_TEST_MODE"] = "1"
 os.environ["WEBSITE_ENRICHMENT_ENABLED"] = "false"
+os.environ["WEBSITE_BACKFILL_AUTO_START"] = "false"

@@ -37,6 +37,11 @@ class WebsiteQueue:
                 fingerprint TEXT PRIMARY KEY, job_id TEXT NOT NULL, target TEXT NOT NULL,
                 decision TEXT NOT NULL DEFAULT 'pending', updated_at REAL NOT NULL)""")
             c.execute("CREATE INDEX IF NOT EXISTS website_reviews_pending ON website_reviews(target,decision,updated_at)")
+            if settings.WEBSITE_AUTONOMOUS:
+                # Legacy human-review jobs must not require an operator on upgrade.
+                target = database_target()["fingerprint"]
+                c.execute("UPDATE website_jobs SET state='skipped' WHERE id IN (SELECT job_id FROM website_reviews WHERE target=? AND decision='pending')", (target,))
+                c.execute("UPDATE website_reviews SET decision='automatically_deferred' WHERE target=? AND decision='pending'", (target,))
 
     def hold_for_review(self, job):
         require_matching_target(job["payload"])
@@ -49,22 +54,25 @@ class WebsiteQueue:
                      for key, value in result.get("fields", {}).items() if isinstance(value, dict)}]
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         with self.connect() as c:
-            c.execute("INSERT OR IGNORE INTO website_reviews(fingerprint,job_id,target,updated_at) VALUES(?,?,?,?)",
-                      (fingerprint, job["id"], database_target()["fingerprint"], time.time()))
+            c.execute("INSERT OR IGNORE INTO website_reviews(fingerprint,job_id,target,decision,updated_at) VALUES(?,?,?,?,?)",
+                      (fingerprint, job["id"], database_target()["fingerprint"],
+                       "automatically_deferred" if settings.WEBSITE_AUTONOMOUS else "pending", time.time()))
             decision = c.execute("SELECT decision FROM website_reviews WHERE fingerprint=?", (fingerprint,)).fetchone()[0]
             c.execute("UPDATE website_jobs SET state=?,updated_at=? WHERE id=?",
                       ("review" if decision == "pending" else "skipped", time.time(), job["id"]))
 
-    def reviews(self):
+    def reviews(self, include_deferred=False):
         with self.connect() as c:
             rows = c.execute("""SELECT r.*,j.payload,j.result FROM website_reviews r JOIN website_jobs j ON j.id=r.job_id
-                WHERE r.target=? AND r.decision='pending' ORDER BY r.updated_at LIMIT 50""",
-                (database_target()["fingerprint"],)).fetchall()
+                WHERE r.target=? AND (r.decision='pending' OR (? AND r.decision='automatically_deferred'))
+                ORDER BY r.updated_at DESC LIMIT 50""",
+                (database_target()["fingerprint"], include_deferred)).fetchall()
         items = []
         for row in rows:
             payload = json.loads(row["payload"])
             require_matching_target(payload)
-            items.append({"id": row["fingerprint"], "record": payload["record"], "result": json.loads(row["result"])})
+            items.append({"id": row["fingerprint"], "record": payload["record"], "result": json.loads(row["result"]),
+                          "decision": row["decision"], "updated_at": row["updated_at"]})
         return items
 
     def decide_review(self, fingerprint, decision):

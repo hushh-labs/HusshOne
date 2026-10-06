@@ -1130,7 +1130,7 @@ class ScraperBackgroundWorker:
         self._last_data_quality_audit = now
         report = await asyncio.to_thread(self._run_data_quality_audit_sync)
         self._data_quality_cursor = report.next_shape_cursor
-        await self._journal_event("record_report_row", "data_quality", report.as_dict())
+        await self._journal_event("record_report_row", report.as_dict(), kind="data_quality")
         summary = report.summary()
         level = "WARNING" if not report.is_clean else "INFO"
         suffix = (
@@ -1581,6 +1581,13 @@ class ScraperBackgroundWorker:
         if self._website_queue is None:
             self._website_queue = WebsiteQueue()
         for record in entry.records:
+            if blank(record.get("website")) and settings.WEBSITE_DISCOVERY_BACKFILL:
+                from app.website_discovery import maps_identity_url
+                try:
+                    maps_identity_url(record)
+                except ValueError:
+                    continue
+                record = {**record, "_discover_website": True}
             self._website_queue.enqueue(record, entry.run_id, entry.metadata["database_target"],
                                         fill_missing=settings.WEBSITE_FILL_MISSING_FIELDS)
 
@@ -1589,6 +1596,17 @@ class ScraperBackgroundWorker:
         if not settings.WEBSITE_FILL_MISSING_FIELDS:
             return
         status = self._website_queue.backfill_status()
+        if (settings.WEBSITE_AUTONOMOUS and settings.WEBSITE_BACKFILL_AUTO_START
+                and (status["state"] == "not_started" or (status["state"] == "completed"
+                    and time.time() - status.get("updated_at", time.time()) >= max(3600, settings.WEBSITE_BACKFILL_REFRESH_SEC)))):
+            db = get_db_session()
+            try:
+                if db.bind.dialect.name == "postgresql":
+                    db.execute(text("SET TRANSACTION READ ONLY"))
+                ceiling = db.query(func.max(Hotel.id)).scalar() or 0
+                status = self._website_queue.start_backfill(ceiling)
+            finally:
+                db.close()
         if status["state"] != "running":
             return
         counts = self._website_queue.counts()
@@ -1602,8 +1620,9 @@ class ScraperBackgroundWorker:
                 db.execute(text("SET TRANSACTION READ ONLY"))
             columns = [Hotel.id, Hotel.dedup_key, Hotel.place_id, Hotel.name, Hotel.website,
                        Hotel.phone, Hotel.formatted_address, Hotel.zip, Hotel.state,
-                       Hotel.lat, Hotel.lng, Hotel.query_zip, Hotel.sources, Hotel.raw, Hotel.last_seen]
-            filters = [or_(getattr(Hotel, f).is_(None), func.trim(getattr(Hotel, f)) == "") for f in WEBSITE_FILL_FIELDS]
+                       Hotel.lat, Hotel.lng, Hotel.query_zip, Hotel.sources, Hotel.raw, Hotel.last_seen, Hotel.google_maps_uri]
+            scan_fields = (*WEBSITE_FILL_FIELDS, "website") if settings.WEBSITE_DISCOVERY_BACKFILL else WEBSITE_FILL_FIELDS
+            filters = [or_(getattr(Hotel, f).is_(None), func.trim(getattr(Hotel, f)) == "") for f in scan_fields]
             rows = db.query(Hotel).options(load_only(*columns)).filter(
                 Hotel.id > status["cursor"], Hotel.id <= status["ceiling"], or_(*filters)
             ).order_by(Hotel.id).limit(min(1000, max(1, settings.WEBSITE_BACKFILL_BATCH_SIZE))).all()
@@ -1614,12 +1633,20 @@ class ScraperBackgroundWorker:
                 cursor, scanned = row.id, scanned + 1
                 if blank(row.website):
                     missing += 1
-                    continue
                 record = {column.key: getattr(row, column.key) for column in columns if column.key != "last_seen"}
                 raw = row.raw if isinstance(row.raw, dict) else {}
                 record["raw"] = {"google_cid": raw.get("google_cid"),
                     "website_enrichment": raw.get("website_enrichment"),
                     "scraped_at": row.last_seen.isoformat() if row.last_seen else None}
+                if blank(row.website):
+                    if not settings.WEBSITE_DISCOVERY_BACKFILL:
+                        continue
+                    from app.website_discovery import maps_identity_url
+                    try:
+                        maps_identity_url(record)
+                    except ValueError:
+                        continue
+                    record["_discover_website"] = True
                 self._website_queue.enqueue(record, status["run_id"], database_target(),
                                             fill_missing=True, backfill_id=status["run_id"])
                 slots -= 1
@@ -1645,12 +1672,18 @@ class ScraperBackgroundWorker:
                 # through the website path. Retain its evidence locally only.
                 db.rollback()
                 return False
-            if row.website != record.get("website"):
+            result = job["result"]
+            discovery = record.get("_discover_website")
+            prior_fields = (row.raw or {}).get("website_field_fills", {})
+            prior_website = prior_fields.get("website", {}) if isinstance(prior_fields, dict) else {}
+            replayed_discovery = (discovery and isinstance(prior_website, dict)
+                and prior_website.get("job_id") == job["id"]
+                and row.website == prior_website.get("value") == result.get("requested_url"))
+            if row.website != record.get("website") and not replayed_discovery:
                 db.rollback()
                 return False
             raw = dict(row.raw or {})
             previous = raw.get("website_enrichment") or {}
-            result = job["result"]
             if previous.get("collected_at", "") > result.get("collected_at", ""):
                 db.rollback()
                 return False
@@ -1661,6 +1694,21 @@ class ScraperBackgroundWorker:
             # Recheck blanks while holding the hotel row lock. A VM/user may
             # have populated a column since this website job was queued.
             fills = {}
+            if discovery and not replayed_discovery:
+                from app.website_enrichment import matched_business, safe_url
+                current = {field: getattr(row, field, None) for field in ("name", "phone", "formatted_address", "lat", "lng")}
+                if (not blank(row.website) or result.get("status") != "collected"
+                        or result.get("identity") != "corroborated_public_data"
+                        or not isinstance(result.get("identity_node"), dict)
+                        or not matched_business(result["identity_node"], current)
+                        or not job["payload"].get("fill_missing") or not settings.WEBSITE_FILL_MISSING_FIELDS):
+                    db.rollback()
+                    return False
+                value = safe_url(result.get("requested_url"))
+                fills["website"] = {"previous": row.website, "value": value,
+                    "source_url": result.get("discovery_source_url"), "collected_at": result.get("collected_at"),
+                    "run_id": job["payload"]["run_id"], "job_id": job["id"]}
+                row.website = value
             if job["payload"].get("fill_missing") and settings.WEBSITE_FILL_MISSING_FIELDS:
                 for field, (value, evidence) in fill_candidates(row, result).items():
                     fills[field] = {"previous": getattr(row, field), "value": value,
@@ -1720,9 +1768,9 @@ class ScraperBackgroundWorker:
                 job["result"] = {**result, "status": "failed"}
         if job["result"].get("status") == "needs_review":
             await asyncio.to_thread(self._website_queue.hold_for_review, job)
-            self._log("Website identity uncertain; retained in the local review queue.", "WARNING")
+            self._log("Website could not be verified; left existing data unchanged and continued automatically.", "INFO")
             return True
-        if job["payload"]["record"].get("_discover_website"):
+        if job["payload"]["record"].get("_discover_website") and job["result"].get("status") != "collected":
             await asyncio.to_thread(self._website_queue.finish, job["id"], "skipped")
             return True
         applied = await asyncio.to_thread(self._apply_website_evidence, job)

@@ -223,15 +223,18 @@ detail modal. Other proposed business attributes are not promoted automatically.
 ### Historical missing-data backfill
 
 Use **Start / resume backfill** on the worker dashboard, then run the worker.
-Nothing starts automatically on upgrade. The start action snapshots the current
+With autonomous auto-start enabled, starting the worker starts a bounded pass
+without further approvals. The start action snapshots the current
 maximum hotel ID and saves a target-bound local run ID. The scanner pages
 incomplete rows by ID, excludes later inventory, limits pending website jobs,
 enqueues before checkpointing, and resumes the same cursor after a restart.
 **Pause backfill** holds its queued jobs after the current in-flight job ends;
 start/resume retains the original snapshot. Maps discovery remains independent.
 
-Only public website URLs already present in `hotels` are used. No-website rows
-are counted and skipped; this feature does not discover their missing URLs.
+Existing website URLs are used first. With `WEBSITE_DISCOVERY_BACKFILL=true`,
+missing URLs are discovered through existing trusted Maps identities. Candidates
+must pass website collection and current-row identity checks before a blank
+website may be filled. Rows without usable Maps identity are counted and skipped.
 Cached corroborated evidence can be reused without another website request.
 Progress reports incomplete rows scanned, jobs by state, skipped missing links
 and the number of fields filled—not a count of guaranteed successful websites.
@@ -261,7 +264,7 @@ Website collection uses HTTP first, then an optional restricted Chrome fallback
 (`WEBSITE_BROWSER_FALLBACK=true`). Browser HTTP requests are fulfilled through
 the same DNS-pinned public-site client and robots checks, not unrestricted
 browser networking. Service workers and WebSockets are disabled. Cross-domain
-assets are blocked; some sites will consequently require review. Request,
+assets are blocked; some sites will consequently remain unverified. Request,
 response-size and process deadlines remain bounded.
 
 Matching rejects conflicting known phone numbers, ZIP codes or coordinates.
@@ -270,18 +273,29 @@ needs two. Canonical fills revalidate against the locked current row. Pets,
 smoking, room inventories, offer catalogs and payment information are retained
 as source-labelled structured evidence, not invented canonical columns.
 
-The hotel detail dialog has **Discover website candidate** for rows without a
-website and with an existing Maps property identity. This is an explicit,
-single-property action, counts toward the daily Maps cap, and never guesses a
-domain. Candidates and uncertain website identities go to the durable local
-review queue. Accepting evidence acknowledges it locally only; it does not
-bypass identity/blank-only guards or set a production website. Rejection of
-unchanged page evidence is remembered across observations and restarts.
-Historical backfill still skips missing-website rows; automatic bulk discovery
-and approved website promotion are not implemented in this release.
+Discovery is available from the detail dialog and historical backfill. It counts
+toward the daily Maps cap and never guesses a domain. A candidate's website is
+collected with the same public-address and robots guards, then verified again
+against the current locked hotel before filling a blank website. Concurrent
+operator changes are preserved. Website promotion and subsequent field fills
+retain exact pre-images and source provenance for recovery.
+
+`WEBSITE_AUTONOMOUS=true` is the default. Unverified identities become terminal
+local outcomes, not approval requests; existing production data stays unchanged.
+Legacy pending evidence reviews are migrated to automatically-deferred outcomes
+for the matching local database target, preserving evidence and past decisions.
+Temporary transport failures retry with backoff; restrictions are never bypassed.
+Inspection is optional, and the dashboard has no misleading approval buttons.
+
+`WEBSITE_BACKFILL_AUTO_START=true` starts a historical pass with the worker and
+repeats completed passes after `WEBSITE_BACKFILL_REFRESH_SEC=86400` by default
+(minimum one hour). A user-paused pass is never automatically resumed. This
+does not auto-start the worker itself or provision an always-on host. Safety
+blocks indicating schema drift or possible data loss still require operator
+attention rather than silently weakening the write guards.
 
 The dashboard separates collection outcomes, fields filled and review decisions.
-All review actions are target-bound local SQLite writes. No production table
+All outcome records are target-bound local SQLite writes. No production table
 or trigger is added by these features.
 
 For a read-only website canary, export one non-secret hotel record (name,

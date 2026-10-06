@@ -5,6 +5,12 @@ from app.website_discovery import maps_identity_url
 from app.website_queue import WebsiteQueue
 from app.config import database_target
 
+
+@pytest.fixture(autouse=True)
+def legacy_review_mode(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "WEBSITE_AUTONOMOUS", False)
+
 RECORD = {"name": "Cedar Hotel", "dedup_key": "cedar", "website": "https://hotel.example/",
           "phone": "2065551234", "formatted_address": "1 Main St WA 98033", "raw": {}}
 NODE = {"@type": "Hotel", "name": "Cedar Hotel", "telephone": "2065551234"}
@@ -167,3 +173,80 @@ def test_changed_website_candidate_requires_new_review(tmp_path):
         assert len(items) == 1
         queue.decide_review(items[0]["id"], "rejected")
     assert queue.metrics()["review"] == {"rejected": 2}
+
+
+def test_autonomous_unverified_job_is_terminal_without_human(tmp_path, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "WEBSITE_AUTONOMOUS", True)
+    queue = WebsiteQueue(tmp_path / "jobs.sqlite3")
+    queue.enqueue(RECORD, "run", database_target())
+    job = queue.next_job()
+    result = {"status": "needs_review", "pages": [], "fields": {}}
+    queue.save_result(job, result)
+    queue.hold_for_review({**job, "result": result})
+    assert queue.next_job() is None
+    assert queue.counts() == {"skipped": 1}
+    assert queue.reviews() == []
+    assert queue.reviews(include_deferred=True)[0]["decision"] == "automatically_deferred"
+
+
+def test_autonomous_upgrade_preserves_evidence_and_releases_legacy_review(tmp_path, monkeypatch):
+    from app.config import settings
+    queue = WebsiteQueue(tmp_path / "jobs.sqlite3")
+    queue.enqueue(RECORD, "run", database_target())
+    job = queue.next_job()
+    result = {"status": "needs_review", "pages": [{"url": RECORD["website"], "excerpt": "Unverified"}], "fields": {}}
+    queue.save_result(job, result)
+    queue.hold_for_review({**job, "result": result})
+    assert queue.counts() == {"review": 1}
+    monkeypatch.setattr(settings, "WEBSITE_AUTONOMOUS", True)
+    queue = WebsiteQueue(queue.path)
+    assert queue.counts() == {"skipped": 1}
+    assert queue.reviews(include_deferred=True)[0]["result"] == result
+
+
+def test_unmatched_landing_page_follows_contact_before_giving_up():
+    def fetch(url):
+        if url.endswith("robots.txt"):
+            return 404, {}, b""
+        body = b'<a href="/contact">Contact</a>' if url == RECORD["website"] else ('<script type="application/ld+json">' + json.dumps(NODE) + '</script>').encode()
+        return 200, {"content-type": "text/html"}, body
+    result = crawl_website(RECORD, fetch, lambda _: None)
+    assert result["status"] == "collected"
+    assert result["fields"]["telephone"]["source_url"] == RECORD["website"] + "contact"
+    assert len(result["pages"]) == 2
+
+
+def test_audit_report_uses_keyword_kind_and_is_persisted(tmp_path, monkeypatch):
+    import asyncio
+    import uuid
+    from types import SimpleNamespace
+    from app import worker as module
+    from app.run_journal import RunJournal
+    from app.config import settings
+    worker = module.ScraperBackgroundWorker()
+    journal = RunJournal(tmp_path / "journal.sqlite3")
+    run_id = str(uuid.uuid4())
+    journal.start_run(run_id=run_id)
+    worker._journal = journal
+    worker._run_id = run_id
+    monkeypatch.setattr(settings, "DATA_QUALITY_AUDIT_INTERVAL_SEC", 3600)
+    report = SimpleNamespace(next_shape_cursor=5, is_clean=True, as_dict=lambda: {"test": "audit"},
+        summary=lambda: {"duplicate_google_cids": 0, "coordinate_issues": 0, "shape_issues": 0, "shape_rows_scanned": 5})
+    monkeypatch.setattr(worker, "_run_data_quality_audit_sync", lambda: report)
+    asyncio.run(worker._maybe_run_data_quality_audit())
+    assert not any("Could not journal" in item["message"] for item in worker.get_status()["logs"])
+    rows = journal.report_rows_for_run(run_id)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "data_quality"
+
+
+def test_new_maps_observation_without_website_queues_discovery_without_mutating_batch(tmp_path):
+    from types import SimpleNamespace
+    from app import worker as module
+    record = {**RECORD, "website": None, "raw": {"google_cid": "123"}}
+    worker = module.ScraperBackgroundWorker()
+    worker._website_queue = WebsiteQueue(tmp_path / "jobs.sqlite3")
+    worker._queue_websites(SimpleNamespace(records=[record], run_id="run", metadata={"database_target": database_target()}))
+    assert worker._website_queue.next_job()["payload"]["record"]["_discover_website"] is True
+    assert "_discover_website" not in record
