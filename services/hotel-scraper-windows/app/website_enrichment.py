@@ -15,6 +15,7 @@ import time
 import asyncio
 import multiprocessing
 import math
+import zlib
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -46,6 +47,12 @@ def safe_url(value):
     if port != (443 if parts.scheme == "https" else 80):
         raise WebsiteBlocked("Nonstandard website port blocked")
     host = parts.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    try:
+        if not ipaddress.ip_address(host).is_global:
+            raise WebsiteBlocked("Non-public website address blocked")
+    except ValueError as exc:
+        if isinstance(exc, WebsiteBlocked):
+            raise
     if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
         raise WebsiteBlocked("Local website blocked")
     netloc = "[" + host + "]" if ":" in host else host
@@ -58,6 +65,50 @@ def _public_addresses(host, port):
     if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
         raise WebsiteBlocked("Website resolves to a non-public address")
     return addresses
+
+
+def decode_body(body, encoding, cap):
+    """Bound both transferred and expanded bytes; reject compression bombs."""
+    encoding = encoding.strip().lower()
+    if encoding in ("", "identity"):
+        decoded = body
+    elif encoding in ("gzip", "deflate"):
+        try:
+            decoder = zlib.decompressobj(31 if encoding == "gzip" else 15)
+            decoded = decoder.decompress(body, cap + 1)
+            if len(decoded) > cap or decoder.unconsumed_tail:
+                raise WebsiteBlocked("Expanded website response exceeds size limit")
+            if not decoder.eof or decoder.unused_data:
+                raise WebsiteBlocked("Invalid compressed website response")
+        except zlib.error as exc:
+            raise WebsiteBlocked("Invalid compressed website response") from exc
+    elif encoding == "br":
+        import brotli
+        decoder = brotli.Decompressor()
+        chunks, size = [], 0
+        try:
+            # Small input chunks limit expansion before the next bound check.
+            for offset in range(0, len(body), 64):
+                data = body[offset:offset + 64]
+                while True:
+                    chunk = decoder.process(data, output_buffer_limit=cap - size + 1)
+                    size += len(chunk)
+                    if size > cap:
+                        raise WebsiteBlocked("Expanded website response exceeds size limit")
+                    chunks.append(chunk)
+                    if decoder.can_accept_more_data():
+                        break
+                    data = b""
+            if not decoder.is_finished():
+                raise WebsiteBlocked("Invalid compressed website response")
+            decoded = b"".join(chunks)
+        except brotli.error as exc:
+            raise WebsiteBlocked("Invalid compressed website response") from exc
+    else:
+        raise WebsiteBlocked("Unsupported compressed website response")
+    if len(decoded) > cap:
+        raise WebsiteBlocked("Expanded website response exceeds size limit")
+    return decoded
 
 
 def fetch_page(url):
@@ -74,15 +125,14 @@ def fetch_page(url):
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
         connection.sock = sock
         connection.request("GET", urlunsplit(("", "", parts.path, parts.query, "")),
-                           headers={"User-Agent": AGENT, "Accept": "text/html,text/plain", "Accept-Encoding": "identity"})
+                           headers={"User-Agent": AGENT, "Accept": "text/html,text/plain", "Accept-Encoding": "gzip, deflate, br"})
         response = connection.getresponse()
         headers = {key.lower(): value for key, value in response.getheaders()}
         cap = min(2_000_000, max(1024, settings.WEBSITE_MAX_BYTES))
         body = response.read(cap + 1)
         if len(body) > cap:
             raise WebsiteBlocked("Website response exceeds size limit")
-        if headers.get("content-encoding", "identity").lower() != "identity":
-            raise WebsiteBlocked("Unsupported compressed website response")
+        body = decode_body(body, headers.get("content-encoding", "identity"), cap)
         return response.status, headers, body
     finally:
         connection.close()
@@ -97,6 +147,9 @@ class Page(HTMLParser):
         self._script = None
         self._skip = 0
         self._anchor = None
+        self.headings, self.addresses = [], []
+        self._heading = None
+        self._address = None
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
@@ -109,6 +162,10 @@ class Page(HTMLParser):
             self.description = attrs.get("content", "")[:2000]
         if tag == "a" and attrs.get("href"):
             self._anchor = [attrs["href"], ""]
+        if tag in ("h1", "title"):
+            self._heading = []
+        if tag == "address":
+            self._address = []
 
     def handle_endtag(self, tag):
         if tag == "script" and self._script is not None:
@@ -122,6 +179,12 @@ class Page(HTMLParser):
         if tag == "a" and self._anchor:
             self.links.append(tuple(self._anchor))
             self._anchor = None
+        if tag in ("h1", "title") and self._heading is not None:
+            self.headings.append(" ".join(self._heading))
+            self._heading = None
+        if tag == "address" and self._address is not None:
+            self.addresses.append(" ".join(self._address))
+            self._address = None
 
     def handle_data(self, data):
         if self._script is not None:
@@ -130,6 +193,10 @@ class Page(HTMLParser):
             self.text.append(data)
             if self._anchor:
                 self._anchor[1] += data[:300]
+            if self._heading is not None:
+                self._heading.append(data)
+            if self._address is not None:
+                self._address.append(data)
 
 
 def _nodes(value, depth=0):
@@ -189,23 +256,77 @@ def matched_business(node, record):
     return signals >= (1 if name == expected else 2)
 
 
+def visible_business(page, record):
+    """Conservative fallback: exact heading name plus independent contact proof.
+
+    Never guess an address from arbitrary navigation, chain-wide footer text,
+    or a hotel's search ZIP. Ambiguous contact details remain evidence only.
+    """
+    expected = normalize_name(record.get("name", ""))
+    headings = [normalize_name(part.strip()) for heading in page.headings
+                for part in re.split(r"[|–—]", heading)]
+    if not expected or expected not in headings:
+        return None
+    node = {"@type": "Hotel", "name": record["name"]}
+    phones = {re.sub(r"[;?].*", "", href[4:]).strip()
+              for href, _ in page.links if href.lower().startswith("tel:")}
+    phones = {phone for phone in phones if re.fullmatch(r"[+\d\s().-]+", phone)
+              and len(_digits(phone)) == 10}
+    if len({_digits(phone) for phone in phones}) == 1:
+        node["telephone"] = sorted(phones)[0]
+    addresses = []
+    for address in page.addresses:
+        match = re.fullmatch(r"\s*(\d[^,]{1,200}),\s*([^,]{1,100}),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)(?:\s*,?\s*(?:US|USA|United States))?\s*", address)
+        if match:
+            street, city, state, postal = match.groups()
+            addresses.append({"@type": "PostalAddress", "streetAddress": street.strip(),
+                              "addressLocality": city.strip(), "addressRegion": state,
+                              "postalCode": postal, "addressCountry": "US"})
+    unique = {json.dumps(address, sort_keys=True): address for address in addresses}
+    if len(unique) == 1:
+        node["address"] = next(iter(unique.values()))
+    return node if matched_business(node, record) else None
+
+
+def page_fields(page, record):
+    """Only independently corroborated property pages can propose fields."""
+    matches = [node for node in page.nodes if matched_business(node, record)]
+    extraction = "json_ld"
+    if not matches:
+        visible = visible_business(page, record)
+        matches = [visible] if visible else []
+        extraction = "visible_contact"
+    if len(matches) != 1:
+        return matches, {}, extraction
+    node = matches[0]
+    fields = {key: node[key] for key in
+              ("description", "telephone", "address", "checkinTime", "checkoutTime", "amenityFeature", "priceRange", "numberOfRooms",
+               "petsAllowed", "smokingAllowed", "starRating", "hasOfferCatalog", "containsPlace", "paymentAccepted", "currenciesAccepted")
+              if node.get(key) is not None and len(json.dumps(node[key])) <= 8000}
+    return matches, fields, extraction
+
+
 def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
     result = {"version": 1, "status": "retry", "requested_url": record.get("website"),
               "collected_at": datetime.now(timezone.utc).isoformat(), "pages": [], "fields": {},
               "identity": "unconfirmed", "scraped_via": "business_website"}
     robots = {}
     visited = set()
+    matched = False
     deadline = time.monotonic() + 120
     try:
         start = safe_url(record.get("website"))
         origin_host = urlsplit(start).hostname.removeprefix("www.")
+        allowed_hosts = {origin_host}
 
-        def request(url, redirects=0, is_robots=False):
+        def request(url, redirects=0, is_robots=False, redirect_chain=()):
             if time.monotonic() > deadline:
                 raise TimeoutError("Website crawl time budget exceeded")
             url = safe_url(url)
+            if url in redirect_chain:
+                raise WebsiteBlocked("Website redirect loop detected")
             parts = urlsplit(url)
-            if parts.hostname.removeprefix("www.") != origin_host:
+            if parts.hostname.removeprefix("www.") not in allowed_hosts:
                 raise WebsiteBlocked("Cross-domain redirect/link needs review")
             origin = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
             if not is_robots:
@@ -234,11 +355,22 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
             if code in (301, 302, 303, 307, 308):
                 if redirects >= 3 or not headers.get("location"):
                     raise WebsiteBlocked("Website redirect limit exceeded")
-                return request(urljoin(url, headers["location"]), redirects + 1, is_robots)
+                destination = safe_url(urljoin(url, headers["location"]))
+                destination_parts = urlsplit(destination)
+                destination_host = destination_parts.hostname.removeprefix("www.")
+                if destination_host not in allowed_hosts:
+                    # Only a permanent HTTP redirect from the supplied site
+                    # can introduce another domain. Never a HTML/JS link.
+                    # New domains get independent DNS and robots checks;
+                    # property identity must still be corroborated afterward.
+                    if is_robots or code not in (301, 308) or destination_parts.scheme != "https":
+                        raise WebsiteBlocked("Cross-domain redirect/link needs review")
+                    allowed_hosts.add(destination_host)
+                    result.setdefault("redirects", []).append({"from": url, "to": destination, "status": code})
+                return request(destination, redirects + 1, is_robots, (*redirect_chain, url))
             return code, headers, body, url
 
         urls = [start]
-        matched = False
         while urls and len(result["pages"]) < min(6, max(1, settings.WEBSITE_MAX_PAGES)):
             url = urls.pop(0)
             if url in visited:
@@ -254,15 +386,16 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
             if "text/html" not in headers.get("content-type", "").lower():
                 raise WebsiteBlocked("Only HTML business pages are collected")
             page = Page(body.decode("utf-8", "replace"))
+            matches, fields, extraction = page_fields(page, record)
             if not matched:
-                matches = [node for node in page.nodes if matched_business(node, record)]
                 if not matches and render is not None and b"<script" in body.lower():
                     try:
                         rendered = render(final, request)
                         rendered_page = Page(rendered.decode("utf-8", "replace"))
-                        rendered_matches = [node for node in rendered_page.nodes if matched_business(node, record)]
+                        rendered_matches, rendered_fields, rendered_extraction = page_fields(rendered_page, record)
                         if rendered_matches:
                             page, body, matches = rendered_page, rendered, rendered_matches
+                            fields, extraction = rendered_fields, rendered_extraction
                             result["render_method"] = "restricted_browser"
                     except Exception:
                         result["browser_fallback_failed"] = True
@@ -278,7 +411,7 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
                         try:
                             link = safe_url(urljoin(final, href))
                             parts = urlsplit(link)
-                            if (parts.hostname.removeprefix("www.") == origin_host and not parts.query
+                            if (parts.hostname.removeprefix("www.") == urlsplit(final).hostname.removeprefix("www.") and not parts.query
                                     and RELEVANT.search(parts.path + " " + label)
                                     and not re.search(r"\.(pdf|jpg|png|zip)$", parts.path, re.I)
                                     and link not in visited and link not in urls):
@@ -291,21 +424,31 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
                 result["business_name"] = matches[0]["name"]
                 result["identity_node"] = {key: matches[0][key] for key in
                     ("@type", "name", "alternateName", "telephone", "address", "geo") if key in matches[0]}
-                for key in ("description", "telephone", "address", "checkinTime", "checkoutTime", "amenityFeature", "priceRange", "numberOfRooms",
-                            "petsAllowed", "smokingAllowed", "starRating", "hasOfferCatalog", "containsPlace", "paymentAccepted", "currenciesAccepted"):
-                    value = matches[0].get(key)
-                    if value is not None and len(json.dumps(value)) <= 8000:
-                        result["fields"][key] = {"value": value, "source_url": final, "extraction": "json_ld", "collected_at": result["collected_at"]}
+            if len(matches) == 1:
+                for key, value in fields.items():
+                    # A later contact/policy page can fill absent evidence,
+                    # but never override a prior property-page statement.
+                    result["fields"].setdefault(key, {"value": value, "source_url": final,
+                        "extraction": extraction, "collected_at": result["collected_at"],
+                        "identity_node": {k: matches[0][k] for k in ("@type", "name", "alternateName", "telephone", "address", "geo") if k in matches[0]}})
+                # Retain explicit statements, not inferred amenity booleans.
+                statements = [" ".join(text.split()) for text in page.text if text.strip()]
+                for key, pattern in (("amenityStatements", r"\b(?:wi-fi|wifi|parking|fitness centre|fitness center|swimming pool|breakfast)\b"),
+                                     ("policyStatements", r"\b(?:check[ -]?in|check[ -]?out|pet policy|pets allowed|no pets|smoking|cancellation)\b")):
+                    values = list(dict.fromkeys(text for text in statements if len(text) <= 500 and re.search(pattern, text, re.I)))[:20]
+                    if values:
+                        result["fields"].setdefault(key, {"value": values, "source_url": final,
+                            "extraction": "visible_text", "collected_at": result["collected_at"]})
             result["pages"].append({"url": final, "sha256": hashlib.sha256(body).hexdigest(),
                 "description": page.description, "excerpt": " ".join(" ".join(page.text).split())[:3000]})
-            if page.description and "description" not in result["fields"]:
+            if len(matches) == 1 and page.description and "description" not in result["fields"]:
                 result["fields"]["description"] = {"value": page.description, "source_url": final,
                     "extraction": "meta_description", "collected_at": result["collected_at"]}
             for href, label in page.links[:200]:
                 try:
                     link = safe_url(urljoin(final, href))
                     parts = urlsplit(link)
-                    if parts.hostname.removeprefix("www.") == origin_host and not parts.query and RELEVANT.search(parts.path + " " + label):
+                    if parts.hostname.removeprefix("www.") == urlsplit(final).hostname.removeprefix("www.") and not parts.query and RELEVANT.search(parts.path + " " + label):
                         if not re.search(r"\.(pdf|jpg|png|zip)$", parts.path, re.I) and link not in visited and link not in urls:
                             urls.append(link)
                 except (ValueError, UnicodeError):
@@ -313,11 +456,15 @@ def crawl_website(record, fetch=fetch_page, sleep=time.sleep, render=None):
         if matched:
             result["status"] = "collected"
         else:
-            result.update(status="needs_review", reason="No structured hotel entry matched the known name and contact/location details on the checked pages; existing data left unchanged")
+            result.update(status="needs_review", reason="No property page matched the known name and contact/location details; existing data left unchanged")
     except WebsiteBlocked as exc:
-        result.update(status="blocked", reason=str(exc)[:300])
+        result.update(status="collected" if matched else "blocked", reason=str(exc)[:300])
+        if matched:
+            result["partial_collection"] = True
     except (OSError, http.client.HTTPException, ValueError, UnicodeError, RecursionError) as exc:
-        result.update(status="retry", reason=type(exc).__name__ + ": website collection failed")
+        result.update(status="collected" if matched else "retry", reason=type(exc).__name__ + ": website collection failed")
+        if matched:
+            result["partial_collection"] = True
     return result
 
 

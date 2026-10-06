@@ -12,6 +12,8 @@ datas = [
 ]
 
 hiddenimports = [
+    'brotli',
+    '_brotli',
     'uvicorn',
     'uvicorn.logging',
     'uvicorn.loops',

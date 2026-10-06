@@ -467,7 +467,10 @@
         <h3 class="text-sm font-semibold text-white">Recent outcomes (up to 10) · no action required</h3>
         <p class="text-xs text-slate-400">Verified evidence is processed automatically. Unverified sites are safely skipped, not held for approval. Temporary errors retry with backoff; restricted sites are not bypassed.</p>
         <div class="flex flex-wrap gap-4 text-xs">
-          <span class="text-emerald-300" x-text="'Verified jobs: ' + (websiteReview.metrics.corroborated_jobs || 0)"></span>
+          <span class="text-sky-300" x-text="'Websites reached: ' + (websiteReview.metrics.websites_reached || 0)"></span>
+          <span class="text-emerald-300" x-text="'Verified profiles collected: ' + (websiteReview.metrics.verified_profiles || 0)"></span>
+          <span class="text-emerald-300" x-text="'Blank fields filled: ' + (websiteReview.metrics.filled_fields || 0)"></span>
+          <span class="text-slate-400" x-text="'Restricted URLs waiting 24h: ' + (websiteReview.metrics.cached_restrictions || 0)"></span>
           <span class="text-slate-300" x-text="'Left unverified: ' + (websiteReview.metrics.review?.automatically_deferred || 0)"></span>
           <span class="text-amber-300" x-text="'Blocked / retries exhausted: ' + ((websiteReview.metrics.collection?.blocked || 0) + (websiteReview.metrics.collection?.failed || 0))"></span>
         </div>

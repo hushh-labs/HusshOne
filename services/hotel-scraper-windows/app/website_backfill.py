@@ -32,8 +32,17 @@ def fill_candidates(row, result):
     def evidence(field):
         fields = result.get("fields")
         item = fields.get(field) if isinstance(fields, dict) else None
-        if not isinstance(item, dict) or item.get("extraction") != "json_ld":
+        if not isinstance(item, dict) or item.get("extraction") not in ("json_ld", "visible_contact"):
             return None
+        # New visible/page-specific evidence must pass identity checks again
+        # against the locked, current row, not merely its queue snapshot.
+        proof = item.get("identity_node")
+        if item.get("extraction") == "visible_contact" and not isinstance(proof, dict):
+            return None
+        if proof is not None:
+            current = {field: getattr(row, field, None) for field in ("name", "phone", "formatted_address", "lat", "lng")}
+            if not isinstance(proof, dict) or not matched_business(proof, current):
+                return None
         try:
             if urlsplit(safe_url(item.get("source_url"))).hostname.removeprefix("www.") != host:
                 return None

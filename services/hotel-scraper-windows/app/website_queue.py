@@ -30,9 +30,23 @@ class WebsiteQueue:
                 updated_at REAL NOT NULL)""")
             if "filled_count" not in {row["name"] for row in c.execute("PRAGMA table_info(website_jobs)")}:
                 c.execute("ALTER TABLE website_jobs ADD COLUMN filled_count INTEGER NOT NULL DEFAULT 0")
+            if "priority" not in {row["name"] for row in c.execute("PRAGMA table_info(website_jobs)")}:
+                c.execute("ALTER TABLE website_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                c.execute("""UPDATE website_jobs SET priority=
+                    CASE WHEN json_extract(payload,'$.record._discover_website') THEN 0 ELSE 10 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.phone'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.formatted_address'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.zip'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.state'),''))='' THEN 1 ELSE 0 END""")
             c.execute("CREATE INDEX IF NOT EXISTS website_jobs_backfill ON website_jobs(json_extract(payload,'$.backfill_id'),state,filled_count)")
             c.execute("CREATE INDEX IF NOT EXISTS website_jobs_due ON website_jobs(state,next_attempt,updated_at,id)")
             c.execute("CREATE INDEX IF NOT EXISTS website_jobs_metrics ON website_jobs(json_extract(payload,'$.database_target.fingerprint'),json_extract(result,'$.status'),filled_count)")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_access_cache (
+                target TEXT NOT NULL, url TEXT NOT NULL, expires_at REAL NOT NULL,
+                reason TEXT NOT NULL, PRIMARY KEY(target,url))""")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_queue_upgrades (
+                target TEXT NOT NULL, version TEXT NOT NULL, updated_at REAL NOT NULL,
+                PRIMARY KEY(target,version))""")
             c.execute("""CREATE TABLE IF NOT EXISTS website_reviews (
                 fingerprint TEXT PRIMARY KEY, job_id TEXT NOT NULL, target TEXT NOT NULL,
                 decision TEXT NOT NULL DEFAULT 'pending', updated_at REAL NOT NULL)""")
@@ -42,6 +56,24 @@ class WebsiteQueue:
                 target = database_target()["fingerprint"]
                 c.execute("UPDATE website_jobs SET state='skipped' WHERE id IN (SELECT job_id FROM website_reviews WHERE target=? AND decision='pending')", (target,))
                 c.execute("UPDATE website_reviews SET decision='automatically_deferred' WHERE target=? AND decision='pending'", (target,))
+            target = database_target()["fingerprint"]
+            version = "coverage-v2"
+            if not c.execute("SELECT 1 FROM website_queue_upgrades WHERE target=? AND version=?", (target, version)).fetchone():
+                # One bounded migration retries only previously terminal,
+                # recoverable outcomes. Never reset durable fetched evidence,
+                # successful fills, or explicit human rejection/acceptance.
+                c.execute("""UPDATE website_jobs SET state='pending',attempts=0,next_attempt=0,updated_at=?
+                    WHERE state IN ('applied','skipped') AND filled_count=0
+                    AND json_extract(payload,'$.database_target.fingerprint')=?
+                    AND (json_extract(result,'$.reason')='Unsupported compressed website response'
+                      OR json_extract(result,'$.reason') LIKE 'No structured hotel entry matched%'
+                      OR json_extract(result,'$.reason')='Cross-domain redirect/link needs review'
+                      OR (json_extract(result,'$.status')='blocked'
+                          AND json_extract(result,'$.identity')='corroborated_public_data'))
+                    AND NOT EXISTS (SELECT 1 FROM website_reviews r WHERE r.job_id=website_jobs.id
+                        AND r.decision IN ('rejected','accepted_evidence'))""", (time.time(), target))
+                c.execute("INSERT INTO website_queue_upgrades(target,version,updated_at) VALUES(?,?,?)",
+                          (target, version, time.time()))
 
     def hold_for_review(self, job):
         require_matching_target(job["payload"])
@@ -102,9 +134,16 @@ class WebsiteQueue:
                               (database_target()["fingerprint"],)).fetchone()[0]
             decisions = dict(c.execute("SELECT decision,count(*) FROM website_reviews WHERE target=? GROUP BY decision",
                                       (database_target()["fingerprint"],)).fetchall())
+            reached = c.execute("SELECT count(DISTINCT COALESCE(json_extract(result,'$.requested_url'),json_extract(payload,'$.record.website'))) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=? AND json_array_length(json_extract(result,'$.pages'))>0 AND json_extract(result,'$.scraped_via')='business_website'",
+                                (database_target()["fingerprint"],)).fetchone()[0]
+            profiles = c.execute("SELECT count(DISTINCT json_extract(payload,'$.record.dedup_key')) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=? AND json_extract(result,'$.status')='collected'",
+                                 (database_target()["fingerprint"],)).fetchone()[0]
+            cached = c.execute("SELECT count(*) FROM website_access_cache WHERE target=? AND expires_at>?",
+                               (database_target()["fingerprint"], time.time())).fetchone()[0]
         collection = {r["status"] or "not_collected": r["n"] for r in rows}
         return {"collection": collection, "corroborated_jobs": collection.get("collected", 0),
-                "filled_fields": fills, "review": decisions}
+                "filled_fields": fills, "review": decisions, "websites_reached": reached,
+                "cached_restrictions": cached, "verified_profiles": profiles}
 
     @contextmanager
     def connect(self):
@@ -135,9 +174,13 @@ class WebsiteQueue:
         if fill_missing or backfill_id:
             identity.extend([bool(fill_missing), backfill_id])
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        priority = (0 if record.get("_discover_website") else 10) + sum(
+            not str(record.get(field) or "").strip() for field in ("phone", "formatted_address", "zip", "state"))
         with self.connect() as c:
-            c.execute("INSERT OR IGNORE INTO website_jobs(id,payload,updated_at) VALUES(?,?,?)",
-                      (key, json.dumps(payload), time.time()))
+            cached = c.execute("SELECT expires_at FROM website_access_cache WHERE target=? AND url=? AND expires_at>?",
+                               (target["fingerprint"], record.get("website") or "", time.time())).fetchone()
+            c.execute("INSERT OR IGNORE INTO website_jobs(id,payload,updated_at,next_attempt,priority) VALUES(?,?,?,?,?)",
+                      (key, json.dumps(payload), time.time(), cached[0] if cached else 0, priority))
 
     def next_job(self, prefer_backfill=False, exclude_ids=()):
         excluded = tuple(exclude_ids)[:16]
@@ -149,7 +192,9 @@ class WebsiteQueue:
                     WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')
                 """ + exclude_clause + """ ORDER BY CASE WHEN state='fetched' THEN 0 ELSE 1 END,
                     CASE WHEN (json_extract(payload,'$.backfill_id') IS NOT NULL)=? THEN 0 ELSE 1 END,
-                    updated_at,id LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, *excluded, prefer_backfill)).fetchone()
+                    CASE WHEN updated_at<? THEN 0 ELSE 1 END,
+                    priority DESC,
+                    updated_at,rowid LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, *excluded, prefer_backfill, time.time()-172800)).fetchone()
         if row is None:
             return None
         job = dict(row)
@@ -165,6 +210,22 @@ class WebsiteQueue:
         if result["status"] == "retry" and not retry:
             result = {**result, "status": "failed"}
         with self.connect() as c:
+            # Cache only this exact URL, not an entire hotel-chain domain.
+            # Property-specific restrictions must not suppress other hotels.
+            url = job["payload"]["record"].get("website")
+            reason = result.get("reason", "")
+            if url and result["status"] == "blocked" and ("robots.txt" in reason or "HTTP 403" in reason or "HTTP 401" in reason):
+                target = job["payload"]["database_target"]["fingerprint"]
+                expiry = time.time() + 86400
+                c.execute("INSERT OR REPLACE INTO website_access_cache(target,url,expires_at,reason) VALUES(?,?,?,?)",
+                          (target, url, expiry, reason[:300]))
+                c.execute("""UPDATE website_jobs SET next_attempt=max(next_attempt,?)
+                    WHERE state IN ('pending','retry') AND id<>?
+                    AND json_extract(payload,'$.database_target.fingerprint')=?
+                    AND json_extract(payload,'$.record.website')=?""", (expiry, job["id"], target, url))
+            elif url and result["status"] == "collected":
+                c.execute("DELETE FROM website_access_cache WHERE target=? AND url=?",
+                          (job["payload"]["database_target"]["fingerprint"], url))
             c.execute("UPDATE website_jobs SET result=?,state=?,attempts=?,next_attempt=?,updated_at=? WHERE id=?",
                       (json.dumps(result), "retry" if retry else "fetched", attempts,
                        time.time() + min(86400, 300 * 2 ** min(attempts - 1, 8)) if retry else 0,

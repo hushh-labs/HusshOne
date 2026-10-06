@@ -11,7 +11,12 @@ def maps_identity_url(record):
         return "https://www.google.com/maps?cid=" + cid
     url = record.get("google_maps_uri")
     parts = urlsplit(safe_url(url))
-    if parts.hostname not in ("google.com", "www.google.com", "maps.google.com") or not parts.path.startswith("/maps"):
+    if parts.hostname not in ("google.com", "www.google.com", "maps.google.com"):
+        raise WebsiteBlocked("No trusted Maps identity URL")
+    legacy_cid = parse_qs(parts.query).get("cid", [""])[0]
+    if parts.path in ("/", "/maps") and legacy_cid.isdigit() and 0 < int(legacy_cid) < 2 ** 64:
+        return "https://www.google.com/maps?cid=" + legacy_cid
+    if not parts.path.startswith("/maps"):
         raise WebsiteBlocked("No trusted Maps identity URL")
     if not (parse_qs(parts.query).get("cid") or parse_qs(parts.query).get("query_place_id") or "/place/" in parts.path):
         raise WebsiteBlocked("A Maps search is not a property identity")
