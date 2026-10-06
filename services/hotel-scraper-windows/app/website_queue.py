@@ -1,0 +1,304 @@
+"""Target-bound durable website jobs. Fetched evidence survives DB outages."""
+import hashlib
+import json
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+from contextlib import contextmanager
+
+from app.config import database_target, runtime_state_dir, settings
+from app.outbox import require_matching_target
+
+
+class WebsiteQueue:
+    def __init__(self, path=None):
+        self.path = Path(path) if path else Path(runtime_state_dir()) / "website_jobs.sqlite3"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as c:
+            # Worker startup and dashboard polling can open this file together.
+            # Serialize additive local schema upgrades before inspecting columns.
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_jobs (
+                id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+                result TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_backfill_runs (
+                target TEXT PRIMARY KEY, run_id TEXT NOT NULL, state TEXT NOT NULL,
+                cursor INTEGER NOT NULL DEFAULT 0, ceiling INTEGER NOT NULL,
+                scanned INTEGER NOT NULL DEFAULT 0, missing_website INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL)""")
+            if "filled_count" not in {row["name"] for row in c.execute("PRAGMA table_info(website_jobs)")}:
+                c.execute("ALTER TABLE website_jobs ADD COLUMN filled_count INTEGER NOT NULL DEFAULT 0")
+            if "priority" not in {row["name"] for row in c.execute("PRAGMA table_info(website_jobs)")}:
+                c.execute("ALTER TABLE website_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                c.execute("""UPDATE website_jobs SET priority=
+                    CASE WHEN json_extract(payload,'$.record._discover_website') THEN 0 ELSE 10 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.phone'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.formatted_address'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.zip'),''))='' THEN 1 ELSE 0 END +
+                    CASE WHEN trim(COALESCE(json_extract(payload,'$.record.state'),''))='' THEN 1 ELSE 0 END""")
+            c.execute("CREATE INDEX IF NOT EXISTS website_jobs_backfill ON website_jobs(json_extract(payload,'$.backfill_id'),state,filled_count)")
+            c.execute("CREATE INDEX IF NOT EXISTS website_jobs_due ON website_jobs(state,next_attempt,updated_at,id)")
+            c.execute("CREATE INDEX IF NOT EXISTS website_jobs_metrics ON website_jobs(json_extract(payload,'$.database_target.fingerprint'),json_extract(result,'$.status'),filled_count)")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_access_cache (
+                target TEXT NOT NULL, url TEXT NOT NULL, expires_at REAL NOT NULL,
+                reason TEXT NOT NULL, PRIMARY KEY(target,url))""")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_queue_upgrades (
+                target TEXT NOT NULL, version TEXT NOT NULL, updated_at REAL NOT NULL,
+                PRIMARY KEY(target,version))""")
+            c.execute("""CREATE TABLE IF NOT EXISTS website_reviews (
+                fingerprint TEXT PRIMARY KEY, job_id TEXT NOT NULL, target TEXT NOT NULL,
+                decision TEXT NOT NULL DEFAULT 'pending', updated_at REAL NOT NULL)""")
+            c.execute("CREATE INDEX IF NOT EXISTS website_reviews_pending ON website_reviews(target,decision,updated_at)")
+            if settings.WEBSITE_AUTONOMOUS:
+                # Legacy human-review jobs must not require an operator on upgrade.
+                target = database_target()["fingerprint"]
+                c.execute("UPDATE website_jobs SET state='skipped' WHERE id IN (SELECT job_id FROM website_reviews WHERE target=? AND decision='pending')", (target,))
+                c.execute("UPDATE website_reviews SET decision='automatically_deferred' WHERE target=? AND decision='pending'", (target,))
+            target = database_target()["fingerprint"]
+            version = "coverage-v2"
+            if not c.execute("SELECT 1 FROM website_queue_upgrades WHERE target=? AND version=?", (target, version)).fetchone():
+                # One bounded migration retries only previously terminal,
+                # recoverable outcomes. Never reset durable fetched evidence,
+                # successful fills, or explicit human rejection/acceptance.
+                c.execute("""UPDATE website_jobs SET state='pending',attempts=0,next_attempt=0,updated_at=?
+                    WHERE state IN ('applied','skipped') AND filled_count=0
+                    AND json_extract(payload,'$.database_target.fingerprint')=?
+                    AND (json_extract(result,'$.reason')='Unsupported compressed website response'
+                      OR json_extract(result,'$.reason') LIKE 'No structured hotel entry matched%'
+                      OR json_extract(result,'$.reason')='Cross-domain redirect/link needs review'
+                      OR (json_extract(result,'$.status')='blocked'
+                          AND json_extract(result,'$.identity')='corroborated_public_data'))
+                    AND NOT EXISTS (SELECT 1 FROM website_reviews r WHERE r.job_id=website_jobs.id
+                        AND r.decision IN ('rejected','accepted_evidence'))""", (time.time(), target))
+                c.execute("INSERT INTO website_queue_upgrades(target,version,updated_at) VALUES(?,?,?)",
+                          (target, version, time.time()))
+
+    def hold_for_review(self, job):
+        require_matching_target(job["payload"])
+        result = job["result"]
+        # Ignore observation timestamps: unchanged evidence retains its decision.
+        identity = [job["payload"]["database_target"], job["payload"]["record"]["dedup_key"],
+                    result.get("requested_url"), result.get("reason"),
+                    [(p.get("url"), p.get("sha256")) for p in result.get("pages", [])],
+                    {key: {part: value.get(part) for part in ("value", "source_url", "extraction")}
+                     for key, value in result.get("fields", {}).items() if isinstance(value, dict)}]
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with self.connect() as c:
+            c.execute("INSERT OR IGNORE INTO website_reviews(fingerprint,job_id,target,decision,updated_at) VALUES(?,?,?,?,?)",
+                      (fingerprint, job["id"], database_target()["fingerprint"],
+                       "automatically_deferred" if settings.WEBSITE_AUTONOMOUS else "pending", time.time()))
+            decision = c.execute("SELECT decision FROM website_reviews WHERE fingerprint=?", (fingerprint,)).fetchone()[0]
+            c.execute("UPDATE website_jobs SET state=?,updated_at=? WHERE id=?",
+                      ("review" if decision == "pending" else "skipped", time.time(), job["id"]))
+
+    def reviews(self, include_deferred=False):
+        with self.connect() as c:
+            rows = c.execute("""SELECT r.*,j.payload,j.result FROM website_reviews r JOIN website_jobs j ON j.id=r.job_id
+                WHERE r.target=? AND (r.decision='pending' OR (? AND r.decision='automatically_deferred'))
+                ORDER BY r.updated_at DESC LIMIT 50""",
+                (database_target()["fingerprint"], include_deferred)).fetchall()
+        items = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            require_matching_target(payload)
+            items.append({"id": row["fingerprint"], "record": payload["record"], "result": json.loads(row["result"]),
+                          "decision": row["decision"], "updated_at": row["updated_at"]})
+        return items
+
+    def decide_review(self, fingerprint, decision):
+        # Acceptance acknowledges evidence only. It cannot override identity or
+        # blank-field guards and does not mutate production.
+        if decision not in ("accepted_evidence", "rejected"):
+            raise ValueError("Invalid evidence decision")
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT * FROM website_reviews WHERE fingerprint=? AND target=?",
+                            (fingerprint, database_target()["fingerprint"])).fetchone()
+            if not row:
+                raise KeyError(fingerprint)
+            if row["decision"] != "pending":
+                return {"decision": row["decision"]}
+            c.execute("UPDATE website_reviews SET decision=?,updated_at=? WHERE fingerprint=?",
+                      (decision, time.time(), fingerprint))
+            c.execute("UPDATE website_jobs SET state='skipped',updated_at=? WHERE id=?", (time.time(), row["job_id"]))
+        return {"decision": decision, "production_changed": False}
+
+    def metrics(self):
+        with self.connect() as c:
+            rows = c.execute("""SELECT json_extract(result,'$.status') status,count(*) n FROM website_jobs
+                WHERE json_extract(payload,'$.database_target.fingerprint')=? GROUP BY status""",
+                (database_target()["fingerprint"],)).fetchall()
+            fills = c.execute("SELECT COALESCE(sum(filled_count),0) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=?",
+                              (database_target()["fingerprint"],)).fetchone()[0]
+            decisions = dict(c.execute("SELECT decision,count(*) FROM website_reviews WHERE target=? GROUP BY decision",
+                                      (database_target()["fingerprint"],)).fetchall())
+            reached = c.execute("SELECT count(DISTINCT COALESCE(json_extract(result,'$.requested_url'),json_extract(payload,'$.record.website'))) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=? AND json_array_length(json_extract(result,'$.pages'))>0 AND json_extract(result,'$.scraped_via')='business_website'",
+                                (database_target()["fingerprint"],)).fetchone()[0]
+            profiles = c.execute("SELECT count(DISTINCT json_extract(payload,'$.record.dedup_key')) FROM website_jobs WHERE json_extract(payload,'$.database_target.fingerprint')=? AND json_extract(result,'$.status')='collected'",
+                                 (database_target()["fingerprint"],)).fetchone()[0]
+            cached = c.execute("SELECT count(*) FROM website_access_cache WHERE target=? AND expires_at>?",
+                               (database_target()["fingerprint"], time.time())).fetchone()[0]
+        collection = {r["status"] or "not_collected": r["n"] for r in rows}
+        return {"collection": collection, "corroborated_jobs": collection.get("collected", 0),
+                "filled_fields": fills, "review": decisions, "websites_reached": reached,
+                "cached_restrictions": cached, "verified_profiles": profiles}
+
+    @contextmanager
+    def connect(self):
+        c = sqlite3.connect(self.path, timeout=10)
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=FULL")
+        try:
+            yield c
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+        finally:
+            c.close()
+
+    def enqueue(self, record, run_id, target, *, fill_missing=False, backfill_id=None):
+        require_matching_target({"database_target": target})
+        if not record.get("website") and not record.get("_discover_website"):
+            return
+        # A new Maps observation can refresh a completed website; replay of
+        # the same observation cannot duplicate or reset a job.
+        payload = {"record": record, "run_id": run_id, "database_target": target,
+                   "fill_missing": bool(fill_missing), "backfill_id": backfill_id}
+        identity = [target, record["dedup_key"], record.get("website"), record.get("raw", {}).get("scraped_at")]
+        if record.get("_discover_website"):
+            identity.append("maps_website_discovery")
+        if fill_missing or backfill_id:
+            identity.extend([bool(fill_missing), backfill_id])
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        priority = (0 if record.get("_discover_website") else 10) + sum(
+            not str(record.get(field) or "").strip() for field in ("phone", "formatted_address", "zip", "state"))
+        with self.connect() as c:
+            cached = c.execute("SELECT expires_at FROM website_access_cache WHERE target=? AND url=? AND expires_at>?",
+                               (target["fingerprint"], record.get("website") or "", time.time())).fetchone()
+            c.execute("INSERT OR IGNORE INTO website_jobs(id,payload,updated_at,next_attempt,priority) VALUES(?,?,?,?,?)",
+                      (key, json.dumps(payload), time.time(), cached[0] if cached else 0, priority))
+
+    def next_job(self, prefer_backfill=False, exclude_ids=(), fetched_only=False, network_only=False):
+        excluded = tuple(exclude_ids)[:256]
+        exclude_clause = " AND id NOT IN (" + ",".join("?" for _ in excluded) + ")" if excluded else ""
+        state_clause = " AND state='fetched'" if fetched_only else " AND state<>'fetched'" if network_only else ""
+        with self.connect() as c:
+            row = c.execute("""SELECT * FROM website_jobs WHERE state IN ('pending','retry','fetched') AND next_attempt<=?
+                AND (? OR json_extract(payload,'$.backfill_id') IS NULL)
+                AND NOT EXISTS (SELECT 1 FROM website_backfill_runs b
+                    WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')
+                """ + exclude_clause + state_clause + """ ORDER BY CASE WHEN state='fetched' THEN 0 ELSE 1 END,
+                    CASE WHEN (json_extract(payload,'$.backfill_id') IS NOT NULL)=? THEN 0 ELSE 1 END,
+                    CASE WHEN updated_at<? THEN 0 ELSE 1 END,
+                    priority DESC,
+                    updated_at,rowid LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, *excluded, prefer_backfill, time.time()-172800)).fetchone()
+        if row is None:
+            return None
+        job = dict(row)
+        job["payload"] = json.loads(job["payload"])
+        job["result"] = json.loads(job["result"]) if job["result"] else None
+        require_matching_target(job["payload"])
+        return job
+
+    def save_result(self, job, result):
+        require_matching_target(job["payload"])
+        attempts = job["attempts"] + 1
+        retry = result["status"] == "retry" and attempts < max(1, settings.WEBSITE_MAX_ATTEMPTS)
+        if result["status"] == "retry" and not retry:
+            result = {**result, "status": "failed"}
+        with self.connect() as c:
+            # Cache only this exact URL, not an entire hotel-chain domain.
+            # Property-specific restrictions must not suppress other hotels.
+            url = job["payload"]["record"].get("website")
+            reason = result.get("reason", "")
+            if url and result["status"] == "blocked" and ("robots.txt" in reason or "HTTP 403" in reason or "HTTP 401" in reason):
+                target = job["payload"]["database_target"]["fingerprint"]
+                expiry = time.time() + 86400
+                c.execute("INSERT OR REPLACE INTO website_access_cache(target,url,expires_at,reason) VALUES(?,?,?,?)",
+                          (target, url, expiry, reason[:300]))
+                c.execute("""UPDATE website_jobs SET next_attempt=max(next_attempt,?)
+                    WHERE state IN ('pending','retry') AND id<>?
+                    AND json_extract(payload,'$.database_target.fingerprint')=?
+                    AND json_extract(payload,'$.record.website')=?""", (expiry, job["id"], target, url))
+            elif url and result["status"] == "collected":
+                c.execute("DELETE FROM website_access_cache WHERE target=? AND url=?",
+                          (job["payload"]["database_target"]["fingerprint"], url))
+            c.execute("UPDATE website_jobs SET result=?,state=?,attempts=?,next_attempt=?,updated_at=? WHERE id=?",
+                      (json.dumps(result), "retry" if retry else "fetched", attempts,
+                       time.time() + min(86400, 300 * 2 ** min(attempts - 1, 8)) if retry else 0,
+                       time.time(), job["id"]))
+        return not retry
+
+    def defer(self, job, seconds=60):
+        require_matching_target(job["payload"])
+        with self.connect() as c:
+            c.execute("UPDATE website_jobs SET next_attempt=?,updated_at=? WHERE id=?",
+                      (time.time() + seconds, time.time(), job["id"]))
+
+    def finish(self, job_id, state="applied", filled_fields=None):
+        if state not in ("applied", "skipped"):
+            raise ValueError("Invalid terminal website state")
+        with self.connect() as c:
+            c.execute("UPDATE website_jobs SET state=?,updated_at=?,filled_count=?,result=json_set(COALESCE(result,'{}'),'$.applied_fields',json(?)) WHERE id=?",
+                      (state, time.time(), len(filled_fields or []), json.dumps(filled_fields or []), job_id))
+
+    def counts(self):
+        with self.connect() as c:
+            return dict(c.execute("SELECT state,count(*) FROM website_jobs GROUP BY state").fetchall())
+
+    def scheduler_status(self):
+        """Eligible work only: a user-paused backfill must not stop Maps."""
+        now = time.time()
+        with self.connect() as c:
+            row = c.execute("""SELECT count(*) queued,
+                COALESCE(sum(CASE WHEN next_attempt<=? THEN 1 ELSE 0 END),0) ready,
+                COALESCE(sum(CASE WHEN next_attempt>? THEN 1 ELSE 0 END),0) waiting_retry,
+                min(CASE WHEN next_attempt>? THEN next_attempt END) next_retry_at
+                FROM website_jobs WHERE state IN ('pending','retry','fetched')
+                AND (? OR json_extract(payload,'$.backfill_id') IS NULL)
+                AND NOT EXISTS (SELECT 1 FROM website_backfill_runs b
+                    WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')""",
+                (now, now, now, settings.WEBSITE_FILL_MISSING_FIELDS)).fetchone()
+        return dict(row)
+
+    def backfill_status(self):
+        with self.connect() as c:
+            row = c.execute("SELECT * FROM website_backfill_runs WHERE target=?", (database_target()["fingerprint"],)).fetchone()
+            if not row:
+                return {"state": "not_started", "jobs": {}}
+            status = dict(row)
+            status["jobs"] = dict(c.execute("SELECT state,count(*) FROM website_jobs WHERE json_extract(payload,'$.backfill_id')=? GROUP BY state", (status["run_id"],)).fetchall())
+            status["filled_fields"] = c.execute("SELECT COALESCE(sum(filled_count),0) FROM website_jobs WHERE json_extract(payload,'$.backfill_id')=?", (status["run_id"],)).fetchone()[0]
+        if status["state"] == "draining" and not any(status["jobs"].get(s) for s in ("pending", "retry", "fetched")):
+            status["state"] = "completed"
+        return status
+
+    def start_backfill(self, ceiling):
+        # Idempotent start/resume; retain the original snapshot and cursor.
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            status = self.backfill_status()
+            if status["state"] in ("running", "draining"):
+                return status
+            if status["state"] in ("paused", "paused_draining"):
+                c.execute("UPDATE website_backfill_runs SET state=?,updated_at=? WHERE target=?",
+                          ("draining" if status["state"] == "paused_draining" else "running", time.time(), database_target()["fingerprint"]))
+            else:
+                c.execute("INSERT OR REPLACE INTO website_backfill_runs(target,run_id,state,ceiling,updated_at) VALUES(?,?,'running',?,?)",
+                          (database_target()["fingerprint"], "website-backfill-" + uuid.uuid4().hex, int(ceiling), time.time()))
+        return self.backfill_status()
+
+    def pause_backfill(self):
+        with self.connect() as c:
+            c.execute("UPDATE website_backfill_runs SET state=CASE state WHEN 'running' THEN 'paused' WHEN 'draining' THEN 'paused_draining' ELSE state END,updated_at=? WHERE target=?",
+                      (time.time(), database_target()["fingerprint"]))
+        return self.backfill_status()
+
+    def checkpoint_backfill(self, run_id, cursor, scanned, missing_website, exhausted=False):
+        with self.connect() as c:
+            c.execute("UPDATE website_backfill_runs SET cursor=?,scanned=scanned+?,missing_website=missing_website+?,state=CASE WHEN ? AND state='running' THEN 'draining' WHEN ? AND state='paused' THEN 'paused_draining' ELSE state END,updated_at=? WHERE target=? AND run_id=?",
+                      (cursor, scanned, missing_website, exhausted, exhausted, time.time(), database_target()["fingerprint"], run_id))
