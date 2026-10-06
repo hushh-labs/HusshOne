@@ -450,8 +450,14 @@
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Incomplete rows scanned</p><p class="text-lg text-white" x-text="backfill.scanned || 0"></p></div>
           <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Found without website</p><p class="text-lg text-white" x-text="backfill.missing_website || 0"></p></div>
-          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Queued / retrying</p><p class="text-lg text-white" x-text="['pending','retry','fetched'].reduce((n,s) => n + (backfill.jobs?.[s] || 0), 0)"></p></div>
+          <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Backfill jobs outstanding</p><p class="text-lg text-white" x-text="['pending','retry','fetched'].reduce((n,s) => n + (backfill.jobs?.[s] || 0), 0)"></p></div>
           <div class="p-3 rounded-lg bg-slate-800/60"><p class="text-xs text-slate-400">Blank fields filled</p><p class="text-lg text-emerald-300" x-text="backfill.filled_fields || 0"></p></div>
+        </div>
+        <div class="p-3 rounded-lg border border-sky-500/20 bg-sky-500/5 space-y-2" role="status">
+          <p class="text-sm text-sky-200" x-text="websiteActivityLabel()"></p>
+          <p class="text-xs text-slate-300" x-text="'All eligible website jobs: ' + (worker.website_enrichment?.scheduler?.queued || 0) + ' · Ready now: ' + (worker.website_enrichment?.scheduler?.ready || 0) + ' · Delayed retries: ' + (worker.website_enrichment?.scheduler?.waiting_retry || 0)"></p>
+          <p x-show="worker.website_enrichment?.maps_throttled" class="text-xs text-amber-300">Fresh Maps discovery is temporarily throttled while website jobs drain. It resumes automatically below the low-water mark. No queued jobs are deleted.</p>
+          <p class="text-xs text-slate-400">Ready jobs take alternating turns between new discoveries and historical backfill. Counts include the in-flight job; paused backfill jobs are excluded from the eligible total.</p>
         </div>
         <p class="text-xs text-slate-400">Existing values, ratings, coordinates and photos are preserved. Pausing waits for the current job to finish. Completed means the pass finished, not that every missing field could be verified.</p>
       </div>
@@ -1594,7 +1600,18 @@ WHERE places_status = 'error';</pre>
         backfillLabel() {
           const state = this.backfill.state || 'not_started';
           if (['running','draining'].includes(state) && !this.worker.is_running) return 'Waiting for worker — start it above';
-          return {not_started: 'Not started', running: 'Scanning and enriching', draining: 'Finishing queued jobs', paused: 'Paused', paused_draining: 'Paused', completed: 'Pass completed'}[state] || state;
+          if (state === 'running') return this.worker.website_enrichment?.activity?.state === 'processing' ? 'Enrichment in progress' : 'Waiting for next enrichment cycle';
+          return {not_started: 'Not started', draining: 'Finishing queued jobs', paused: 'Paused', paused_draining: 'Paused', completed: 'Pass completed'}[state] || state;
+        },
+
+        websiteActivityLabel() {
+          const website = this.worker.website_enrichment || {};
+          if (!this.worker.is_running) return 'Worker stopped — saved jobs will resume when started';
+          if (this.worker.is_paused) return 'Worker paused — no new jobs will start';
+          if (website.activity?.state === 'processing') return 'Processing website: ' + website.activity.hotel;
+          if (website.scheduler?.ready) return website.maps_throttled ? 'Draining website backlog before more Maps discovery' : 'Website jobs ready — waiting for their next processing turn';
+          if (website.scheduler?.waiting_retry) return 'Waiting for scheduled retries — no immediate website work';
+          return 'No eligible website jobs waiting';
         },
 
         async controlBackfill(action) {

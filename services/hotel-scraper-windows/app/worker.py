@@ -181,6 +181,9 @@ class ScraperBackgroundWorker:
         self._inventory_blocked: Optional[Dict[str, Any]] = None
         self._startup_recovery: Optional[Dict[str, Any]] = None
         self._website_queue = None
+        self._website_turn = 0
+        self._website_pressure = False
+        self._website_activity = {"state": "idle", "hotel": None}
         self._logs: deque = deque(maxlen=200)
         self._stats = {
             "started_at": None,
@@ -232,6 +235,8 @@ class ScraperBackgroundWorker:
         return {
             "website_enrichment": {"enabled": settings.WEBSITE_ENRICHMENT_ENABLED,
                                    "jobs": self._website_queue.counts() if self._website_queue else {},
+                                   "scheduler": self._website_queue.scheduler_status() if self._website_queue else {},
+                                   "activity": dict(self._website_activity), "maps_throttled": self._website_pressure,
                                    "backfill": self._website_queue.backfill_status() if self._website_queue else {"state": "not_loaded"}},
             "is_running": self._is_running,
             "is_paused": self._is_paused,
@@ -1609,7 +1614,9 @@ class ScraperBackgroundWorker:
                 db.close()
         if status["state"] != "running":
             return
-        counts = self._website_queue.counts()
+        # Historical admission has its own bounded lane; normal discovery
+        # must not monopolize every slot and permanently starve old rows.
+        counts = status.get("jobs", {})
         active = sum(counts.get(s, 0) for s in ("pending", "retry", "fetched"))
         slots = max(0, min(1000, settings.WEBSITE_BACKFILL_MAX_PENDING) - active)
         if not slots:
@@ -1735,15 +1742,45 @@ class ScraperBackgroundWorker:
         finally:
             db.close()
 
+    def _website_backpressure(self):
+        if not settings.WEBSITE_ENRICHMENT_ENABLED or self._website_queue is None:
+            self._website_pressure = False
+            return False
+        queued = self._website_queue.scheduler_status()["queued"]
+        high = max(1, settings.WEBSITE_BACKLOG_HIGH)
+        low = min(high - 1, max(0, settings.WEBSITE_BACKLOG_LOW))
+        if queued >= high:
+            self._website_pressure = True
+        elif queued <= low:
+            self._website_pressure = False
+        return self._website_pressure
+
+    async def _drain_website_cycle(self):
+        """Bounded, sequential burst; retain the single-writer/process guards."""
+        deadline = time.monotonic() + max(1, min(120, settings.WEBSITE_CYCLE_BUDGET_SEC))
+        progressed = False
+        try:
+            for index in range(max(1, min(32, settings.WEBSITE_JOBS_PER_CYCLE))):
+                if not self._is_running or self._is_paused or (index and time.monotonic() >= deadline):
+                    break
+                if not await self._flush_one_website_job():
+                    break
+                progressed = True
+            return progressed
+        finally:
+            self._website_activity = {"state": "idle", "hotel": None}
+
     async def _flush_one_website_job(self):
         if not settings.WEBSITE_ENRICHMENT_ENABLED:
             return False
         if self._website_queue is None:
             self._website_queue = await asyncio.to_thread(WebsiteQueue)
         await asyncio.to_thread(self._scan_website_backfill)
-        job = await asyncio.to_thread(self._website_queue.next_job)
+        job = await asyncio.to_thread(self._website_queue.next_job, prefer_backfill=bool(self._website_turn % 2))
         if not job:
             return False
+        self._website_turn += 1
+        self._website_activity = {"state": "processing", "hotel": job["payload"]["record"]["name"]}
         self._stats["current_action"] = f"Collecting business website for {job['payload']['record']['name']}"
         if job["state"] != "fetched":
             record = job["payload"]["record"]
@@ -2262,9 +2299,10 @@ class ScraperBackgroundWorker:
                         await asyncio.sleep(5.0)
                         continue
                     try:
-                        # One website job per loop keeps discovery moving;
-                        # idle queues and daily Maps caps still drain websites.
-                        await self._flush_one_website_job()
+                        # Drain a bounded fair burst; backpressure below keeps
+                        # new Maps batches from outrunning durable enrichment.
+                        website_progress = await self._drain_website_cycle()
+                        website_pressure = self._website_backpressure()
                     except DataLossSuspected as exc:
                         await self._pause_for_inventory_loss(exc)
                         continue
@@ -2277,6 +2315,12 @@ class ScraperBackgroundWorker:
                         self._is_paused = True
                         self._log(f"Website queue held for review: {_reason(exc)}", "ERROR")
                         continue
+                    if website_pressure:
+                        self._stats["current_action"] = "Website backlog recovery — fresh Maps discovery temporarily throttled; no queued work discarded."
+                        self._stats["current_zip"] = None
+                        if not website_progress:
+                            await asyncio.sleep(5.0)
+                        continue
                     if self._maps_cap_reached():
                         self._stats["current_action"] = (
                             f"Daily Maps call cap ({settings.DAILY_MAPS_CALL_CAP}) reached; "
@@ -2284,7 +2328,7 @@ class ScraperBackgroundWorker:
                         )
                         self._log(self._stats["current_action"], "WARNING")
                         await chrome_scraper.close_browser_if_idle(0)
-                        await asyncio.sleep(60.0)
+                        await asyncio.sleep(1.0 if website_progress else 60.0)
                         continue
                     try:
                         if not await self._maybe_run_canary():
@@ -2311,7 +2355,7 @@ class ScraperBackgroundWorker:
                         self._stats["current_action"] = "Queue idle — no pending ZIPs. Queue more locations to continue."
                         self._stats["current_zip"] = None
                         await chrome_scraper.close_browser_if_idle(120)
-                        await asyncio.sleep(10.0)
+                        await asyncio.sleep(1.0 if website_progress else 10.0)
                         continue
 
                     zip_code, city, state, lat, lng = claimed

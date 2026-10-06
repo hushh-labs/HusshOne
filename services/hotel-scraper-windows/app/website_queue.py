@@ -139,13 +139,15 @@ class WebsiteQueue:
             c.execute("INSERT OR IGNORE INTO website_jobs(id,payload,updated_at) VALUES(?,?,?)",
                       (key, json.dumps(payload), time.time()))
 
-    def next_job(self):
+    def next_job(self, prefer_backfill=False):
         with self.connect() as c:
             row = c.execute("""SELECT * FROM website_jobs WHERE state IN ('pending','retry','fetched') AND next_attempt<=?
                 AND (? OR json_extract(payload,'$.backfill_id') IS NULL)
                 AND NOT EXISTS (SELECT 1 FROM website_backfill_runs b
                     WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')
-                ORDER BY updated_at,id LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS)).fetchone()
+                ORDER BY CASE WHEN state='fetched' THEN 0 ELSE 1 END,
+                    CASE WHEN (json_extract(payload,'$.backfill_id') IS NOT NULL)=? THEN 0 ELSE 1 END,
+                    updated_at,id LIMIT 1""", (time.time(), settings.WEBSITE_FILL_MISSING_FIELDS, prefer_backfill)).fetchone()
         if row is None:
             return None
         job = dict(row)
@@ -183,6 +185,21 @@ class WebsiteQueue:
     def counts(self):
         with self.connect() as c:
             return dict(c.execute("SELECT state,count(*) FROM website_jobs GROUP BY state").fetchall())
+
+    def scheduler_status(self):
+        """Eligible work only: a user-paused backfill must not stop Maps."""
+        now = time.time()
+        with self.connect() as c:
+            row = c.execute("""SELECT count(*) queued,
+                COALESCE(sum(CASE WHEN next_attempt<=? THEN 1 ELSE 0 END),0) ready,
+                COALESCE(sum(CASE WHEN next_attempt>? THEN 1 ELSE 0 END),0) waiting_retry,
+                min(CASE WHEN next_attempt>? THEN next_attempt END) next_retry_at
+                FROM website_jobs WHERE state IN ('pending','retry','fetched')
+                AND (? OR json_extract(payload,'$.backfill_id') IS NULL)
+                AND NOT EXISTS (SELECT 1 FROM website_backfill_runs b
+                    WHERE b.run_id=json_extract(website_jobs.payload,'$.backfill_id') AND b.state LIKE 'paused%')""",
+                (now, now, now, settings.WEBSITE_FILL_MISSING_FIELDS)).fetchone()
+        return dict(row)
 
     def backfill_status(self):
         with self.connect() as c:

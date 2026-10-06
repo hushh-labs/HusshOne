@@ -260,6 +260,24 @@ fills while retaining normal evidence collection.
 
 ### Website hardening and review
 
+Website scheduling uses sequential bursts (default up to 8 jobs / 45 seconds,
+checked between jobs). Each individual collection retains its hard supervisor
+deadline; an in-flight job is not interrupted at the soft cycle budget. Fetched
+evidence is replayed first, then ready new-discovery and historical jobs take
+alternating turns with fallback to the available lane. Paused and disabled
+historical jobs are ineligible. The historical admission cap is per backfill
+run, not shared with the normal Maps backlog.
+
+`WEBSITE_BACKLOG_HIGH=200` throttles new ZIP discovery when eligible outstanding
+website jobs reach the high-water mark. It resumes automatically at
+`WEBSITE_BACKLOG_LOW=100` (hysteresis); durable Maps batches still replay first.
+No pending jobs are dropped. Existing backlog and one already collected Maps
+batch may exceed the threshold: it is an admission throttle, not a destructive
+hard queue limit. Idle and Maps-capped loops continue draining ready websites.
+Scheduled retries retain their delay. The dashboard separately reports total
+eligible work, delayed retries, active property, throttling and backfill-only
+counts, rather than implying that queued jobs are currently being scraped.
+
 Website collection uses HTTP first, then an optional restricted Chrome fallback
 (`WEBSITE_BROWSER_FALLBACK=true`). Browser HTTP requests are fulfilled through
 the same DNS-pinned public-site client and robots checks, not unrestricted

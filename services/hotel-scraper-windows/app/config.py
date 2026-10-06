@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     WEBSITE_FILL_MISSING_FIELDS: bool = True
     WEBSITE_BACKFILL_BATCH_SIZE: int = 200
     WEBSITE_BACKFILL_MAX_PENDING: int = 100
+    WEBSITE_JOBS_PER_CYCLE: int = 8
+    WEBSITE_CYCLE_BUDGET_SEC: int = 45
+    WEBSITE_BACKLOG_HIGH: int = 200
+    WEBSITE_BACKLOG_LOW: int = 100
 
     model_config = SettingsConfigDict(
         env_file=(".env", os.path.join(user_data_dir(), ".env")),

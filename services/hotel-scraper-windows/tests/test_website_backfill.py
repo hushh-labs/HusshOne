@@ -56,6 +56,19 @@ def test_missing_website_queues_identity_discovery(setup):
         assert db.get(Hotel, row.id).website is None
 
 
+def test_new_discovery_backlog_does_not_consume_historical_slots(setup):
+    worker, sessions = setup
+    queue = worker._website_queue
+    for index in range(5):
+        queue.enqueue({"dedup_key": str(index), "name": "New hotel", "website": "https://hotel.example/", "raw": {}},
+                      "new-run", database_target())
+    row = seed(sessions)
+    queue.start_backfill(row.id)
+    worker._scan_website_backfill()
+    assert queue.backfill_status()["jobs"] == {"pending": 1}
+    assert queue.backfill_status()["cursor"] == row.id
+
+
 def test_discovered_website_requires_current_identity_and_preserves_replay(setup):
     worker, sessions = setup
     row = seed(sessions, website=None, phone="2065551234")
