@@ -181,6 +181,7 @@ class DirectoryFleet:
         self.tasks, self.processes, self.states = {}, {}, {}
         self.logs = {vertical: deque(maxlen=30) for vertical in SERVICES}
         self.desired = set()
+        self.paused = set()
         self.updating = False
         self.control_locks = {vertical: asyncio.Lock() for vertical in SERVICES}
         self._wake_stop = None
@@ -213,10 +214,13 @@ class DirectoryFleet:
             return
         def read():
             with self._state_db() as connection:
-                return [row[0] for row in connection.execute("SELECT vertical FROM desired_workers WHERE enabled=1")]
-        for vertical in await asyncio.to_thread(read):
+                return list(connection.execute("SELECT vertical,enabled FROM desired_workers WHERE enabled IN (1,2)"))
+        for vertical, enabled in await asyncio.to_thread(read):
             if vertical in SERVICES:
                 self.desired.add(vertical)
+                if enabled == 2:
+                    self.paused.add(vertical)
+                    self.states[vertical] = {"state": "paused"}
                 self.tasks[vertical] = asyncio.create_task(self.run(vertical))
         if self.desired:
             self.hold_awake()
@@ -244,8 +248,11 @@ class DirectoryFleet:
             raise ValueError("Unknown registry directory")
         async with self.control_locks[vertical]:
             if vertical in self.tasks and not self.tasks[vertical].done():
+                self.paused.discard(vertical)
+                await asyncio.to_thread(self.persist, vertical, True)
                 return
             await asyncio.to_thread(preflight, vertical)
+            self.paused.discard(vertical)
             await asyncio.to_thread(self.persist, vertical, True)
             self.desired.add(vertical)
             self.hold_awake()
@@ -254,6 +261,7 @@ class DirectoryFleet:
     async def stop(self, vertical, remember=True):
         async with self.control_locks[vertical]:
             self.desired.discard(vertical)
+            self.paused.discard(vertical)
             if remember:
                 await asyncio.to_thread(self.persist, vertical, False)
             process = self.processes.get(vertical)
@@ -266,6 +274,20 @@ class DirectoryFleet:
             if not self.desired and self._wake_stop:
                 self._wake_stop.set()
                 await asyncio.to_thread(self._wake_thread.join, 2)
+
+    async def pause(self, vertical):
+        async with self.control_locks[vertical]:
+            if vertical not in self.desired:
+                return
+            await asyncio.to_thread(self.persist, vertical, 2)
+            self.paused.add(vertical)
+            process = self.processes.get(vertical)
+            if process and process.poll() is None:
+                self.states[vertical] = {"state": "pausing", "reason": "Finishing current registry cycle before pausing"}
+                process.stdin.write("drain\n")
+                process.stdin.flush()
+            else:
+                self.states[vertical] = {"state": "paused"}
 
     @staticmethod
     def kill(process):
@@ -294,7 +316,7 @@ class DirectoryFleet:
                 self.logs[vertical].append(entry)
                 if 'rowsUpserted' in entry or 'upserted' in entry:
                     self.progress[vertical] = {**entry, 'scope': 'Current/most recent feed, includes refreshes of existing rows'}
-                self.states[vertical] = {"state": "degraded" if "error" in event_name else "running", "last_event": entry}
+                self.states[vertical] = {"state": "pausing" if vertical in self.paused else "degraded" if "error" in event_name else "running", "last_event": entry}
                 logger.info("Imported %s pipeline: %s", vertical, event_name)
             except (ValueError, TypeError):
                 pass
@@ -303,7 +325,9 @@ class DirectoryFleet:
     async def run(self, vertical):
         failures = 0
         while vertical in self.desired:
-            while self.updating and vertical in self.desired:
+            while (self.updating or vertical in self.paused) and vertical in self.desired:
+                if vertical in self.paused:
+                    self.states[vertical] = {"state": "paused"}
                 await asyncio.sleep(0.2)
             if vertical not in self.desired:
                 break
@@ -312,7 +336,7 @@ class DirectoryFleet:
                 self.states[vertical] = {"state": "checking"}
                 await asyncio.to_thread(preflight, vertical)
                 env = await asyncio.to_thread(worker_environment, vertical)
-                if vertical not in self.desired or self.updating:
+                if vertical not in self.desired or self.updating or vertical in self.paused:
                     continue
                 process = await asyncio.to_thread(subprocess.Popen,
                     [node_path(), "--max-old-space-size=256", str(source_root() / "local-worker.mjs"), vertical],
@@ -320,6 +344,9 @@ class DirectoryFleet:
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
                 self.processes[vertical] = process
+                if vertical in self.paused:
+                    process.stdin.write("drain\n")
+                    process.stdin.flush()
                 if vertical not in self.desired:
                     await asyncio.to_thread(self.kill, process)
                     break
@@ -336,6 +363,8 @@ class DirectoryFleet:
                 if process and process.poll() is None:
                     await asyncio.to_thread(self.kill, process)
                 self.processes.pop(vertical, None)
+                if vertical in self.paused:
+                    self.states[vertical] = {"state": "paused"}
             delay = min(300, 15 * 2**min(failures, 4))
             for _ in range(delay):
                 if vertical not in self.desired:
@@ -397,6 +426,18 @@ async def stop_directory(vertical: str, request: Request):
     else:
         raise HTTPException(404, "Unknown directory")
     return {"status": "stopped", "vertical": vertical}
+
+
+@router.post("/{vertical}/pause")
+async def pause_directory(vertical: str, request: Request):
+    require_local_control(request)
+    if vertical == "hotel":
+        from app.worker import worker_instance
+        return await worker_instance.pause()
+    if vertical not in SERVICES:
+        raise HTTPException(404, "Unknown directory")
+    await fleet.pause(vertical)
+    return {"status": fleet.states.get(vertical, {}).get("state", "stopped"), "vertical": vertical}
 
 
 def require_local_control(request):

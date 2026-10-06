@@ -46,7 +46,7 @@ const originalLog = console.log;
 console.log = (...args) => {
   try {
     const item = JSON.parse(args[0]);
-    idle = ['worker.sleep', 'worker.idle', 'worker.stop'].includes(item.event);
+    idle = ['worker.sleep', 'worker.idle', 'worker.stop', 'worker.claim_error'].includes(item.event);
     if (draining && idle) { originalLog(JSON.stringify({event:'local.drained'})); process.exit(0); }
   } catch {}
   originalLog(...args);

@@ -22,7 +22,7 @@ def _clean_optional(value: Optional[str]) -> Optional[str]:
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = "HusshOne Hotel Scraper Control & Directory"
+    APP_NAME: str = "HusshOne Directory Fleet Control & Explorer"
     APP_ENV: str = "development"
     PORT: int = 8080
     HOST: str = "127.0.0.1"

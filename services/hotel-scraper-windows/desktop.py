@@ -46,7 +46,7 @@ def launch_pywebview(url: str):
     try:
         import webview
         window = webview.create_window(
-            title="HusshOne Hotel Scraper & Directory Explorer",
+            title="HusshOne Directory Fleet & Explorer",
             url=url,
             width=1280,
             height=860,
@@ -64,7 +64,7 @@ def launch_tkinter_gui(base_url: str):
     from tkinter import ttk, messagebox
 
     root = tk.Tk()
-    root.title("HusshOne Hotel Scraper - Control Panel")
+    root.title("HusshOne Directory Fleet - Control Panel")
     root.geometry("640x520")
     root.configure(bg="#0f172a")
 
@@ -74,7 +74,7 @@ def launch_tkinter_gui(base_url: str):
 
     title_label = tk.Label(
         header_frame,
-        text="HusshOne Hotel Scraper",
+        text="HusshOne Directory Fleet",
         font=("Segoe UI", 16, "bold"),
         fg="#ffffff",
         bg="#1e293b"

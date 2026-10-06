@@ -100,14 +100,38 @@
     <div x-show="overview.db && !overview.db.connected" class="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-3">
       <span class="mt-1 inline-block w-2 h-2 rounded-full bg-rose-400 animate-pulse"></span>
       <div>
-        <div class="font-semibold">Database unreachable &mdash; retrying automatically</div>
+        <div class="font-semibold">Hotel database unreachable &mdash; check each registry card separately</div>
         <div class="text-xs text-rose-300/80 font-mono mt-0.5" x-text="overview.db?.error || 'Waiting for the Cloud SQL connection...'"></div>
-        <div class="text-xs text-rose-300/70 mt-1">Nothing is written locally while offline; the scraper pauses itself until the connection returns.</div>
+        <div class="text-xs text-rose-300/70 mt-1">Cloud writes wait for recovery. Previously collected evidence stays in the durable local queue.</div>
       </div>
     </div>
 
-    <!-- Live Hotel Directory Inventory -->
-    <div class="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 border border-slate-800 space-y-5">
+    <section class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+      <h2 class="text-lg font-semibold">Directory fleet overview</h2>
+      <p class="text-xs text-slate-400">Four independent pipelines, four native database contracts. Choose a worker to view its controls; there is no combined hotel-based progress percentage.</p>
+      <div class="flex flex-wrap gap-2">
+        <template x-for="type in ['all','hotel','healthcare','ria','insurance']" :key="type">
+          <button @click="selectedWorker = type; activeTab = 'control'" :class="selectedWorker === type ? 'bg-emerald-700' : 'bg-slate-800'" class="px-4 py-2 rounded-lg text-sm capitalize" x-text="type === 'all' ? 'All workers' : type"></button>
+        </template>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <template x-for="type in ['hotel','healthcare','ria','insurance']" :key="type">
+          <button @click="selectedWorker = type; activeTab = 'control'" class="text-left rounded-xl bg-slate-800 p-4 space-y-2">
+            <h3 class="capitalize font-semibold" x-text="type"></h3>
+            <p class="text-xs" x-text="fleet[type]?.state || 'Loading…'"></p>
+            <p class="text-xs text-slate-400" x-text="fleet[type]?.database || 'Status unavailable'"></p>
+            <p class="text-xs text-sky-300" x-text="type === 'hotel' ? 'New hotels this session: ' + (fleet.hotel?.progress?.new_hotels ?? '—') : 'Feed writes / refreshes: ' + (fleet[type]?.progress?.rowsUpserted ?? fleet[type]?.progress?.upserted ?? '—')"></p>
+            <p class="text-xs text-slate-300" x-show="type !== 'hotel'" x-text="'Feed rows read: ' + (fleet[type]?.progress?.rowsSeen ?? '—')"></p>
+            <p class="text-xs text-slate-300" x-show="type === 'hotel'" x-text="'Website evidence writes: ' + (fleet.hotel?.progress?.website_records_written ?? '—') + ' · blank fields filled: ' + (fleet.hotel?.progress?.blank_fields_filled ?? '—')"></p>
+            <p class="text-xs text-slate-400" x-text="type === 'hotel' ? 'Hotel session counters' : 'Current / most recent feed; includes updates to old rows'"></p>
+            <p class="text-xs text-slate-500" x-text="type === 'hotel' ? 'Last hotel batch: ' + formatRelativeTime(overview.system?.last_scraped_at) : 'Last event: ' + (fleet[type]?.last_event ? new Date(fleet[type].last_event.at * 1000).toLocaleTimeString() : 'No event yet')"></p>
+          </button>
+        </template>
+      </div>
+    </section>
+
+    <!-- Hotel-specific inventory, never presented as fleet-wide -->
+    <div x-show="selectedWorker === 'hotel'" class="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 border border-slate-800 space-y-5">
       <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
         <div>
           <div class="flex items-center gap-2">
@@ -220,7 +244,7 @@
       <button @click="activeTab = 'control'"
         class="px-4 py-2 rounded-lg text-sm font-medium transition"
         :class="activeTab === 'control' ? 'bg-slate-800 text-emerald-400 border border-slate-700' : 'text-slate-400 hover:text-white'">
-        Background Scraper Control
+        Fleet &amp; Worker Controls
       </button>
       <button @click="activeTab = 'directory'"
         class="px-4 py-2 rounded-lg text-sm font-medium transition"
@@ -247,6 +271,8 @@
       <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
         <h2 class="text-lg font-semibold">Imported directory VM workers</h2>
         <button @click="startAllWorkers()" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state)" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-sm">Start / resume all four workers</button>
+        <button @click="controlAllWorkers('pause')" :disabled="fleetBusy" class="px-4 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-sm">Pause all workers safely</button>
+        <button @click="controlAllWorkers('stop')" :disabled="fleetBusy" class="px-4 py-2 rounded-lg bg-rose-900 disabled:opacity-40 text-sm">Stop all workers</button>
         <p class="text-xs text-slate-400">Each card controls only its named directory. Hotel ZIP, Chrome and website-backfill controls below do not control registry feeds. Registry Stop interrupts that worker; its saved checkpoints remain for restart.</p>
         <div class="flex flex-wrap items-center gap-2 text-xs">
           <span>Resource profile:</span>
@@ -259,7 +285,7 @@
         <p class="text-xs text-slate-400">Native Cloud SQL databases stay separate. Registry workers use official NPPES, SEC and DOI feeds, not Maps. Start each once; enabled registry workers resume after restart. Schema mismatches block writes.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           <template x-for="vertical in ['hotel', 'healthcare', 'ria', 'insurance']" :key="vertical">
-            <div class="bg-slate-800/60 rounded-xl p-4 space-y-3">
+            <div x-show="selectedWorker === 'all' || selectedWorker === vertical" class="bg-slate-800/60 rounded-xl p-4 space-y-3">
               <h3 class="uppercase text-sm font-semibold" x-text="vertical"></h3>
               <p class="text-xs text-emerald-300" x-text="fleet[vertical]?.state || 'Loading status…'"></p>
               <p class="text-xs text-slate-400" x-text="fleet[vertical]?.database || ''"></p>
@@ -278,9 +304,13 @@
               <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
               <div class="flex gap-2">
                 <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state) || (fleet[vertical]?.state !== 'paused' && (fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'))" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
+                <button @click="fleetAction(vertical, 'pause')" :disabled="fleetBusy || !['running','degraded','retrying','checking'].includes(fleet[vertical]?.state)" class="px-3 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-xs">Pause safely</button>
                 <button @click="fleetAction(vertical, 'stop')" :disabled="fleetBusy" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-xs">Stop</button>
               </div>
               <p class="text-xs text-slate-500" x-text="fleet[vertical]?.last_event?.event || ''"></p>
+              <p class="text-xs text-slate-400" x-show="vertical !== 'hotel'">Pause finishes the current feed cycle, then waits. Resume is automatic only when you request it. Stop may interrupt a cycle; canonical writes stay transactional.</p>
+              <p class="text-xs text-slate-400" x-text="({hotel:'Maps / OSM · hotels · Places/CID matching',healthcare:'NPPES · providers · NPI identity',ria:'SEC · firms and advisers · CRD identity',insurance:'DOI · producers · state + license identity'})[vertical]"></p>
+              <details class="text-xs" x-show="vertical !== 'hotel'"><summary>Recent worker events</summary><template x-for="(event,index) in (fleet[vertical]?.events || [])" :key="index"><p class="text-slate-400 mt-2" x-text="event.event + ' · ' + new Date(event.at * 1000).toLocaleTimeString()"></p></template></details>
             </div>
           </template>
         </div>
@@ -292,7 +322,7 @@
           <button @click="applyWorkerUpdate()" :disabled="!workerUpdate.pending || ['checking','draining'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40">Apply staged worker update</button>
         </div>
         <form @submit.prevent="lookupBusinesses()" class="border-t border-slate-800 pt-3 flex flex-wrap gap-2">
-          <label class="text-xs self-center" for="business-query">Search all four directories</label>
+          <label class="text-xs self-center" for="business-query" x-text="selectedWorker === 'all' ? 'Search all four directories' : 'Search ' + selectedWorker + ' records'"></label>
           <input id="business-query" x-model="businessQuery" maxlength="200" required placeholder="Name or five-digit ZIP" class="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm">
           <button type="submit" :disabled="businessBusy" class="rounded-lg bg-sky-800 px-3 py-2 text-sm disabled:opacity-40">Search stored data</button>
         </form>
@@ -305,6 +335,7 @@
         </template>
       </section>
 
+      <div x-show="selectedWorker === 'hotel'" class="space-y-6">
       <!-- Action & Execution Status Card -->
       <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
         <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -609,6 +640,7 @@
     </div>
 
     <!-- ========================================== -->
+    </div><!-- End hotel-specific controls -->
     <!-- TAB 2: HOTEL DIRECTORY EXPLORER            -->
     <!-- ========================================== -->
     <div x-show="activeTab === 'directory'" class="space-y-4">
@@ -1148,7 +1180,7 @@ WHERE places_status = 'error';</pre>
     function scraperDashboard() {
       return {
         activeTab: 'control',
-        fleet: {}, fleetBusy: false, fleetNotice: '', workerUpdate: {},
+        fleet: {}, fleetBusy: false, fleetNotice: '', workerUpdate: {}, selectedWorker: 'all',
         performance: {},
         async setPerformance(mode) {
           try {
@@ -1160,6 +1192,7 @@ WHERE places_status = 'error';</pre>
         },
         businessQuery: '', businessResults: [], businessBusy: false, businessNotice: '',
         async fleetAction(vertical, action) {
+          if (action === 'stop' && !confirm(`Stop ${vertical}? This may interrupt its current cycle. Saved checkpoints remain available.`)) return;
           this.fleetBusy = true; this.fleetNotice = '';
           try {
             const response = await fetch(`/api/directory-fleet/${vertical}/${action}`, {method: 'POST'});
@@ -1181,11 +1214,15 @@ WHERE places_status = 'error';</pre>
           return Object.values(this.fleet).some(item => ['degraded','retrying'].includes(item.state));
         },
         async startAllWorkers() {
+          return this.controlAllWorkers('start');
+        },
+        async controlAllWorkers(action) {
           if (this.fleetBusy) return;
+          if (action === 'stop' && !confirm('Stop all four workers? Active registry cycles may be interrupted. Saved checkpoints remain available.')) return;
           this.fleetBusy = true;
           const outcomes = await Promise.all(['hotel','healthcare','ria','insurance'].map(async vertical => {
             try {
-              const response = await fetch(`/api/directory-fleet/${vertical}/start`, {method:'POST'});
+              const response = await fetch(`/api/directory-fleet/${vertical}/${action}`, {method:'POST'});
               const data = await response.json();
               return `${vertical}: ${response.ok ? data.status : (data.detail || 'failed')}`;
             } catch (error) { return `${vertical}: ${error.message}`; }
@@ -1206,7 +1243,7 @@ WHERE places_status = 'error';</pre>
           this.businessBusy = true; this.businessNotice = ''; this.businessResults = [];
           try {
             const query = this.businessQuery.trim();
-            const params = new URLSearchParams({[/^\d{5}$/.test(query) ? 'zip' : 'q']: query, limit: '20'});
+            const params = new URLSearchParams({[/^\d{5}$/.test(query) ? 'zip' : 'q']: query, vertical: this.selectedWorker, limit: '20'});
             const response = await fetch('/api/v1/businesses?' + params);
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Search unavailable');

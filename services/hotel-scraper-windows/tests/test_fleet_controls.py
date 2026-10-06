@@ -1,4 +1,6 @@
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+import asyncio
 
 from fastapi.testclient import TestClient
 
@@ -41,3 +43,28 @@ def test_registry_buttons_dispatch_to_selected_directory(monkeypatch):
     for vertical in ('healthcare', 'ria', 'insurance'):
         assert client.post(f'/api/directory-fleet/{vertical}/start').status_code == 200
     assert [call.args[0] for call in start.await_args_list] == ['healthcare', 'ria', 'insurance']
+
+
+def test_registry_pause_drains_without_killing_and_persists(monkeypatch):
+    from app.directory_fleet import DirectoryFleet
+    local = DirectoryFleet()
+    local.desired.add('insurance')
+    process = MagicMock()
+    process.poll.return_value = None
+    local.processes['insurance'] = process
+    saved = []
+    monkeypatch.setattr(local, 'persist', lambda v, enabled: saved.append((v, enabled)))
+    asyncio.run(local.pause('insurance'))
+    assert local.states['insurance']['state'] == 'pausing'
+    assert saved == [('insurance', 2)]
+    assert 'insurance' in local.paused
+    assert 'insurance' in local.desired
+    process.stdin.write.assert_called_once_with('drain\n')
+    process.kill.assert_not_called()
+
+
+def test_pause_route_targets_registry_only(monkeypatch):
+    pause = AsyncMock()
+    monkeypatch.setattr(fleet, 'pause', pause)
+    assert TestClient(app).post('/api/directory-fleet/ria/pause').status_code == 200
+    pause.assert_awaited_once_with('ria')
