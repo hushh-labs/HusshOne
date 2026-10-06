@@ -61,6 +61,8 @@ app = FastAPI(
 )
 from app.business_lookup import router as business_lookup_router
 app.include_router(business_lookup_router)
+from app.business_onboarding import router as business_onboarding_router
+app.include_router(business_onboarding_router)
 from app.directory_fleet import router as directory_fleet_router
 app.include_router(directory_fleet_router)
 from app.worker_updates import router as worker_updates_router

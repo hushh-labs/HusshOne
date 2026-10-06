@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.business_lookup import BusinessSearch, Vertical, hotel_results, registry_results
 from cloud_api.compression import Compression
+from app.business_onboarding import OnboardingLookup, resolve_with_sessions
+from fastapi import Response
 
 app = FastAPI(title='HusshOne Read-only Directory API', docs_url=None, redoc_url=None)
 app.add_middleware(Compression, enabled=os.getenv('ENABLE_RESPONSE_COMPRESSION', 'false').lower() == 'true')
@@ -81,3 +83,14 @@ async def get_businesses(q: str | None = Query(None, min_length=1, max_length=20
 @app.post('/api/v1/businesses/search')
 async def post_businesses(request: BusinessSearch):
     return await search(request)
+
+
+@app.post('/api/v1/businesses/onboarding/lookup')
+async def onboarding_lookup(request: OnboardingLookup, response: Response):
+    response.headers['Cache-Control'] = 'no-store'
+    try:
+        pools = {vertical: engine_for(vertical) for vertical in DATABASES}
+    except KeyError:
+        raise HTTPException(503, 'Read-only database configuration unavailable') from None
+    factories = {vertical: (lambda engine=engine: Session(engine)) for vertical, engine in pools.items()}
+    return await asyncio.to_thread(resolve_with_sessions, request, factories)

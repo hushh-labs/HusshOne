@@ -5,7 +5,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY cloud_api ./cloud_api
 RUN mkdir app && touch app/__init__.py
 # Only query contracts/models are included; no dashboard, workers or credentials.
-COPY app/business_lookup.py app/config.py app/database.py app/models.py ./app/
+COPY app/business_lookup.py app/business_onboarding.py app/config.py app/database.py app/models.py ./app/
 RUN useradd --uid 10001 --create-home api
 USER api
 ENV PYTHONUNBUFFERED=1
