@@ -12,6 +12,8 @@ export async function runStateAdapter(adapter, deps = {}) {
   // db.mjs (and its `pg` dependency) is imported lazily — only when no upsertProducer
   // is injected — so this module stays unit-testable without a live database.
   let upsert = deps.upsertProducer;
+  let batchUpsert = deps.upsertBatch;
+  if (!upsert && !batchUpsert) ({ upsertProducersBatch: batchUpsert } = await import('./db.mjs'));
   if (!upsert) ({ upsertProducer: upsert } = await import("./db.mjs"));
   const log = deps.log;
   const fetchImpl = deps.fetchImpl;
@@ -32,6 +34,18 @@ export async function runStateAdapter(adapter, deps = {}) {
   let upserted = 0;
   let inserted = 0;
   let firstFailure = null, progressAt = Date.now();
+  let batch = [];
+  async function flushBatch() {
+    if (!batch.length) return;
+    const result = await batchUpsert(batch);
+    upserted += result.written;
+    inserted += result.inserted;
+    batch = [];
+    if (log && Date.now()-progressAt>=5000) {
+      log({event:'pipeline.progress',state:adapter.code,rowsSeen:seen,upserted,inserted,transport:'batch'});
+      progressAt=Date.now();
+    }
+  }
   const pending = new Set(), byIdentity = new Map();
   const concurrency = () => Math.max(1,Math.min(16,deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 16 : 1)));
   try {
@@ -39,6 +53,11 @@ export async function runStateAdapter(adapter, deps = {}) {
     if (firstFailure) throw firstFailure;
     if (!rec) continue;
     seen++;
+    if (batchUpsert) {
+      batch.push(rec);
+      if (batch.length >= (process.env.SCRAPER_PERFORMANCE_MODE === 'training' ? 1 : 200)) await flushBatch();
+      continue;
+    }
     while (pending.size >= concurrency()) await Promise.race(pending);
     const identity = JSON.stringify([rec.sourceState,rec.licenseNo]);
     const previous = byIdentity.get(identity);
@@ -55,6 +74,7 @@ export async function runStateAdapter(adapter, deps = {}) {
     const clear=()=>{pending.delete(task);if(byIdentity.get(identity)===task)byIdentity.delete(identity);};
     task.then(clear,err=>{firstFailure ||= err;clear();});
   }
+  if (batchUpsert) await flushBatch();
   await Promise.all(pending);
   if(firstFailure) throw firstFailure;
   return { state: adapter.code, kind: adapter.kind, blocked: false, seen, upserted, inserted };

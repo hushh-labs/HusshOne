@@ -9,13 +9,14 @@ from app.config import database_target
 from app.models import Hotel
 
 router = APIRouter(prefix="/api/v1/businesses", tags=["Business lookup"])
-Vertical = Literal["all", "hotel", "healthcare", "ria", "insurance"]
+Vertical = Literal["all", "hotel", "healthcare", "ria", "insurance", "business"]
 
 
 class BusinessSearch(BaseModel):
     q: str | None = Field(None, min_length=1, max_length=200)
     zip: str | None = Field(None, pattern=r"^\d{5}$")
     vertical: Vertical = "all"
+    category: str | None = Field(None, min_length=1, max_length=100)
     limit: int = Field(20, ge=1, le=100)
     offset: int = Field(0, ge=0, le=10000)
 
@@ -51,8 +52,10 @@ def hotel_results(db, request):
 
 REGISTRY_TABLES = {"healthcare": {"providers": ("npi", ("organization_name", "first_name", "last_name"))},
                    "ria": {"firms": ("crd", ("firm_name",)), "advisers": ("crd", ("first_name", "last_name"))},
-                   "insurance": {"producers": ("id", ("full_name", "first_name", "last_name"))}}
+                   "insurance": {"producers": ("id", ("full_name", "first_name", "last_name"))},
+                   "business": {"businesses": ("id", ("name",))}}
 PUBLIC_COLUMNS = {"npi", "crd", "id", "source_state", "license_no", "npn", "organization_name",
+                  "name", "category", "source", "source_key", "source_url", "formatted_address",
                   "first_name", "last_name", "firm_name", "full_name", "credential", "entity_type",
                   "primary_taxonomy_code", "primary_taxonomy_desc", "sec_number", "aum",
                   "current_firm_crd", "current_firm_name", "registration_status", "status",
@@ -70,11 +73,15 @@ def registry_results(db, vertical, request):
             query = query.where(or_(*(table.c[c].ilike(literal_pattern(request.q), escape="\\") for c in names)))
         if request.zip:
             query = query.where(table.c.zip == request.zip)
+        if vertical == 'business' and request.category:
+            query = query.where(table.c.category == request.category)
         for row in db.execute(query.order_by(table.c[key]).limit(request.offset + request.limit + 1)).mappings():
             item = dict(row)
-            item["name"] = next((item.get(c) for c in ("organization_name", "firm_name", "full_name") if item.get(c)),
+            item["name"] = next((item.get(c) for c in ("name", "organization_name", "firm_name", "full_name") if item.get(c)),
                                 " ".join(str(item.get(c) or "") for c in ("first_name", "last_name")).strip())
             identity = {"source_state": item["source_state"], "license_no": item["license_no"]} if vertical == "insurance" else {key: str(item[key])}
+            if vertical == 'business':
+                identity = {'source':item['source'],'source_key':item['source_key']}
             item.update(id=str(item[key]), canonical_table=table_name, native_identity=identity)
             rows.append(item)
     return rows
@@ -83,7 +90,7 @@ def registry_results(db, vertical, request):
 def search_stored_businesses(request):
     from app.directory_fleet import registry_session
     results, warnings, available = [], [], []
-    verticals = ("hotel", "healthcare", "ria", "insurance") if request.vertical == "all" else (request.vertical,)
+    verticals = ("hotel", "healthcare", "ria", "insurance", "business") if request.vertical == "all" else (request.vertical,)
     for vertical in verticals:
         db = None
         try:
@@ -125,10 +132,11 @@ async def execute_search(request):
 @router.get("")
 async def get_businesses(q: str | None = Query(None, min_length=1, max_length=200),
                          zip: str | None = Query(None, pattern=r"^\d{5}$"), vertical: Vertical = "all",
+                         category: str | None = Query(None, min_length=1, max_length=100),
                          limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=10000)):
     if not (q and q.strip()) and not zip:
         raise HTTPException(422, "Provide a name/query or a five-digit ZIP")
-    return await execute_search(BusinessSearch(q=q, zip=zip, vertical=vertical, limit=limit, offset=offset))
+    return await execute_search(BusinessSearch(q=q, zip=zip, vertical=vertical, category=category, limit=limit, offset=offset))
 
 
 @router.post("/search")

@@ -25,6 +25,8 @@ import {
 import {
   upsertFirm,
   upsertAdviser,
+  upsertFirmsBatch,
+  upsertAdvisersBatch,
   startIngestRun,
   finishIngestRun,
   lastSuccessfulIngest,
@@ -122,6 +124,8 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
   const tag = kind === "firms" ? "Firm" : "Indvl";
   const mapEl = kind === "firms" ? mapFirmXmlElement : mapAdviserXmlElement;
   const upsert = kind === "firms" ? upFirm : upAdviser;
+  const batchUpsert = deps.upsertBatch || (!deps.upsertFirm && !deps.upsertAdviser
+    ? (kind === 'firms' ? upsertFirmsBatch : upsertAdvisersBatch) : null);
 
   const runId = await startRun({ kind, sourceFile: label });
   let rowsSeen = 0;
@@ -129,6 +133,17 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
   const pending = new Set(), byIdentity = new Map();
   let firstFailure = null;
   let progressAt = Date.now();
+  let batch = [];
+  async function flushBatch() {
+    if (!batch.length) return;
+    const result = await batchUpsert(batch);
+    rowsUpserted += result.written;
+    batch = [];
+    if (Date.now() - progressAt >= 5000) {
+      console.log(JSON.stringify({event:'ingest.progress',kind,rowsSeen,rowsUpserted,transport:'batch'}));
+      progressAt = Date.now();
+    }
+  }
   const concurrency = () => Math.max(1, Math.min(16, deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 16 : 1)));
   try {
     const extractor = createXmlElementExtractor(tag);
@@ -140,6 +155,11 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
         const rec = mapEl(block);
         if (!rec) continue;
         rec.source = kind;
+        if (batchUpsert) {
+          batch.push(rec);
+          if (batch.length >= (process.env.SCRAPER_PERFORMANCE_MODE === 'training' ? 1 : 200)) await flushBatch();
+          continue;
+        }
         while (pending.size >= concurrency()) await Promise.race(pending);
         const previous = byIdentity.get(rec.crd);
         const task = (async () => {
@@ -157,6 +177,7 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
         task.then(clear, err => { firstFailure ||= err; clear(); });
       }
     }
+    if (batchUpsert) await flushBatch();
     await Promise.all(pending);
     if (firstFailure) throw firstFailure;
     await finishRun(runId, { rowsSeen, rowsUpserted, ok: true });

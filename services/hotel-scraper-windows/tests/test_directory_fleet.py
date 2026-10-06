@@ -66,7 +66,7 @@ def test_lookup_partial_failure_and_canonical_registry_identity(monkeypatch):
     monkeypatch.setattr(directories, 'registry_session', offline)
     result = lookup.search_stored_businesses(lookup.BusinessSearch(q='Example'))
     assert result['available_directories'] == ['hotel']
-    assert len(result['warnings']) == 3
+    assert len(result['warnings']) == 4  # Includes the separate general-business directory.
     assert 'do-not-expose' not in str(result)
 
 

@@ -9,7 +9,7 @@ from app.config import settings, google_auth_environment
 from app.database import _fetch_password_from_secret_manager
 from app.cloud_proxy import _find_binary, _connection_name
 
-TABLES = {'hotel_scraper':['hotels'], 'healthcare':['providers'], 'ria':['firms','advisers'], 'insurance':['producers']}
+TABLES = {'hotel_scraper':['hotels'], 'healthcare':['providers'], 'ria':['firms','advisers'], 'insurance':['producers'], 'business_directory':['businesses']}
 
 
 def audit():

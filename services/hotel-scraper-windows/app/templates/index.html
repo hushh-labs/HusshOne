@@ -110,12 +110,12 @@
       <h2 class="text-lg font-semibold">Directory fleet overview</h2>
       <p class="text-xs text-slate-400">Four independent pipelines, four native database contracts. Choose a worker to view its controls; there is no combined hotel-based progress percentage.</p>
       <div class="flex flex-wrap gap-2">
-        <template x-for="type in ['all','hotel','healthcare','ria','insurance']" :key="type">
+        <template x-for="type in ['all','hotel','healthcare','ria','insurance','business']" :key="type">
           <button @click="selectedWorker = type; activeTab = 'control'" :class="selectedWorker === type ? 'bg-emerald-700' : 'bg-slate-800'" class="px-4 py-2 rounded-lg text-sm capitalize" x-text="type === 'all' ? 'All workers' : type"></button>
         </template>
       </div>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <template x-for="type in ['hotel','healthcare','ria','insurance']" :key="type">
+        <template x-for="type in ['hotel','healthcare','ria','insurance','business']" :key="type">
           <button @click="selectedWorker = type; activeTab = 'control'" class="text-left rounded-xl bg-slate-800 p-4 space-y-2">
             <h3 class="capitalize font-semibold" x-text="type"></h3>
             <p class="text-xs" x-text="fleet[type]?.state || 'Loading…'"></p>
@@ -270,7 +270,7 @@
     <div x-show="activeTab === 'control'" class="space-y-6">
       <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
         <h2 class="text-lg font-semibold">Imported directory VM workers</h2>
-        <button @click="startAllWorkers()" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state)" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-sm">Start / resume all four workers</button>
+        <button @click="startAllWorkers()" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state)" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-sm">Start / resume all workers</button>
         <button @click="controlAllWorkers('pause')" :disabled="fleetBusy" class="px-4 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-sm">Pause all workers safely</button>
         <button @click="controlAllWorkers('stop')" :disabled="fleetBusy" class="px-4 py-2 rounded-lg bg-rose-900 disabled:opacity-40 text-sm">Stop all workers</button>
         <p class="text-xs text-slate-400">Each card controls only its named directory. Hotel ZIP, Chrome and website-backfill controls below do not control registry feeds. Registry Stop interrupts that worker; its saved checkpoints remain for restart.</p>
@@ -284,7 +284,7 @@
         <p class="text-xs text-slate-400">Website collectors run independently; slow sites no longer stop Maps. Completed evidence is saved locally before guarded Cloud SQL application. Blocked websites stay blocked.</p>
         <p class="text-xs text-slate-400">Native Cloud SQL databases stay separate. Registry workers use official NPPES, SEC and DOI feeds, not Maps. Start each once; enabled registry workers resume after restart. Schema mismatches block writes.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-          <template x-for="vertical in ['hotel', 'healthcare', 'ria', 'insurance']" :key="vertical">
+          <template x-for="vertical in ['hotel', 'healthcare', 'ria', 'insurance', 'business']" :key="vertical">
             <div x-show="selectedWorker === 'all' || selectedWorker === vertical" class="bg-slate-800/60 rounded-xl p-4 space-y-3">
               <h3 class="uppercase text-sm font-semibold" x-text="vertical"></h3>
               <p class="text-xs text-emerald-300" x-text="fleet[vertical]?.state || 'Loading status…'"></p>
@@ -302,6 +302,8 @@
               </div>
               <p class="text-xs text-amber-300 break-words" x-text="fleet[vertical]?.reason || ''"></p>
               <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
+              <p class="text-xs text-slate-400" x-show="vertical === 'business'">Restaurants, shops, offices and craft businesses. Processes imported OSM node extracts and durable intake batches; nationwide discovery and Maps enrichment are not enabled yet.</p>
+              <p class="text-xs text-sky-300" x-show="vertical === 'business'" x-text="'Queued batches: ' + (fleet.business?.progress?.pending_batches ?? '—') + ' · written batches: ' + (fleet.business?.progress?.written_batches ?? '—')"></p>
               <div class="flex gap-2">
                 <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state) || (fleet[vertical]?.state !== 'paused' && (fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'))" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
                 <button @click="fleetAction(vertical, 'pause')" :disabled="fleetBusy || !['running','degraded','retrying','checking'].includes(fleet[vertical]?.state)" class="px-3 py-2 rounded-lg bg-amber-800 disabled:opacity-40 text-xs">Pause safely</button>
@@ -309,7 +311,7 @@
               </div>
               <p class="text-xs text-slate-500" x-text="fleet[vertical]?.last_event?.event || ''"></p>
               <p class="text-xs text-slate-400" x-show="vertical !== 'hotel'">Pause finishes the current feed cycle, then waits. Resume is automatic only when you request it. Stop may interrupt a cycle; canonical writes stay transactional.</p>
-              <p class="text-xs text-slate-400" x-text="({hotel:'Maps / OSM · hotels · Places/CID matching',healthcare:'NPPES · providers · NPI identity',ria:'SEC · firms and advisers · CRD identity',insurance:'DOI · producers · state + license identity'})[vertical]"></p>
+              <p class="text-xs text-slate-400" x-text="({hotel:'Maps / OSM · hotels · Places/CID matching',healthcare:'NPPES · providers · NPI identity',ria:'SEC · firms and advisers · CRD identity',insurance:'DOI · producers · state + license identity',business:'Bulk extracts / intake · general businesses · source + source key identity'})[vertical]"></p>
               <details class="text-xs" x-show="vertical !== 'hotel'"><summary>Recent worker events</summary><template x-for="(event,index) in (fleet[vertical]?.events || [])" :key="index"><p class="text-slate-400 mt-2" x-text="event.event + ' · ' + new Date(event.at * 1000).toLocaleTimeString()"></p></template></details>
             </div>
           </template>
@@ -319,7 +321,8 @@
           <h3 class="font-semibold">Live worker updates</h3>
           <p class="text-slate-400">Reviewed Node worker releases apply between ingest cycles while this dashboard stays open. Python, UI and EXE changes still need a desktop restart. No remote code is downloaded automatically.</p>
           <p x-text="workerUpdate.message || workerUpdate.state || 'No update requested'"></p>
-          <button @click="applyWorkerUpdate()" :disabled="!workerUpdate.pending || ['checking','draining','activating'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40" x-text="'Apply staged update: ' + selectedWorker"></button>
+          <button @click="applyWorkerUpdate()" :disabled="selectedWorker === 'business' || !workerUpdate.pending || ['checking','draining','activating'].includes(workerUpdate.state)" class="px-3 py-2 rounded-lg bg-sky-800 hover:bg-sky-700 disabled:opacity-40" x-text="'Apply staged update: ' + selectedWorker"></button>
+          <p x-show="selectedWorker === 'business'" class="text-xs text-amber-300">General-business intake uses Python, so code updates currently require the new desktop EXE. These staged updates apply to the imported Node workers only.</p>
           <button x-show="['checking','draining'].includes(workerUpdate.state)" @click="cancelWorkerUpdate()" class="px-3 py-2 rounded-lg bg-amber-800">Cancel waiting update</button>
         </div>
         <form @submit.prevent="lookupBusinesses()" class="border-t border-slate-800 pt-3 flex flex-wrap gap-2">
@@ -1209,7 +1212,7 @@ WHERE places_status = 'error';</pre>
           if (!states.length) return 'FLEET STATUS LOADING';
           const running = states.filter(state => state === 'running').length;
           const unhealthy = states.filter(state => ['degraded','retrying'].includes(state)).length;
-          return `${running}/4 RUNNING` + (unhealthy ? ` · ${unhealthy} NEED ATTENTION` : '');
+          return `${running}/${states.length} RUNNING` + (unhealthy ? ` · ${unhealthy} NEED ATTENTION` : '');
         },
         fleetNeedsAttention() {
           return Object.values(this.fleet).some(item => ['degraded','retrying'].includes(item.state));
@@ -1219,9 +1222,9 @@ WHERE places_status = 'error';</pre>
         },
         async controlAllWorkers(action) {
           if (this.fleetBusy) return;
-          if (action === 'stop' && !confirm('Stop all four workers? Active registry cycles may be interrupted. Saved checkpoints remain available.')) return;
+          if (action === 'stop' && !confirm('Stop all workers? Active registry cycles may be interrupted. Saved checkpoints remain available.')) return;
           this.fleetBusy = true;
-          const outcomes = await Promise.all(['hotel','healthcare','ria','insurance'].map(async vertical => {
+          const outcomes = await Promise.all(['hotel','healthcare','ria','insurance','business'].map(async vertical => {
             try {
               const response = await fetch(`/api/directory-fleet/${vertical}/${action}`, {method:'POST'});
               const data = await response.json();

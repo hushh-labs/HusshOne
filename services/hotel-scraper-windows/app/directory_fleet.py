@@ -37,7 +37,7 @@ logger = logging.getLogger("hotel_scraper.directory_fleet")
 
 
 def registry_engine(vertical):
-    if vertical not in SERVICES or settings.DB_BACKEND != "cloud":
+    if vertical not in (*SERVICES, 'business') or settings.DB_BACKEND != "cloud":
         raise database.DatabaseUnavailable("Registry directories require their existing Cloud SQL databases")
     # Reuse the app's owned proxy and dedicated identity; no independent proxy
     # or credentials from the desktop user's personal gcloud configuration.
@@ -45,7 +45,7 @@ def registry_engine(vertical):
     probe.close()
     with _engine_lock:
         if vertical not in _engines:
-            url = make_url(database._build_url()).set(database=vertical)
+            url = make_url(database._build_url()).set(database='business_directory' if vertical == 'business' else vertical)
             engine = create_engine(url, pool_size=2, max_overflow=0, pool_pre_ping=True,
                 connect_args={"connect_timeout": 8, "options": "-c statement_timeout=15000 -c lock_timeout=5000 -c search_path=public"})
             event.listen(engine, "connect", lambda *_: database._require_owned_cloud_sql_proxy())
@@ -391,12 +391,19 @@ router = APIRouter(prefix="/api/directory-fleet", tags=["Imported VM fleet"])
 
 @router.get("")
 async def fleet_status():
-    return fleet.status()
+    from app.general_business import general_worker
+    status = await asyncio.to_thread(fleet.status)
+    status['business'] = await asyncio.to_thread(general_worker.status)
+    return status
 
 
 @router.post("/{vertical}/start")
 async def start_directory(vertical: str, request: Request):
     require_local_control(request)
+    if vertical == 'business':
+        from app.general_business import general_worker
+        await general_worker.start()
+        return {'status':'started','vertical':vertical}
     if fleet.updating or vertical in fleet.update_targets:
         raise HTTPException(409, "Worker update is draining registry cycles; start is deferred until activation")
     if vertical == "hotel":
@@ -419,6 +426,11 @@ async def start_directory(vertical: str, request: Request):
 @router.post("/{vertical}/stop")
 async def stop_directory(vertical: str, request: Request):
     require_local_control(request)
+    if vertical == 'business':
+        from app.general_business import general_worker
+        await general_worker.pause()
+        general_worker.state='stopped'
+        return {'status':'stopped','vertical':vertical}
     if vertical == "hotel":
         from app.worker import worker_instance
         await worker_instance.stop()
@@ -432,6 +444,10 @@ async def stop_directory(vertical: str, request: Request):
 @router.post("/{vertical}/pause")
 async def pause_directory(vertical: str, request: Request):
     require_local_control(request)
+    if vertical == 'business':
+        from app.general_business import general_worker
+        await general_worker.pause()
+        return {'status':'paused','vertical':vertical}
     if vertical == "hotel":
         from app.worker import worker_instance
         return await worker_instance.pause()

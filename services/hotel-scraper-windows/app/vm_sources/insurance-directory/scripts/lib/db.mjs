@@ -4,6 +4,7 @@
 // work queue is drained by claimNextState().
 
 import pg from "pg";
+import { executeUpsertBatch } from '../../../batch-upsert.mjs';
 import { config } from "./config.mjs";
 
 let pool = null;
@@ -85,7 +86,7 @@ export async function insertZipsBatch(rows) {
 // existing value when the incoming row lacks a field, license_types / lines_of_authority
 // / sources are unioned, and lat/lng are geo-tagged from the `zips` centroid of the
 // licensee's mailing ZIP. first_seen is never moved. Returns { id, inserted } or null.
-export async function upsertProducer(rec) {
+export async function upsertProducer(rec, buildOnly = false) {
   if (!rec || !rec.sourceState || !rec.licenseNo) return null;
   const sql = `
     INSERT INTO producers (
@@ -142,11 +143,14 @@ export async function upsertProducer(rec) {
     Array.isArray(rec.sources) ? rec.sources : [],
     rec.raw ? JSON.stringify(rec.raw) : null,
   ];
+  if (buildOnly) return {sql, params};
   const { rows } = await query(sql, params);
   return { id: rows[0].id, inserted: rows[0].inserted };
 }
 
 // -- Per-state work queue -----------------------------------------------------
+export const upsertProducersBatch = records => executeUpsertBatch(records, upsertProducer,
+  r => JSON.stringify([r.sourceState, String(r.licenseNo)]), query);
 
 // Ensure a state_progress row exists for each configured adapter and keep its
 // adapter_kind current. Preserves existing status/counters (so progress survives

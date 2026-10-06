@@ -4,6 +4,7 @@
 // resumability + freshness ledger the worker reads to decide when to pull again.
 
 import pg from "pg";
+import { executeUpsertBatch } from '../../../batch-upsert.mjs';
 import { config } from "./config.mjs";
 
 let pool = null;
@@ -84,7 +85,7 @@ export async function insertZipsBatch(rows) {
 // subselect into `zips` (NULL if the ZIP is unknown → geog stays NULL). COALESCE keeps
 // existing values when an incoming feed omits a field; `sources` is unioned; first_seen
 // never moves. Returns { crd, inserted } (inserted=true only on first sight).
-export async function upsertFirm(rec) {
+export async function upsertFirm(rec, buildOnly = false) {
   if (!rec || rec.crd == null) return null;
   const sql = `
     INSERT INTO firms (
@@ -138,6 +139,7 @@ export async function upsertFirm(rec) {
     rec.source || "firms",
     rec.raw ? JSON.stringify(rec.raw) : null,
   ];
+  if (buildOnly) return {sql, params};
   const { rows } = await query(sql, params);
   return { crd: rows[0].crd, inserted: rows[0].inserted };
 }
@@ -146,7 +148,7 @@ export async function upsertFirm(rec) {
 
 // Insert or merge an individual adviser by CRD. Geo-tagged from an address ZIP only
 // when the feed carries one (many individual records have no public address).
-export async function upsertAdviser(rec) {
+export async function upsertAdviser(rec, buildOnly = false) {
   if (!rec || rec.crd == null) return null;
   const sql = `
     INSERT INTO advisers (
@@ -191,11 +193,14 @@ export async function upsertAdviser(rec) {
     rec.source || "individuals",
     rec.raw ? JSON.stringify(rec.raw) : null,
   ];
+  if (buildOnly) return {sql, params};
   const { rows } = await query(sql, params);
   return { crd: rows[0].crd, inserted: rows[0].inserted };
 }
 
 // -- Ingest ledger -----------------------------------------------------------
+export const upsertFirmsBatch = records => executeUpsertBatch(records, upsertFirm, r => String(r.crd), query);
+export const upsertAdvisersBatch = records => executeUpsertBatch(records, upsertAdviser, r => String(r.crd), query);
 
 export async function startIngestRun({ kind, sourceFile }) {
   const { rows } = await query(

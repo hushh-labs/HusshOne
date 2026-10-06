@@ -12,7 +12,7 @@ from cloud_api.compression import Compression
 app = FastAPI(title='HusshOne Read-only Directory API', docs_url=None, redoc_url=None)
 app.add_middleware(Compression, enabled=os.getenv('ENABLE_RESPONSE_COMPRESSION', 'false').lower() == 'true')
 engines = {}
-DATABASES = {'hotel':'hotel_scraper','healthcare':'healthcare','ria':'ria','insurance':'insurance'}
+DATABASES = {'hotel':'hotel_scraper','healthcare':'healthcare','ria':'ria','insurance':'insurance','business':'business_directory'}
 
 
 def engine_for(vertical):
@@ -71,10 +71,11 @@ def health():
 @app.get('/api/v1/businesses')
 async def get_businesses(q: str | None = Query(None, min_length=1, max_length=200),
                          zip: str | None = Query(None, pattern=r'^\d{5}$'), vertical: Vertical = 'all',
+                         category: str | None = Query(None,min_length=1,max_length=100),
                          limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0, le=10000)):
     if not (q and q.strip()) and not zip:
         raise HTTPException(422, 'Provide a name/query or five-digit ZIP')
-    return await search(BusinessSearch(q=q, zip=zip, vertical=vertical, limit=limit, offset=offset))
+    return await search(BusinessSearch(q=q, zip=zip, vertical=vertical, category=category, limit=limit, offset=offset))
 
 
 @app.post('/api/v1/businesses/search')

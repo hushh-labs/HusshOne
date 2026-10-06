@@ -41,7 +41,11 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(restore_mode)
     from app.directory_fleet import fleet
     await fleet.resume()
+    from app.general_business import enabled, general_worker
+    if not os.getenv('HUSSHONE_TEST_MODE') and await asyncio.to_thread(enabled):
+        await general_worker.start()
     yield
+    await general_worker.pause(remember=False)
     for vertical in list(fleet.desired):
         await fleet.stop(vertical, remember=False)
     if worker_instance.is_running:
@@ -63,6 +67,8 @@ from app.worker_updates import router as worker_updates_router
 app.include_router(worker_updates_router)
 from app.performance import router as performance_router
 app.include_router(performance_router)
+from app.general_business import router as general_business_router
+app.include_router(general_business_router)
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     bundle_dir = getattr(sys, "_MEIPASS")

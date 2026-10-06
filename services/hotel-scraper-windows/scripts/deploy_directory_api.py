@@ -24,7 +24,7 @@ SERVICE = 'hushh-directory-api'
 ACCOUNT = f'directory-api@{PROJECT}.iam.gserviceaccount.com'
 SECRET = 'directory-api-db-password'
 READER = 'directory_api_reader'
-TABLES = {'hotel_scraper':['hotels'], 'healthcare':['providers'], 'ria':['firms','advisers'], 'insurance':['producers']}
+TABLES = {'hotel_scraper':['hotels'], 'healthcare':['providers'], 'ria':['firms','advisers'], 'insurance':['producers'], 'business_directory':['businesses']}
 ENV = google_auth_environment()
 ROOT = Path(__file__).resolve().parents[1]
 
