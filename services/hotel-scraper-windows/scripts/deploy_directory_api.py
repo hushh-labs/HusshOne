@@ -113,6 +113,9 @@ def provision():
 
 
 def deploy():
+    account = gcloud('auth','list','--filter=status:ACTIVE','--format=value(account)').stdout.strip()
+    if account != 'husshpuppy5@gmail.com':
+        raise RuntimeError('Deployment requires the dedicated husshpuppy5 identity')
     repository = 'directory-api'
     if gcloud('artifacts','repositories','describe',repository,'--location='+REGION,check=False).returncode:
         gcloud('artifacts','repositories','create',repository,'--location='+REGION,'--repository-format=docker')
@@ -120,18 +123,18 @@ def deploy():
     build_root = Path(tempfile.mkdtemp(prefix='husshone-api-build-'))
     shutil.copytree(ROOT/'cloud_api',build_root/'cloud_api',ignore=shutil.ignore_patterns('__pycache__'))
     (build_root/'app').mkdir()
-    for filename in ('business_lookup.py','config.py','database.py','models.py'):
+    for filename in ('business_lookup.py','business_onboarding.py','config.py','database.py','models.py'):
         shutil.copyfile(ROOT/'app'/filename,build_root/'app'/filename)
     shutil.copyfile(ROOT/'cloud_api'/'Dockerfile',build_root/'Dockerfile')
     print('Submitting isolated read-only API build',flush=True)
     gcloud('builds','submit',str(build_root),'--tag='+image)
     gcloud('run','deploy',SERVICE,'--image='+image,'--region='+REGION,'--service-account='+ACCOUNT,
         '--add-cloudsql-instances='+_connection_name(),
-        '--set-env-vars=SQL_USER='+READER+',SQL_INSTANCE='+_connection_name(),
-        '--set-secrets=SQL_PASSWORD='+SECRET+':latest','--no-allow-unauthenticated',
+        '--update-env-vars=SQL_USER='+READER+',SQL_INSTANCE='+_connection_name(),
+        '--update-secrets=SQL_PASSWORD='+SECRET+':latest','--no-allow-unauthenticated',
         '--min-instances=0','--max-instances=2','--concurrency=8','--timeout=30','--memory=512Mi','--cpu=1')
-    gcloud('run','services','add-iam-policy-binding',SERVICE,'--region='+REGION,
-        '--member=domain:hushh.ai','--role=roles/run.invoker')
+    # Existing Workspace invoker bindings are retained; code deployments do not
+    # expand access or provision database/IAM roles.
     print(gcloud('run','services','describe',SERVICE,'--region='+REGION,'--format=value(status.url)').stdout.strip(),flush=True)
 
 
