@@ -345,7 +345,8 @@ class DirectoryFleet:
     def status(self):
         from app.worker import worker_instance
         hotel = worker_instance.get_status()
-        return {"hotel": {"state": "running" if hotel["is_running"] else "stopped", "database": settings.DB_NAME,
+        return {"hotel": {"state": ("paused" if hotel.get("is_paused") else "running") if hotel["is_running"] else "stopped", "database": settings.DB_NAME,
+                          "desired_running": bool(hotel["is_running"]),
                           "source": "imported hotel VM pipeline + local Chrome", "places_api": False,
                           "progress": {"new_hotels": hotel['stats'].get('hotels_added',0),
                                        "website_records_written": hotel['stats'].get('website_records_written',0),
@@ -366,9 +367,13 @@ async def fleet_status():
 @router.post("/{vertical}/start")
 async def start_directory(vertical: str, request: Request):
     require_local_control(request)
+    if fleet.updating:
+        raise HTTPException(409, "Worker update is draining registry cycles; start is deferred until activation")
     if vertical == "hotel":
         from app.worker import worker_instance
-        await worker_instance.start()
+        result = await worker_instance.start()
+        if result.get("status") == "error":
+            raise HTTPException(409, result.get("message", "Hotel worker could not start"))
         return {"status": "started", "vertical": vertical}
     if vertical not in SERVICES:
         raise HTTPException(404, "Unknown directory")

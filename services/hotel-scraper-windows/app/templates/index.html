@@ -50,10 +50,10 @@
         </div>
         <div>
           <h1 class="text-base font-semibold tracking-tight text-white flex items-center gap-2">
-            HusshOne Hotel Scraper
+            HusshOne Directory Workers
             <span class="text-xs px-2 py-0.5 rounded-full font-medium"
               :class="overview.is_postgres_connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : (overview.db?.backend === 'sqlite' ? 'bg-slate-700/40 text-slate-300 border border-slate-600/40' : 'bg-rose-500/10 text-rose-300 border border-rose-500/30')">
-              <span x-text="overview.is_postgres_connected ? 'Cloud SQL Connected' : (overview.db?.backend === 'sqlite' ? 'Local SQLite (dev)' : 'Cloud SQL Offline')"></span>
+              <span x-text="overview.is_postgres_connected ? 'Hotel DB connected' : (overview.db?.backend === 'sqlite' ? 'Local SQLite (dev)' : 'Hotel DB offline')"></span>
             </span>
           </h1>
           <p class="text-xs text-slate-400 font-mono">
@@ -74,15 +74,15 @@
         </div>
 
         <div class="flex items-center space-x-2 px-3 py-1.5 rounded-lg border bg-slate-800/80"
-             :class="worker.is_running ? (worker.is_paused ? 'border-amber-500/40' : 'border-emerald-500/40') : 'border-slate-700'">
+             :class="fleetNeedsAttention() ? 'border-amber-500/40' : 'border-slate-700'">
           <span class="relative flex h-2.5 w-2.5">
-            <span x-show="worker.is_running && !worker.is_paused" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span x-show="Object.values(fleet).some(item => item.state === 'running') && !fleetNeedsAttention()" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span class="relative inline-flex rounded-full h-2.5 w-2.5"
-                  :class="worker.is_running ? (worker.is_paused ? 'bg-amber-400' : 'bg-emerald-500') : 'bg-slate-500'"></span>
+                  :class="fleetNeedsAttention() ? 'bg-amber-400' : 'bg-slate-400'"></span>
           </span>
           <span class="text-xs font-mono font-medium tracking-wide uppercase"
-                :class="worker.is_running ? (worker.is_paused ? 'text-amber-300' : 'text-emerald-400') : 'text-slate-400'"
-                x-text="worker.is_running ? (worker.is_paused ? 'PAUSED' : 'RUNNING') : 'IDLE'"></span>
+                :class="fleetNeedsAttention() ? 'text-amber-300' : 'text-slate-300'"
+                x-text="fleetSummary()"></span>
         </div>
 
         <button @click="refreshAll()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Refresh Data">
@@ -246,6 +246,8 @@
     <div x-show="activeTab === 'control'" class="space-y-6">
       <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
         <h2 class="text-lg font-semibold">Imported directory VM workers</h2>
+        <button @click="startAllWorkers()" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state)" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-sm">Start / resume all four workers</button>
+        <p class="text-xs text-slate-400">Each card controls only its named directory. Hotel ZIP, Chrome and website-backfill controls below do not control registry feeds. Registry Stop interrupts that worker; its saved checkpoints remain for restart.</p>
         <div class="flex flex-wrap items-center gap-2 text-xs">
           <span>Resource profile:</span>
           <template x-for="[mode,label] in [['training','Training-friendly'],['balanced','Balanced'],['throughput','Full throughput']]" :key="mode">
@@ -275,7 +277,7 @@
               <p class="text-xs text-amber-300 break-words" x-text="fleet[vertical]?.reason || ''"></p>
               <p class="text-xs text-slate-400" x-show="vertical === 'insurance'">Texas feed available; other upstream state adapters remain blocked.</p>
               <div class="flex gap-2">
-                <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
+                <button @click="fleetAction(vertical, 'start')" :disabled="fleetBusy || ['checking','draining'].includes(workerUpdate.state) || (fleet[vertical]?.state !== 'paused' && (fleet[vertical]?.desired_running || fleet[vertical]?.state === 'running'))" class="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-xs">Start / resume</button>
                 <button @click="fleetAction(vertical, 'stop')" :disabled="fleetBusy" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-xs">Stop</button>
               </div>
               <p class="text-xs text-slate-500" x-text="fleet[vertical]?.last_event?.event || ''"></p>
@@ -307,7 +309,7 @@
       <div class="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
         <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
-            <h2 class="text-lg font-semibold text-white">Background Scraper Worker Service</h2>
+            <h2 class="text-lg font-semibold text-white">Hotel worker only — Maps, ZIP queue and website enrichment</h2>
             <p class="text-sm text-slate-400">
               Manages the continuous crawler queue, reads Google Maps listings via one reused headless Chrome, and falls back to OpenStreetMap Overpass.
             </p>
@@ -322,7 +324,7 @@
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
               </svg>
-              <span x-text="worker.is_paused ? 'Resume Worker' : 'Start Scraper in Background'"></span>
+              <span x-text="worker.is_paused ? 'Resume hotel worker' : 'Start hotel worker'"></span>
             </button>
 
             <!-- Pause Button -->
@@ -332,7 +334,7 @@
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
               </svg>
-              <span>Pause</span>
+              <span>Pause hotel</span>
             </button>
 
             <!-- Stop Button -->
@@ -342,7 +344,7 @@
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd" />
               </svg>
-              <span>Stop</span>
+              <span>Stop hotel</span>
             </button>
 
             <!-- Retry Failed ZIPs Button -->
@@ -497,7 +499,7 @@
 
       <div class="p-5 rounded-2xl bg-slate-900 border border-emerald-500/20 space-y-3">
         <div class="flex flex-wrap justify-between items-center gap-3">
-          <h3 class="text-sm font-semibold text-white">Automatic missing-data enrichment</h3>
+          <h3 class="text-sm font-semibold text-white">Hotel missing-data enrichment</h3>
           <span class="px-3 py-1 rounded-full bg-slate-800 text-xs text-emerald-300" x-text="backfillLabel()"></span>
         </div>
         <p class="text-xs text-slate-400">Once started, runs without approvals. Finds missing websites through existing Maps identities and fills blank website, phone, address, ZIP and state only after verification. Uncertain results leave your data unchanged.</p>
@@ -1023,7 +1025,7 @@
           </div>
           <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
             <div class="text-slate-400">Scraper Process: <strong class="text-white">Runs inside this desktop app</strong> (no separate VM)</div>
-            <div class="text-slate-400">Worker State:
+            <div class="text-slate-400">Hotel Worker State:
               <strong :class="worker.is_running ? (worker.is_paused ? 'text-amber-400' : 'text-emerald-400') : 'text-slate-400'"
                       x-text="worker.is_running ? (worker.is_paused ? 'PAUSED' : 'RUNNING') : 'IDLE'"></strong>
             </div>
@@ -1164,8 +1166,33 @@ WHERE places_status = 'error';</pre>
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Worker action failed');
             this.fleetNotice = `${vertical}: ${data.status}`;
+            await this.livePoll();
           } catch (error) { this.fleetNotice = error.message; }
           finally { this.fleetBusy = false; }
+        },
+        fleetSummary() {
+          const states = Object.values(this.fleet).map(item => item.state);
+          if (!states.length) return 'FLEET STATUS LOADING';
+          const running = states.filter(state => state === 'running').length;
+          const unhealthy = states.filter(state => ['degraded','retrying'].includes(state)).length;
+          return `${running}/4 RUNNING` + (unhealthy ? ` · ${unhealthy} NEED ATTENTION` : '');
+        },
+        fleetNeedsAttention() {
+          return Object.values(this.fleet).some(item => ['degraded','retrying'].includes(item.state));
+        },
+        async startAllWorkers() {
+          if (this.fleetBusy) return;
+          this.fleetBusy = true;
+          const outcomes = await Promise.all(['hotel','healthcare','ria','insurance'].map(async vertical => {
+            try {
+              const response = await fetch(`/api/directory-fleet/${vertical}/start`, {method:'POST'});
+              const data = await response.json();
+              return `${vertical}: ${response.ok ? data.status : (data.detail || 'failed')}`;
+            } catch (error) { return `${vertical}: ${error.message}`; }
+          }));
+          this.fleetNotice = outcomes.join(' · ');
+          this.fleetBusy = false;
+          await this.livePoll();
         },
         async applyWorkerUpdate() {
           try {
@@ -1592,18 +1619,25 @@ WHERE places_status = 'error';</pre>
         },
 
         async startWorker() {
-          await fetch('/api/control/start', { method: 'POST' });
-          await this.pollWorkerStatus();
+          await this.hotelControl('start');
         },
 
         async pauseWorker() {
-          await fetch('/api/control/pause', { method: 'POST' });
-          await this.pollWorkerStatus();
+          await this.hotelControl('pause');
         },
 
         async stopWorker() {
-          await fetch('/api/control/stop', { method: 'POST' });
-          await this.pollWorkerStatus();
+          await this.hotelControl('stop');
+        },
+        async hotelControl(action) {
+          try {
+            const response = await fetch(`/api/control/${action}`, {method:'POST'});
+            const data = await response.json();
+            if (!response.ok || data.status === 'error') throw new Error(data.detail || data.message || `Hotel ${action} failed`);
+            this.fleetNotice = `Hotel worker: ${data.message || data.status || action}`;
+            await this.pollWorkerStatus();
+            await this.livePoll();
+          } catch (error) { this.fleetNotice = error.message; }
         },
 
         async retryFailedZips() {
