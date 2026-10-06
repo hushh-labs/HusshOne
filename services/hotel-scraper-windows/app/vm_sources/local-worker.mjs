@@ -12,11 +12,11 @@ const pools = new Set();
 // high-throughput release defaults those supervisors to the requested mode;
 // current supervisors always pass their persisted explicit choice.
 const profile = () => process.env.SCRAPER_PERFORMANCE_MODE || 'throughput';
-const poolSize = () => profile() === 'throughput' ? 8 : profile() === 'training' ? 1 : 2;
+const poolSize = () => profile() === 'throughput' ? 16 : profile() === 'training' ? 1 : 2;
 function setProfile(mode) {
   if (!['training','balanced','throughput'].includes(mode)) return;
   process.env.SCRAPER_PERFORMANCE_MODE = mode;
-  if (mode === 'throughput') process.env.NPPES_BATCH_SIZE = '1000';
+  process.env.NPPES_BATCH_SIZE = mode === 'throughput' ? '2000' : '250';
   for (const pool of pools) pool.options.max = poolSize();
   try { os.setPriority(0, mode === 'throughput' ? os.constants.priority.PRIORITY_NORMAL : os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
 }

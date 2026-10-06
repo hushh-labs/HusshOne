@@ -129,7 +129,7 @@ export async function ingestXmlFile({ filePath, kind, sourceFile, deps = {} }) {
   const pending = new Set(), byIdentity = new Map();
   let firstFailure = null;
   let progressAt = Date.now();
-  const concurrency = () => Math.max(1, Math.min(8, deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 8 : 1)));
+  const concurrency = () => Math.max(1, Math.min(16, deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 16 : 1)));
   try {
     const extractor = createXmlElementExtractor(tag);
     const stream = fs.createReadStream(filePath, { encoding: "latin1" });

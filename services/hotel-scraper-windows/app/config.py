@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     WEBSITE_FETCH_CONCURRENCY: int = 2
     WEBSITE_MIN_FREE_RAM_GB: int = 4
     SCRAPER_PERFORMANCE_MODE: str = 'balanced'
-    WEBSITE_FULL_CONCURRENCY: int = 16
+    WEBSITE_FULL_CONCURRENCY: int = 32
     WEBSITE_PROCESS_TIMEOUT_SEC: int = 90
     # Imported VM pipelines. Registry workers are started explicitly from the
     # dashboard; their desired state then survives restarts. No auto-DDL.

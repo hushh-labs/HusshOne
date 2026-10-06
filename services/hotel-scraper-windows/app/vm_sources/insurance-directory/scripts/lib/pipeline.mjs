@@ -33,7 +33,7 @@ export async function runStateAdapter(adapter, deps = {}) {
   let inserted = 0;
   let firstFailure = null, progressAt = Date.now();
   const pending = new Set(), byIdentity = new Map();
-  const concurrency = () => Math.max(1,Math.min(8,deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 8 : 1)));
+  const concurrency = () => Math.max(1,Math.min(16,deps.upsertConcurrency || (process.env.SCRAPER_PERFORMANCE_MODE === 'throughput' ? 16 : 1)));
   try {
   for await (const rec of adapter.records({ log, fetchImpl })) {
     if (firstFailure) throw firstFailure;

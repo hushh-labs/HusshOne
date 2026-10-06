@@ -33,7 +33,7 @@ def set_mode(mode):
 
 def collector_limit(active=0):
     mode = settings.SCRAPER_PERFORMANCE_MODE
-    cap = 1 if mode == 'training' else max(1, min(2, settings.WEBSITE_FETCH_CONCURRENCY)) if mode == 'balanced' else min(16, max(1, settings.WEBSITE_FULL_CONCURRENCY), max(2, (os.cpu_count() or 2) // 2))
+    cap = 1 if mode == 'training' else max(1, min(2, settings.WEBSITE_FETCH_CONCURRENCY)) if mode == 'balanced' else min(32, max(1, settings.WEBSITE_FULL_CONCURRENCY), max(2, os.cpu_count() or 2))
     free = available_memory_bytes()
     if free is None:
         return min(cap, 1)

@@ -90,8 +90,12 @@ def test_resource_profiles_preserve_headroom_and_are_live(monkeypatch, tmp_path)
     monkeypatch.setattr(performance.os, 'cpu_count', lambda: 32)
     monkeypatch.setattr(performance, 'available_memory_bytes', lambda: 28 * 1024**3)
     monkeypatch.setattr(settings, 'SCRAPER_PERFORMANCE_MODE', 'balanced')
+    monkeypatch.setattr(settings, 'WEBSITE_FULL_CONCURRENCY', 32)
     performance.set_mode('throughput')
-    assert performance.collector_limit() == 16
+    assert performance.collector_limit() == 24  # 28 GiB free minus 4 GiB reserve
+    assert performance.collector_limit(active=8) == 32
+    monkeypatch.setattr(settings, 'WEBSITE_FULL_CONCURRENCY', 6)
+    assert performance.collector_limit(active=8) == 6
     performance.set_mode('training')
     assert performance.collector_limit(active=8) == 1
     monkeypatch.setattr(performance, 'available_memory_bytes', lambda: 3 * 1024**3)

@@ -168,7 +168,7 @@ def worker_environment(vertical):
     env.update(PGHOST=str(url.host), PGPORT=str(url.port), PGDATABASE=vertical,
                PGUSER=str(url.username), PGPASSWORD=str(url.password), PGPOOL_MAX="2",
                NPPES_DOWNLOAD_DIR=str(inputs), SEC_DOWNLOAD_DIR=str(inputs), OUTPUT_DIR=str(inputs.parent),
-               NPPES_BATCH_SIZE="1000" if settings.SCRAPER_PERFORMANCE_MODE == 'throughput' else "250",
+               NPPES_BATCH_SIZE="2000" if settings.SCRAPER_PERFORMANCE_MODE == 'throughput' else "250",
                SCRAPER_PERFORMANCE_MODE=settings.SCRAPER_PERFORMANCE_MODE,
                SOCRATA_PAGE_SIZE="1000", INSURANCE_STATES="WA,CA,TX,FL,NY")
     if vertical in ("healthcare", "ria"):
